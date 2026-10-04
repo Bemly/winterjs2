@@ -139,3 +139,55 @@
 - 复现：`python3 scripts/check-naming.py` 归零（exit 0）。
 - 推广铁律：**"查完"以门禁脚本绿为准，不以人眼为准**——新命名规则落地
  必须配守门脚本进提交前检查；误报一律写进脚本白名单并注理由，禁口头豁免。
+
+### 4.275 同仓并发构建的负载抖动：时序测试 TRY1 败 TRY2 过（2026-10-05）
+
+- 症状：`worker_terminate_interrupt_busy_loop` 在 strict 全量里挂，单测连跑
+  11 次 TRY1+TRY2 双败；与此同时手工探针同脚本 rc=0 全行齐。曾误判为本次
+  Utf8Stream 改动引入（stash 干净 HEAD 单跑过、二分三轮锁定"真凶"到
+  errors.rs 一词之差——荒谬信号）。
+- 根因：另一会话正在同仓库 `cargo build`（`ps` 见 rustc 39.5% CPU，
+  load 4.71，共享 `target/`）。terminate-interrupt 是刀锋竞态，
+  高负载下 50ms 窗口落地即翻；负载回落后 TRY2 即过（nextest 判 FLAKY）。
+  所谓"二分锁定一词之差"是负载时间相关，不是因果。
+- 修法：时序测试红先看 `uptime` + `ps` 查同仓并发构建（sweep 看门狗只杀
+  自家进程组，不管别家 cargo）；flake-classify 走 TRY1/TRY2 分布判，
+  双败多次 + 手工过 = 先查负载再二分。
+- 复现：`cargo nextest run -E 'test(worker_terminate_interrupt_busy_loop)'`
+  高负载下 TRY1 败率高，空载即稳过。
+- 推广铁律：**"确定性回归"先证伪环境**——手工过 + TRY2 偶过即停手查负载，
+  禁拿着 stash 二分追到荒谬单因；同仓多会话并行时构建错峰或分 target。
+
+### 4.276 fs 回调 IO 改同步执行：线程池 FIFO 的单线程最近似（2026-10-05）
+
+- 症状：Utf8Stream 落地后 `flush-sync`/`destroy` 套件红——`flushSync()` 后
+  同步 `readFileSync` 读到旧内容；`destroy()` 后异步 `readFile` 读空。
+- 根因：本仓 `fs.read/write` 把 IO 推迟到微任务（`Promise.resolve().then`），
+  而 node 是线程池并发提交——"写已在飞行中"，后续同步 IO 读得到。
+  Utf8Stream 的 `flushSync`/`destroy` 语义依赖"写与后续同步 IO 的落盘序"。
+- 修法：`read/write/readv/writev` 四族统一"写盘同步执行、回调仍经
+  `__fsDefer`（setImmediate）派发"。真机实测 `interleave.js` 5/5 确定性
+  `he`（后发写不越过挂起读）后黑盒旧断言 `fd-read null 2 he` 原样成立，
+  零断言改动（§4.65：断言对了，实现向真机对齐）。
+- 复现：`tests/node/fs/streams.rs::fs_utf8stream_surface`（修前 u1/u3 块红）；
+  node 套件 `test-fastutf8stream-flush-sync.js`/`-destroy.js`。
+- 推广铁律：**回调 IO 的"执行时"与"通知时"解耦**——node 线程池语义下，
+  同步执行 + 异步通知是单线程运行时的标准近似；混用"推迟执行"会撕裂
+  跨 API 的落盘序，症状总在别家套件（流/关闭时序）爆发。
+
+### 4.277 逐字移植三件小坑：变体类 / 探针互踩（2026-10-05）
+
+- 症状一：`new Utf8Stream({minLength:999, maxWrite:8})` 抛 `TypeError` 无 code，
+  真机是 `RangeError ERR_INVALID_ARG_VALUE`。
+- 根因一：本仓 `E('ERR_INVALID_ARG_VALUE', …, TypeError, HideStackFramesError)`
+  移植时丢了 node 原文的 `RangeError` 变体（node-errors.js:1482
+  `}, TypeError, RangeError, HideStackFramesError);`）。
+- 修法一：补回变体（`makeNodeErrorWithCode(RangeError, sym)` 通道现成，
+  R2-iter 已铺）。教训：**E() 注册行逐字对原文**，变体表是语义不是装饰。
+- 症状二：探针显示 Utf8Stream "写翻倍"（54 字节 vs 真机 27）。
+- 根因二：node 与 wjs2 探针共用同一 dest 文件 + append 缺省——第二跑追加
+  成第一跑的两倍。自摆乌龙，非实现 bug（换新文件名即一致，连 flush+end
+  竞争的翻倍 + EBADF 都与真机逐字节同形）。
+- 修法二：append 模式探针一律新文件名（`Date.now()`/计数后缀）。
+- 复现：症状一 `node -e` 一行；症状二 `/tmp/fstest/u1*.cjs`。
+- 推广铁律：**"实现 bug"先证伪探针**——append/覆盖/共享路径三问走完再进源码。

@@ -1260,3 +1260,25 @@ G1/G2/G3/G9 已收官。）
 - §0.7 已清出名单整体失效回炉：出镜红件照常逐件开轮，不再享受"清单外"豁免。
 - 历史记录（journal/parity 旧条目、0.4 表内"按时间盒暂停/按止损线收官"字样）
   为当时事实，不改写。
+
+## 2026-10-05 fastutf8stream 簇 14 转绿 0/14→14/16（Utf8Stream 落地）+ fs 回调时序统一
+
+- 范围：Bun 清单 fastutf8stream 域 14 件全红，根因单一——`node:fs` 缺
+  `Utf8Stream` 导出（`TypeError: Utf8Stream is not a constructor`）。
+- 落地：`internal/streams/fast-utf8-stream.js` 918 行逐字移植
+  （`src/builtins/node/internal/streams/fast_utf8_stream.rs`，require→垫片，
+  primordials 直引；`node:fs` 懒 getter 对齐 node `lazyLoadUtf8Stream`；
+  循环依赖经构造器内 `__ensureFs` 懒访问解环，§4.59 家族）+
+  INTERNALS 注册（80）+ `ERR_INVALID_ARG_VALUE` 补 `RangeError` 变体
+  （node 原文 `TypeError, RangeError, HideStackFramesError`，坑 4.277）。
+- 时序：`fs.read/write/readv/writev` 改"同步执行、回调仍派发"
+  （node 线程池 FIFO 最近似，坑 4.276）——`flush-sync`/`destroy` 落盘序对齐，
+  黑盒 `fd-read null 2 he` 断言零改动（真机 5/5 确定性）。
+- 验证：node 套件 fastutf8stream **16/16**（清单 14 + 同目录另 2；
+  余 2 件 destroy/flush-sync 经时序修转绿）+ 黑盒 `fs_utf8stream_surface`
+  （正常/报错/边界 11 断言，4.271 合规名）+ fs/stream 域 73/73 +
+  fs 域 sweep SAME0=286/SAME1=4/DIFF=42/TIMEOUT=1（= base16，零回归）+
+  strict **869/869** + 冒烟 5/5 + check-naming/check-lines 双绿。
+- 环境注：本轮中段 `worker_terminate_interrupt_busy_loop` 在 strict 里挂，
+  查为另一会话同仓并发构建（load 4.71）致 terminate 竞态抖动
+  （TRY1 败/TRY2 过判 FLAKY，空载稳过），非本轮回归（坑 4.275）。

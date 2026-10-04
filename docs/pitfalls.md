@@ -4788,3 +4788,21 @@
  （roundtrip 往返/Batch 批写/slice 切片，逐项 eyeball 确认）。
 - 推广铁律：**改名先穷举 token 全族再动手**——首轮修的正则即 scope，
  动手前把同族变体（大小写/单复数/缩写）一次列全，禁"修一处漏一族"。
+
+### 4.273 计划号藏身非测试标识符（2026-10-05）
+
+- 症状：`mod c4x_tests`（模块名即计划切片，注释自证"见 plan c-4x"）、
+ `const C4X_HEXJS`、`t2_/t4_handler_src`（套件分层编号，7 处调用）、
+ `wsys_misc2_faces`（批次残留，6 处 UNSAFE-BOUNDARY 指针对）、
+ `docs/dependencies3.md` 陈旧指针（`phase10f_` 前缀 + 错误路径双料过期）。
+- 根因：前两轮只扫了 `fn <test>`——mod/const/helper/文档指针同属标识符，
+ 且计划号会藏进"看起来像域缩写"里（c4x/tN/misc2）。
+- 修法：`c4x_tests`→`regression_vector_tests`、`C4X_HEXJS`→`SUBTLE_HEX_JS`、
+ `subtle_c4x_*`→`subtle_*`（aes192 按体裁 `subtle_aes_gcm_192`）、
+ `t2/t4`→`dyn_echo/upgrade_echo_handler_src`、`misc2`→`misc_util`、
+ 采购记录指针同步现名现路径；注释内"已收官/c4x 系"字样留作历史。
+- 复现：`rg -n -e 'c4x|C4X|t[24]_handler_src|misc2_faces' tests/ src/` 归零
+ （注释史除外）；`mod/const/helper` 同查。
+- 推广铁律：**标识符审计按"种类 × token 族"双轴**——种类（fn/mod/const/
+ static/helper/文件名/文档指针）× token 族（phase/m/r/b/g/tier/misc +
+ 数字），单轴扫必漏。

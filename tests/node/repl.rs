@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10c_repl_eval_print() {
+fn repl_eval_print() {
     // 求值/打印/错误行/跨行持久 + exit 事件 + 形状面。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -56,7 +56,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn phase10c_repl_multiline_commands() {
+fn repl_multiline_commands() {
     // 续行（Recoverable 启发式）+ .break/.help/.exit + 自定义 eval。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

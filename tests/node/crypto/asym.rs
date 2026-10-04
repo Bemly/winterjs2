@@ -251,7 +251,7 @@ console.log("d-safe", typeof ps === "bigint" && checkPrimeSync(ps) === true && c
 }
 
 #[test]
-fn phase10e_crypto_ed448() {
+fn crypto_ed448() {
     // 10e Ed448：真机取证向量（确定性签名逐字节）+ 全链 + 报错/边界三件 + 证书
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("ed448-cert.pem")

@@ -258,7 +258,7 @@ console.log("sab", typeof w.SharedArrayBuffer, typeof w.Atomics);
 }
 
 #[test]
-fn phase10f_vm_sync_snapshot() {
+fn vm_sync_snapshot() {
     // 10f：创建快照 + sync-out 全键口径（不可枚举串键回写、symbol 只存在性、
     // 标准构造器未改不污染、改了回写；`undefined/NaN/Infinity` 只读常量永不碰）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -305,7 +305,7 @@ console.log("dont", vm.runInContext("1 + 1", w) === 2, typeof w.Object === "func
 }
 
 #[test]
-fn phase10f_vm_sync_all_keys() {
+fn vm_sync_all_keys() {
     // 10f：UNSAFE-BOUNDARY panic 路径（坏 id → TypeError 包络；same 缺参 → TypeError）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
@@ -338,7 +338,7 @@ console.log("same-ok", __wjs2_vm_same(1, 2) === false, __wjs2_vm_same(NaN, NaN) 
 }
 
 #[test]
-fn phase10c_vm_rerun_with_new_globals() {
+fn vm_rerun_with_new_globals() {
     // 10c-3：同 context 重复 runInContext（前轮新建的全局须可复用；
     // sync-in 的重定义走赋值回落，见 vm_set）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -368,7 +368,7 @@ console.log("mix", vm.runInContext("f()", d), vm.runInContext("seed + 1", d));
 
 
 #[test]
-fn phase10f_vm_parity_sync_and_errors() {
+fn vm_parity_sync_and_errors() {
     // 10f vm 对拍收口面：簿记不落沙箱键（ownkeys 族）、symbol 键/访问器同步、
     // 描述符保形（nonWritable + strict 赋值文案桥）、沙箱自指键（window）、
     // 错误原物透传（跨域 instanceof + 非对象 throw 原样 + ReferenceError 文案）。

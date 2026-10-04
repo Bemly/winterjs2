@@ -53,7 +53,7 @@ setTimeout(() => console.log("end-ok"), 200);
 // ── Phase 9d-5：node:zlib ────
 
 #[test]
-fn phase10a_dgram_multicast_connect() {
+fn dgram_multicast_connect() {
     // 10a：组播/connect/ref 全家——同步校验 + 回环/组播投递 + unref 释放。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -164,7 +164,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
-fn phase10a_dgram_unref_releases_loop() {
+fn dgram_unref_releases_loop() {
     // 10a：unref 真计数——唯一句柄 unref 后循环即退。
     // 脚本内零 timer（pending timer 同样续命，会掩盖结论）；挂了由外部
     // 8s 超时判失败，不 hang 住全量。
@@ -194,7 +194,7 @@ s.bind(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_dgram_send_buffer_surface() {
+fn dgram_send_buffer_surface() {
     // 10f dgram 欠账轮：recvbuf 四方法（未绑 ERR_SOCKET_BUFFER_SIZE 逐字、绑后
     // set/get 回读、构造选项）+ send 未绑隐式绑定（cb (null, bytes)、address 可查）
     // + 数组 send + EMSGSIZE 路由回回调 + ALREADY_BOUND + address() 未绑 EBADF +
@@ -356,7 +356,7 @@ setTimeout(() => process.exit(0), 3000);
 }
 
 #[test]
-fn phase10f_dgram_bind_repeat_and_custom_lookup() {
+fn dgram_bind_repeat_and_custom_lookup() {
     // bind-error-repeat（失败后错误处理器内重绑不报 ALREADY_BOUND）+
     // custom-lookup（自定义 lookup 必经 + 默认经 dns.lookup 全局 mock）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -423,7 +423,7 @@ setTimeout(() => process.exit(0), 4000);
 }
 
 #[test]
-fn phase11_dgram_send_validator_surface() {
+fn dgram_send_validator_surface() {
     // send 校验矩阵（send-bad-arguments 套件口径）：buffer 形态错/越界/
     // 已连接顺序（buffer 先行）/未连接端口同步 RangeError。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -472,7 +472,7 @@ sock.connect(12345, () => {
 }
 
 #[test]
-fn phase11_dgram_queue_resources_reuse() {
+fn dgram_queue_resources_reuse() {
     // 发送队列 + 存活资源 + reuseAddr 双绑（send-queue/unref/reuse 套件口径）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
@@ -537,7 +537,7 @@ s1.bind(0, () => {
 }
 
 #[test]
-fn phase11_dgram_cluster_fork_env_surface() {
+fn dgram_cluster_fork_env_surface() {
     // cluster.fork 非对象 env 宽容（child-index-dgram 套件点名）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(

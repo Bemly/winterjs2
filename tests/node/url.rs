@@ -47,7 +47,7 @@ try { pathToFileURL(42); } catch (e) { console.log("u-pt", e.code, e.message); }
 }
 
 #[test]
-fn phase10a_url_legacy() {
+fn url_legacy() {
     // 10a：legacy 面（lib/url.js 口径移植）——正常 + 报错 + 边界。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("l.mjs");
@@ -159,7 +159,7 @@ try { urlToHttpOptions(42); } catch (e) { console.log("o-t", e.code, e.message);
 }
 
 #[test]
-fn phase10f_url_parity_suite() {
+fn url_parity_suite() {
     // 10f 对拍定案面（node lib/url.js 逐字口径）：parse 校验族（消息逐字/URIError
     // 无码/ERR_INVALID_URL+input/IDNA NFKC/软连字符/evil 端口）、resolveObject
     // 空源短路 + 非斜杠协议爬升、format auth 表（noEscapeAuth/代理对）、
@@ -245,7 +245,7 @@ console.log(L.join("\n"));
 }
 
 #[test]
-fn phase11_urlpattern_surface() {
+fn urlpattern_surface() {
     // URLPattern 构造/属性/test/exec（plan3 §5 专项；真机 node 26.8.2 逐项对拍）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
@@ -309,7 +309,7 @@ show("dict-in", new URLPattern({ pathname: "/foo/:id" }).exec({ pathname: "/foo/
 }
 
 #[test]
-fn phase11_urlpattern_errors_boundary() {
+fn urlpattern_errors_boundary() {
     // 错误矩阵（test-urlpattern-types/invalidthis 全断言 + getter 透传 + 组序偏离钉档）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(

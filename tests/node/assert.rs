@@ -14,7 +14,7 @@ fn phase4_node_assert_subset() {
 }
 
 #[test]
-fn phase10f_assert_rejects_promise_or_fn() {
+fn assert_rejects_promise_or_fn() {
     // 10f：rejects/doesNotReject 收 promise 或函数（旧实现只收函数，套件点名抓到）。
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const assert = (await import("node:assert")).default;
@@ -29,7 +29,7 @@ console.log("done");"#]));
 }
 
 #[test]
-fn phase10f_assert_throws_regex_string() {
+fn assert_throws_regex_string() {
     // 10f：throws 正则测 String(err)（含名；旧实现只测 message，套件点名）。
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const assert = (await import("node:assert")).default;
@@ -41,7 +41,7 @@ console.log("regex-sub true");"#]));
 }
 
 #[test]
-fn phase10f_assert_validation_xrealm() {
+fn assert_validation_xrealm() {
     // 10f：throws 族参数校验 + AssertionError 构造器校验 + Error 消息跨域重抛。
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const assert = (await import("node:assert")).default;
@@ -62,7 +62,7 @@ try { assert.fail(xerr); } catch (e) { console.log("fail-err", e.name); }"#]));
 }
 
 #[test]
-fn phase10f_assert_throws_object_regex() {
+fn assert_throws_object_regex() {
     // 10f：throws 对象形态中正则期望按匹配语义（旧 `==` 永假；os.getPriority 用例现形）。
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const assert = (await import("node:assert")).default;
@@ -76,7 +76,7 @@ try { assert.throws(() => { throw new Error("nope"); }, { code: "E_MISSING" }); 
 }
 
 #[test]
-fn phase10f_throws_arrow_validator() {
+fn throws_arrow_validator() {
     // 10f：函数形期望的 instanceof 门——箭头函数无 prototype，instanceof
     // 须以 Error 子类为门，否则校验器永不到达（§4.99）。正常+报错+边界。
     let dir = assert_fs::TempDir::new().unwrap();

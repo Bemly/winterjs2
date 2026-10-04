@@ -165,7 +165,7 @@ setTimeout(() => console.log("end-ok"), 2500);
 }
 
 #[test]
-fn phase10f_http2_streaming() {
+fn http2_streaming() {
     // 10f http2 流式化：服务端分块写（write/write/end 增量下发）+ 客户端 POST 体
     // + trailer 往返 + 报错（writeHead 双调 ERR_HTTP2_HEADERS_SENT）+ 边界空体。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -264,7 +264,7 @@ setTimeout(() => console.log("end-ok"), 2500);
 }
 
 #[test]
-fn phase11_http2_trailers_with_body() {
+fn http2_trailers_with_body() {
     // P1（2026-09-25）：有体 + waitForTrailers 双向 trailer（修前 ChanBody EndPending 不登记
     // waker，trailer 永不出线两端互等）；trailers 事件序 data → trailers → end；
     // sendTrailers 门序 NOT_READY / ALREADY_SENT / INVALID_STREAM（真机逐项）。

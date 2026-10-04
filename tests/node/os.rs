@@ -25,7 +25,7 @@ fn phase4_node_os_basic() {
 }
 
 #[test]
-fn phase10f_os_surface() {
+fn os_surface() {
     // 台面：EOL/devNull 描述符 + 常量表 + 动态 tmpdir/homedir + 新面 + buffer + 原语转换 + cidr。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("p.mjs");
@@ -111,7 +111,7 @@ console.log("cidr", Object.values(os.networkInterfaces()).flat().every((e) => ty
 }
 
 #[test]
-fn phase10f_os_priority() {
+fn os_priority() {
     // 校验三件 + SystemError 形态 + 活体只降不升（回滚容忍 EACCES/EPERM）。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("p.mjs");

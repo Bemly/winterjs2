@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10f_dns_parity_fixes() {
+fn dns_parity_fixes() {
     // 10f 对拍牵引回归（test-dns-* 套件门，hermetic：localhost + 形状断言）：
     // 正常：Resolver 构造/getServers/lookupService 回环/setServers  canonical；
     // 报错：resolveNs 非串同步抛（callback+promises）/setServers 非数组/
@@ -133,7 +133,7 @@ setTimeout(() => console.log("end-ok"), 50);
 
 // ── Phase 10d：dns 深件（hickory 全套；hermetic localhost + 错误形状）────────
 #[test]
-fn phase10d_dns_deep_hickory() {
+fn dns_deep_hickory() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

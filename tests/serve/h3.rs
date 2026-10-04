@@ -4,7 +4,7 @@ use assert_fs::prelude::*;
 use super::helpers::*;
 
 #[test]
-fn phase11_serve_h3_same_router() {
+fn serve_h3_same_router() {
     // 正常：QUIC + H3 同端口同 Router 回声（scheme=https:）。
     // 环境注：本机 curl 无 http3（SecureTransport 版），以 harness 探针验收（plan4 §3 T3）。
     let dir = serve_fixture();
@@ -59,7 +59,7 @@ fn phase11_serve_h3_same_router() {
 }
 
 #[test]
-fn phase11_serve_h3_skipped_without_cert() {
+fn serve_h3_skipped_without_cert() {
     // 边界：无证书即 H3 跳过 + warn，H1 照服（plan4 §3 T3）。
     use std::io::Read;
     let dir = serve_fixture();

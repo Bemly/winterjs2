@@ -60,7 +60,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
-fn phase10b_https_keepalive_reuse() {
+fn https_keepalive_reuse() {
     // 10b：https 随行（同帧层 + tls 底座）——2 请求 1 连接。
     let dir = assert_fs::TempDir::new().unwrap();
     let (cert_path, key_path) = write_self_signed(&dir);

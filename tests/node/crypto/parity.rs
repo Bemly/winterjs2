@@ -4,7 +4,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase10f_crypto_round2_parity() {
+fn crypto_round2_parity() {
     // 10f crypto二轮：DH 组/KeyObject 品牌/RSA 位长/pkcs1/加密 PEM/混合 OAEP
     //（正常/报错/边界三件；慢操作一律小参数）
     let dir = assert_fs::TempDir::new().unwrap();
@@ -133,7 +133,7 @@ setTimeout(() => console.log("r2-done"), 20);
 }
 
 #[test]
-fn phase10f_crypto_x448_parity() {
+fn crypto_x448_parity() {
     // 10f crypto三轮：X448 全链（用户拍板引 x448 =0.14.0-pre.12，见
     // docs/dependencies3.md §5）——生成/导入/DER/JWK/raw/DH/低阶点，
     // 正常/报错/边界三件；每项真机 26.8.2 对拍。
@@ -235,7 +235,7 @@ log("x448-done");
 }
 
 #[test]
-fn phase10f_crypto_round4_parity() {
+fn crypto_round4_parity() {
     // 10f crypto四轮：key-objects 剩余阻塞簇——非对称导出 type/format 门矩阵、
     // EC raw 导入导出往返、EC sec1 导出、asymmetricKeyDetails（EC/OKP/DSA）、
     // OKP/EC JWK 校验矩阵、DSA JWK 面（无）。每项真机 26.8.2 对拍
@@ -421,7 +421,7 @@ log("r4-done");
 }
 
 #[test]
-fn phase10f_crypto_raw_seed_parity() {
+fn crypto_raw_seed_parity() {
     // 10f crypto五轮：raw 加密门 + raw-seed（真机 26.8.2 对拍，
     // /tmp/wjs-raw-probe*.mjs 逐项）——导出 passphrase 门最前（仅 pem/der
     // 放行）、raw-seed 导入导出 INCOMPATIBLE、cipher 单给忽略。
@@ -581,7 +581,7 @@ log("r5-done");
 }
 
 #[test]
-fn phase10f_crypto_pss_gates() {
+fn crypto_pss_gates() {
     // 10f crypto六轮：RSA-PSS 装载/约束/入口门（真机 26.8.2 对拍）。
     // 约束键（一次性 params）无 repo fixture，以生成键覆盖无约束面；
     // 约束执行/MGF 切换由 key-objects.js 套件 trace 覆盖（见 bun-parity）。

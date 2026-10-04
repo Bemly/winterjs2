@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10d_sqlite_crud() {
+fn sqlite_crud() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -53,7 +53,7 @@ f2.close();
 }
 
 #[test]
-fn phase10d_sqlite_errors_boundary() {
+fn sqlite_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

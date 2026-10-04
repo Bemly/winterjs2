@@ -236,7 +236,7 @@ fn phase9m_global_dom_exception_file_message_channel_sab() {
 }
 
 #[test]
-fn phase10a_immediate_and_timeout_class() {
+fn immediate_and_timeout_class() {
     // 10a：全局 setImmediate/clearImmediate + Timeout/Immediate 真类。
     // 近似口径：setImmediate ≈ setTimeout(0)，同 delay(0) 队列 FIFO；
     // check 分层上线时改 order 断言。
@@ -271,7 +271,7 @@ fn phase10a_immediate_and_timeout_class() {
 }
 
 #[test]
-fn phase10f_timer_face_unref_uncaught() {
+fn timer_face_unref_uncaught() {
     // 10f 对拍定案面：this 绑定/_destroyed 生命周期/dispose+close/字符串 id/
     // validateCallback 码/三态警告/uncaughtException 路由/ALS 传播/域路由/
     // unref 不续命/node:timers delete-proof。套件断言原文逐项对拍
@@ -366,7 +366,7 @@ fn phase10f_timer_face_unref_uncaught() {
 }
 
 #[test]
-fn phase11_console_node_format() {
+fn console_node_format() {
     // 2026-09-25：全局 console 走 util.format（修前原生 sink 只 ToString：`[object Object]`、
     // `%s` 原样）。正常：对象/数组/Map/Symbol/BigInt inspect；占位符；console.dir 深度。
     let out = stdout_of(winterjs2().args([
@@ -391,7 +391,7 @@ fn phase11_console_node_format() {
 }
 
 #[test]
-fn phase11_console_global_unified() {
+fn console_global_unified() {
     // 2026-09-28 §7-②：全局 console 统一收尾（assert/trace 原文语义 + 8 缺失方法）。
     // 正常：方法表齐 + assert 格式化 + 多参/裸参 + trace 首行 + 别名/存根。
     let out = stdout_of(winterjs2().args([
@@ -435,7 +435,7 @@ fn phase11_console_global_unified() {
 }
 
 #[test]
-fn phase11_repl_sig_js_docs() {
+fn repl_sig_js_docs() {
     // 2026-09-28 用户裁定：pane 只放签名，不搬运文档句（文档只读语料，经 `.doc`）。
     // 正常：R3 签名表命中 + 原生 toString 真形参；边界：用户自有同名方法显示自身。
     let out = stdout_of(winterjs2().args([
@@ -465,7 +465,7 @@ fn phase11_repl_sig_js_docs() {
 }
 
 #[test]
-fn phase11_set_immediate_not_clamped() {
+fn set_immediate_not_clamped() {
     // 2026-09-26：setImmediate 不走 setTimeout 的 1ms 钳（修前每个 immediate ≥1ms）；
     // 顺序与真机 26.8.2 一致：I/O 回调内 immediate 先于 setTimeout(0)。
     use assert_fs::prelude::*;

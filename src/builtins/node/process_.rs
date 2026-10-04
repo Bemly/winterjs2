@@ -200,7 +200,7 @@ pub fn drain_next_ticks(
 /// 不 fatal。无人接则异常已放回 pending，走原 fatal 路径（文案/栈无损）。
 /// 前置：cx 已进 global realm；刚一次失败的 evaluate（pending 即入口异常）。
 /// UNSAFE-BOUNDARY: take-调-放回三段（带 pending 进 JS 调用非法，直调即吞错，
-/// 见 4.248）；覆盖测试——`tests/node/process_.rs::phase11_process_capture_faces`。
+/// 见 4.248）；覆盖测试——`tests/node/process_.rs::process_capture_faces`。
 /// （SyntaxError 照旧走重试/渲染，不进分发。）
 pub fn dispatch_entry_throw(
     cx: &mut mozjs::context::JSContext,

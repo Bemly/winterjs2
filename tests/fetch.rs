@@ -359,7 +359,7 @@ fn serve_split() -> u16 {
 }
 
 #[test]
-fn phase11_response_json_faces() {
+fn response_json_faces() {
     // 正常：缺省 200+json 头/体；init 改状态+自带 content-type 优先。
     // 报错：undefined/函数/BigInt 即 TypeError 同文案；坏 status 走 RangeError。
     // 边界：null data 体 "null"；null init 视作 {}。
@@ -378,7 +378,7 @@ try { Response.json({a:1}, {status: 99}); console.log("NO-THROW"); } catch (e) {
 }
 
 #[test]
-fn phase11_request_clone_faces() {
+fn request_clone_faces() {
     // 正常：url/方法/头拷贝双可读；signal 永 fresh（无信号不 abort，有信号跟随）。
     // 报错：bodyUsed 后 clone 即 TypeError。边界：GET 无体 clone。
     let out = stdout_of(&mut winterjs2().args(["--eval",

@@ -163,7 +163,7 @@ console.log("perf", typeof performance.now() === "number" && performance.timeOri
 }
 
 #[test]
-fn phase10f_process_config_features_umask() {
+fn process_config_features_umask() {
     // 10f：process.config/features/umask（跑 test/common 前置）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -190,7 +190,7 @@ console.log("umask-back", process.umask() === before);
 }
 
 #[test]
-fn phase10f_process_stdin_destroy() {
+fn process_stdin_destroy() {
     // stdin.destroy 即关（listen-after-destroying-stdin 套件）：不抛、
     // 挂 data 后 destroy 即退（无 8s 悬挂），管道输入仍可读。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -210,7 +210,7 @@ setTimeout(() => console.log("exited-clean"), 300);
 }
 
 #[test]
-fn phase11_exit_event_and_hang_exit() {
+fn exit_event_and_hang_exit() {
     // 2026-09-25：自然退出派发 process 'exit'（修前 this 绑成 global，监听从不触发——
     // node 套件 common.mustCall 的退出核对形同虚设）；WINTERJS2_HANG_EXIT 到点发 'exit'
     // 并以 1 退出（把挂死件变成带定位的红件）。
@@ -242,7 +242,7 @@ fn phase11_exit_event_and_hang_exit() {
 }
 
 #[test]
-fn phase11_before_exit_and_fatal_exit_event() {
+fn before_exit_and_fatal_exit_event() {
     // 2026-09-26：循环排空派发 'beforeExit'（监听排新任务即续转、排空再发）；致命错先打印
     // 再以 code 1 派发 'exit'（监听可改 exitCode）；process.emit 监听抛错原样上抛。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -283,7 +283,7 @@ fn phase11_before_exit_and_fatal_exit_event() {
 }
 
 #[test]
-fn phase11_process_validation_faces() {
+fn process_validation_faces() {
     // P2-process R1: hrtime/nextTick/chdir 参数校验 + release 面（node 原文口径）。
     // 正常：hrtime 无参/差值元组 + 借位非负；chdir 来回；release name/lts。
     // 报错：三处 code 精确（ERR_INVALID_ARG_TYPE/ERR_OUT_OF_RANGE/ENOENT）。
@@ -328,7 +328,7 @@ fn phase11_process_validation_faces() {
 }
 
 #[test]
-fn phase11_process_env_faces() {
+fn process_env_faces() {
     // P2-process R8: env Proxy 全家（node 原文口径）。
     // 正常：原型回落（hasOwnProperty）、空键静默忽略、DEP0104 后照赋。
     // 报错：符号键/值、坏描述符双文案。
@@ -372,7 +372,7 @@ fn phase11_process_env_faces() {
 }
 
 #[test]
-fn phase11_process_capture_faces() {
+fn process_capture_faces() {
     // P2-process R7: uncaught capture 路由（node execution.js 口径）。
     // 正常：capture 接住入口抛错（uncaughtException 不发、exit 0）；null 清除。
     // 报错：非函数非 null 入参码；重复设置码。
@@ -422,7 +422,7 @@ fn phase11_process_capture_faces() {
 }
 
 #[test]
-fn phase11_process_execve_faces() {
+fn process_execve_faces() {
     // P2-process R6: execve 校验面（node 原文口径；真调替换测试进程，
     // 此处只验报错面 + 失败形 ENOENT，不做成功替换）。
     // 正常：无（成功不返回，不断言）。
@@ -458,7 +458,7 @@ fn phase11_process_execve_faces() {
 }
 
 #[test]
-fn phase11_process_spawn_faces() {
+fn process_spawn_faces() {
     // P2-process R5: ppid + reallyExit 路由 + execPath canonical（node 原文口径）。
     // 正常：ppid 为正整数；子进程 ppid 即父 pid；exit 经 reallyExit（mock 可截）。
     // 报错：不适用（本轮三件皆正常面；非法码走 exitCode setter 门，另案）。
@@ -493,7 +493,7 @@ fn phase11_process_spawn_faces() {
 }
 
 #[test]
-fn phase11_process_kill_prototype_title_faces() {
+fn process_kill_prototype_title_faces() {
     // P2-process R4: kill 校验/_kill 可 mock + 原型链 + title（node 原文口径）。
     // 正常：kill 自检真；_kill mock 透传（pid/信号数值化）；原型链五断言；title 读写。
     // 报错：pid 非数、未知信号名、987 数值信号码。
@@ -534,7 +534,7 @@ fn phase11_process_kill_prototype_title_faces() {
 }
 
 #[test]
-fn phase11_process_credential_faces() {
+fn process_credential_faces() {
     // P2-process R3: setuid/setgid/seteuid/setegid/setgroups/initgroups
     //（node wrapPosixCredentialSetters 口径；只走无副作用路径——校验错/
     // 未知身份/自身份 no-op，不改测试进程身份）。
@@ -580,7 +580,7 @@ fn phase11_process_credential_faces() {
 }
 
 #[test]
-fn phase11_process_resource_faces() {
+fn process_resource_faces() {
     // P2-process R2: abort/内存/cpu/umask 面（node 原文口径）。
     // 正常：abort 无 prototype；内存两数；cpu/thread 双数非负；umask 串数互通。
     // 报错：cpu prevValue 非对象/坏字段码；umask 非法串/对象码。
@@ -634,7 +634,7 @@ fn phase11_process_resource_faces() {
 }
 
 #[test]
-fn phase11_emit_warning_node_semantics() {
+fn emit_warning_node_semantics() {
     // 2026-09-26：emitWarning 按 node lib/internal/process/warning.js 移植——缺省打印是表内
     // 普通监听（可 off 摘除）；once 监听只触发一次；noDeprecation/throwDeprecation 门控；
     // CJS 栈帧是绝对路径（node 口径，stack.includes(__filename)）。
@@ -681,7 +681,7 @@ fn phase11_emit_warning_node_semantics() {
 }
 
 #[test]
-fn phase11_process_r9_misc_faces() {
+fn process_r9_misc_faces() {
     // P2-process R9-A: exitCode 校验 + binding/config/_rawDebug/setSourceMaps/
     // ref-unref/getBuiltin（node 原文口径）。
     // 正常：exitCode 合法串/清零；binding util 16 键恒等；config 冻结；
@@ -743,7 +743,7 @@ fn phase11_process_r9_misc_faces() {
 }
 
 #[test]
-fn phase11_process_r9b_faces() {
+fn process_r9b_faces() {
     // P2-process R9-B：--disable-warning 过滤 + uncaughtExceptionMonitor 先行 +
     // _fatalException=undefined 即 exit 6（node 原文口径）。
     // 正常：monitor 与 uncaughtException 同 err 同 origin 依次触发。

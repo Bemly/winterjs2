@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(normalize_spec("async_hooks"), Some("node:async_hooks"));
         assert_eq!(normalize_spec("node:util"), Some("node:util"));
         assert_eq!(normalize_spec("util"), Some("node:util"));
-        // 10a：sys 别名（import/require 双形态同实例，见黑盒 phase10a_sys_alias）。
+        // 10a：sys 别名（import/require 双形态同实例，见黑盒 sys_alias）。
         assert_eq!(normalize_spec("sys"), Some("node:util"));
         assert_eq!(normalize_spec("node:sys"), Some("node:util"));
         assert_eq!(normalize_spec("node:util/types"), Some("node:util/types"));

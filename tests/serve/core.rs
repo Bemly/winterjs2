@@ -300,7 +300,7 @@ fn phase6_serve_tls_bad_pem() {
 }
 
 #[test]
-fn phase11_serve_handler_missing_file_errors() {
+fn serve_handler_missing_file_errors() {
     // 报错：`--handler` 缺文件即启动期可读错（plan4 §3 T1），exit=1。
     let dir = serve_fixture();
     let out = winterjs2()
@@ -318,7 +318,7 @@ fn phase11_serve_handler_missing_file_errors() {
 }
 
 #[test]
-fn phase11_serve_dynamic_fallback_status_preserved() {
+fn serve_dynamic_fallback_status_preserved() {
     // 正常：静态命中走 ServeDir（不进 JS）；缺失进 handler，JS 状态原样保留
     // （§4.165：`not_found_service` 恒改写 404 的反面）；POST 等非 GET/HEAD
     // 同样进 JS（`call_fallback_on_method_not_allowed`）。
@@ -355,7 +355,7 @@ fn phase11_serve_dynamic_fallback_status_preserved() {
 }
 
 #[test]
-fn phase11_serve_large_body_streaming() {
+fn serve_large_body_streaming() {
     // 正常：POST 1MB 回声逐字节一致（请求体多 Chunk 上行）；
     // GET 2MB 分带下行（响应 64KB 分片多 Chunk，§4.166），内容逐带校验。
     let dir = serve_fixture();
@@ -386,7 +386,7 @@ fn phase11_serve_large_body_streaming() {
 }
 
 #[test]
-fn phase11_serve_concurrent_20x10() {
+fn serve_concurrent_20x10() {
     // 正常：20 线程 × 10 串行 GET = 200 请求全 200 且内容对（T1 并发验收）。
     let dir = serve_fixture();
     dir.child("handler.mjs")
@@ -413,7 +413,7 @@ fn phase11_serve_concurrent_20x10() {
 }
 
 #[test]
-fn phase11_serve_handler_dual_shape() {
+fn serve_handler_dual_shape() {
     // 正常：具名 `export function fetch` 回落（无 default 导出同样服务，§0-1）。
     // 报错：双缺 fetch 即启动期可读错 exit=1（不静默 503）。
     let dir = serve_fixture();
@@ -441,7 +441,7 @@ fn phase11_serve_handler_dual_shape() {
 }
 
 #[test]
-fn phase11_serve_tls_dynamic() {
+fn serve_tls_dynamic() {
     // 正常：TLS 回环动态 GET（scheme=https: 透传）+ POST 回声 201 + 静态 200。
     let dir = serve_fixture();
     let (cert, key, trust) = make_self_signed(dir.path());
@@ -466,7 +466,7 @@ fn phase11_serve_tls_dynamic() {
 }
 
 #[test]
-fn phase11_serve_h2() {
+fn serve_h2() {
     // 正常：明文 h2c（prior knowledge）回声 + 双流并发；TLS 经 ALPN 谈出 h2 回声。
     let dir = serve_fixture();
     dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
@@ -508,7 +508,7 @@ fn phase11_serve_h2() {
 }
 
 #[test]
-fn phase11_serve_h2_tls_alpn() {
+fn serve_h2_tls_alpn() {
     // 正常：TLS + ALPN h2 回声（scheme=https:）。
     let dir = serve_fixture();
     let (cert, key, trust) = make_self_signed(dir.path());
@@ -552,7 +552,7 @@ fn phase11_serve_h2_tls_alpn() {
 }
 
 #[test]
-fn phase11_serve_keepalive_reuse() {
+fn serve_keepalive_reuse() {
     // 正常：同一 H1 连接 keep-alive 复用（首包分帧读 + 次包 close 尾），两包皆 200。
     use std::io::Write;
     let dir = serve_fixture();

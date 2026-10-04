@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase10f_exec_live_handle() {
+fn exec_live_handle() {
     // 10f：exec/execFile 换 node 架构（spawn+收集+close 回调，返回 live
     // ChildProcess）——pid 同步可见、ENOENT 死句柄 pid undefined、
     // ERR_CHILD_PROCESS_STDIO_MAXBUFFER 错误码。标签互不为子串（§4.42）。
@@ -53,7 +53,7 @@ exec("exit 3", (e) => {
 }
 
 #[test]
-fn phase10f_child_sync_surface() {
+fn child_sync_surface() {
     // 10f child 同步族口径（真机 26.8.2 对拍）：选项校验族 + 错误形状
     // （syscall/errno/message/path/pid/output）+ 自举翻译（-e/裸文件）+
     // 缺省 Buffer + killSignal/timeout/ETIMEDOUT + ENOBUFS。
@@ -136,7 +136,7 @@ console.log("spawnargs", JSON.stringify(cs.spawnSync("nope_xyz", ["a", "b"]).err
 }
 
 #[test]
-fn phase10f_child_exec_shell_self_and_timeout() {
+fn child_exec_shell_self_and_timeout() {
     // 10f：exec 族自举翻译 env 间接形（${VAR}/$NODE + 裸文件 → --run/--eval，
     // escapePOSIXShell 形）、timeout/killSignal 错形（killed/code=null/signal）、
     // encoding 'invalid' 落 Buffer、exec 无回调 live child。标签互不为子串
@@ -226,7 +226,7 @@ if (process.argv[2] === "child") {
 }
 
 #[test]
-fn phase10f_child_g5_validators_and_readable() {
+fn child_g5_validators_and_readable() {
     // G5-3：\0 横向校验（file/args/env/cwd/shell/command 全面 code 名）+
     // `-p` 自举（promisified 套件）+ stdio ipc 门（单裸/双 ipc）+
     // paused read（flush-stdio 套件 readable+read 循环）。
@@ -262,7 +262,7 @@ console.log("readable", Buffer.concat(bufs).toString().trim() === "123");"#]));
 }
 
 #[test]
-fn phase10f_child_g5_surface_batch2() {
+fn child_g5_surface_batch2() {
     // G5-4：removeAllListeners/二次 disconnect 抛错/uid-gid EPERM/pipe 透传/
     // fork send 参数校验（message 缺席/非法型/options 非对象/句柄拒收）。
     let dir = assert_fs::TempDir::new().unwrap();

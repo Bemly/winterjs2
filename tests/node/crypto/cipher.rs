@@ -96,7 +96,7 @@ try {
 }
 
 #[test]
-fn phase10e_crypto_ccm() {
+fn crypto_ccm() {
     // 10e AES-CCM 三档：真 Node 交叉取证逐字节向量 + 全档往返 + 报错/边界三件
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -182,7 +182,7 @@ console.log("info", getCipherInfo("aes-128-ccm").nid === 896 && getCipherInfo("a
 }
 
 #[test]
-fn phase10e_crypto_gcm_anyiv() {
+fn crypto_gcm_anyiv() {
     // 10e-2 GCM 任意 iv：真 Node 交叉取证逐字节向量 + 往返 + 报错/边界三件
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -244,7 +244,7 @@ try {
 }
 
 #[test]
-fn phase10f_crypto_round1_parity() {
+fn crypto_round1_parity() {
     // 10f crypto首轮：call-without-new + DEP0179/DEP0181 + uuid 校验 + 摘要别名 +
     // outputLength 全套 + 流式鸭子面 + ECB + DH 数值形（正常/报错/边界三件）
     let dir = assert_fs::TempDir::new().unwrap();

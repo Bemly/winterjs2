@@ -131,7 +131,7 @@ console.log("res", res.cork() === res, res.uncork() === res);"#])
 }
 
 #[test]
-fn phase10f_net_autoselect_timeout() {
+fn net_autoselect_timeout() {
     // 10f：get/setDefaultAutoSelectFamilyAttemptTimeout（存值面；test/common 前置）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -156,7 +156,7 @@ console.log("kept", net.getDefaultAutoSelectFamilyAttemptTimeout());
 }
 
 #[test]
-fn phase10f_socket_settimeout_fires_without_closing() {
+fn socket_settimeout_fires_without_closing() {
     // 10f timers 对拍：socket.setTimeout(ms[, cb]) 真实现——单发 'timeout'
     // 事件（Node 口径：不关连接、socket 仍可写；cb 注册为 once 监听），
     // 内部 timer 恒 unref（套件 test-timers-socket-timeout-removes-other-socket-
@@ -189,7 +189,7 @@ server.listen(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_net_write_after_destroy_cb() {
+fn net_write_after_destroy_cb() {
     // 10f net 对拍：destroy 后 write 有 cb 走 cb(err)+false、无 cb 才同步抛；
     // WRITE_AFTER_END（end 后）与 DESTROYED（destroy 后）双码；destroy 无参不发 error。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -228,7 +228,7 @@ srv.listen(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_net_blocklist_and_lookup() {
+fn net_blocklist_and_lookup() {
     // 10f net 对拍：connect { blockList } 命中即 ERR_IP_BLOCKED；自定义 lookup 生效。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -261,7 +261,7 @@ srv.listen(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_net_isip_zone_and_pending() {
+fn net_isip_zone_and_pending() {
     // 10f net 对拍：isIP zone 尾（%eth0 收 / %@ 拒）+ pending/readyState/connecting 三态。
     let out = winterjs2()
         .args(["--eval",
@@ -279,7 +279,7 @@ console.log("exit-ok");"#])
 }
 
 #[test]
-fn phase10f_net_unix_socket_roundtrip() {
+fn net_unix_socket_roundtrip() {
     // 10f net 对拍：listen(path)/connect(path) UDS 回环（地址全 undefined，address() 回 {} / path 串）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -318,7 +318,7 @@ srv.on("error", (e) => console.log("srv-err", e.code));
 }
 
 #[test]
-fn phase10f_net_uds_sync_bind() {
+fn net_uds_sync_bind() {
     // UDS bind 同步落定：listen(path) 返回后 socket 文件即存在（cp-socket
     // 套件：紧随的同步 lstat 必须见 isSocket，不得 ENOENT 竞态）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -345,7 +345,7 @@ srv.on("error", (e) => console.log("srv-err", e.code));
 }
 
 #[test]
-fn phase10f_net_boundsocket_surface() {
+fn net_boundsocket_surface() {
     // 10f net 对拍：BoundSocket 校验族 + fd 真值 + adopt 失效 + EADDRINUSE 逐字形。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -393,7 +393,7 @@ srv.listen(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_net_server_attrs_finish() {
+fn net_server_attrs_finish() {
     // 10f net 对拍：sock.server 全等/getConnections/localFamily/bufferSize/finish/allowHalfOpen。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -435,7 +435,7 @@ server.on("error", (e) => console.log("srv-err", e.code));
 }
 
 #[test]
-fn phase10f_net_write_validation() {
+fn net_write_validation() {
     // 10f net 对拍：write(null)→ERR_STREAM_NULL_VALUES（cb 形走回调）；write(undefined)
     // →ERR_INVALID_ARG_TYPE（真机 26 逐项：仅 null 走 NULL_VALUES，undefined 落
     // chunk 校验，§4.65 翻转旧断言）；非法 chunk→ERR_INVALID_ARG_TYPE（chunk 文案+helper 形）；
@@ -477,7 +477,7 @@ srv.listen(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_net_listen_surface() {
+fn net_listen_surface() {
     // 10f net：listen("0") 数字字符串 = TCP 端口（真机 address 回 port；旧实现
     // 一律当 UDS 路径建出名为 "0" 的套接字文件，二次绑定 EADDRINUSE）+
     // listening 期间再 listen 同步抛 ERR_SERVER_ALREADY_LISTEN（真机文案逐字）+
@@ -533,7 +533,7 @@ import net from "node:net";
 }
 
 #[test]
-fn phase10f_net_socket_surface() {
+fn net_socket_surface() {
     // 10f net 五轮：Socket/Server 可观测表面（真机 26.8.2 逐项对拍）。
     // _handle 生命周期（构造 null/连接建柄/close 置空）+ close(hadError) +
     // pipe 最小回显 + TOS 校验 + keepAlive 四参/对象/ms→s/去重 + autoSelectFamily 存值 +
@@ -634,7 +634,7 @@ srv.listen(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_net_remote_surface() {
+fn net_remote_surface() {
     // 10f net 六轮：远端面发布时序（真机 26.8.2 对拍）——连接完成前 remote*
     // 全 undefined（非 null），完成后回填地址/端口/地址族；connect(addressObj) 形
     // 取 address 键作 host（ready-without-cb 套件）。
@@ -678,7 +678,7 @@ srv.listen(0, "127.0.0.1", () => {
 }
 
 #[test]
-fn phase10f_net_server_options_face() {
+fn net_server_options_face() {
     // 10f G2：server 选项面——pauseOnConnect（data 缓存到 resume，bytesRead 0）
     // + maxConnections=0 全拒 + 'drop' 五元组 + dropConnections + blockList 拒收
     // + close-during-listen 窗口 listening 回调永不触发。标签互不为子串（§4.42）。
@@ -746,7 +746,7 @@ setTimeout(() => process.exit(0), 2000);
 }
 
 #[test]
-fn phase11_net_halfopen_releases_loop() {
+fn net_halfopen_releases_loop() {
     // G11 半开案：服务端 destroy + close 后，allowHalfOpen 半开客户端不再续命
     //（真机同款：收 FIN 停转后空闲句柄不 ref 循环；修前进程 hang 致 TIMEOUT）。
     // 正常全关舞蹈不受影响（双侧 close 照常）；FIN 后写仍可用（write-cb ok）。

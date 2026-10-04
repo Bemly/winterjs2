@@ -173,7 +173,7 @@ pub fn fire_due(
 
         // 经 prelude `__wjs2_call(cb, args)` 展开实参（10a 修：此前直调
         // `fun(cb, args数组)`，定时器实参从未展开——旧用例全用闭包故未暴露；
-        // 复现 `tests/builtins.rs::phase10a_immediate_and_timeout_class`）。
+        // 复现 `tests/builtins.rs::immediate_and_timeout_class`）。
         // 10f起回调为 prelude 闭包（this=Timeout 实例/ALS 恢复在 JS 侧闭环），
         // 返回布尔 false 表示 interval 不再重排（node processTimers 门）。
         let call_fn_v = state::with_rooted(|s| s.call_fn.get());

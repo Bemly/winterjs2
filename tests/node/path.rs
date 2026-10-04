@@ -65,7 +65,7 @@ console.log("pnull", path.posix.toNamespacedPath(null));
 }
 
 #[test]
-fn phase10f_path_trailing_sep_boundary() {
+fn path_trailing_sep_boundary() {
     // 边界（真机 26.8.2 逐字节对码）：多尾分隔符全剥、后缀整吞回退、
     // UNC 设备前导双条保留、`//a` dirname 保 `//`、`..` 无 ext。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -105,7 +105,7 @@ console.log(JSON.stringify(out));
 }
 
 #[test]
-fn phase10f_path_posix_port() {
+fn path_posix_port() {
     // posix 直译真值表（真机 26.8.2 逐字节对码；resolve-cwd 走动态比对）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
@@ -155,7 +155,7 @@ catch (e) { console.log("THROW", e.name, e.code); }
 }
 
 #[test]
-fn phase10f_path_win32_port() {
+fn path_win32_port() {
     // win32 直译真值表（真机 26.8.2 逐字节对码；JS 内自比对，22 行全 ok）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
@@ -199,7 +199,7 @@ for (const [m, a] of [["parse", [null]], ["format", [""]], ["join", [1]], ["reso
 }
 
 #[test]
-fn phase10f_path_matches_glob() {
+fn path_matches_glob() {
     // matchesGlob（H 手写；真机 26.8.2 全量对拍：套件 20 + 探针 32 + 抛错 2）。
     // nocase 四项宿主相关（mac/win 真，其余假），JS 内按 platform 动态期望。
     let dir = assert_fs::TempDir::new().unwrap();

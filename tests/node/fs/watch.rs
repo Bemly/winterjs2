@@ -27,7 +27,7 @@ fn phase4_fs_watch_fires_and_closes() {
 }
 
 #[test]
-fn phase10f_fs_watch_ignore_and_relpath() {
+fn fs_watch_ignore_and_relpath() {
     // G8-1：ignore 全形态（string glob/RegExp/Function/混排 + 非法码）与
     // 递归 filename 相对路径（`subdir/file.txt`）+ `**` 目录忽略。
     // 正常：混排只放行 keep.txt；报错：123/''/[123]/[''] 四码；
@@ -107,7 +107,7 @@ setTimeout(() => { console.log("ignore-done"); process.exit(0); }, 4000);
 }
 
 #[test]
-fn phase10f_fs_watch_encoding_faces() {
+fn fs_watch_encoding_faces() {
     // G8-3：filename 按 options.encoding 转码（hex/buffer/缺省 utf8；null 直通）。
     // 正常：hex 串/Buffer/原文各就各位；边界：非法 encoding 即 ARG_VALUE。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -149,7 +149,7 @@ setTimeout(() => { console.log("enc-timeout"); process.exit(1); }, 6000);
 }
 
 #[test]
-fn phase10f_fs_promises_watch_surface() {
+fn fs_promises_watch_surface() {
     // G8-4：fs/promises.watch 异步迭代（{eventType, filename} + 校验 reject +
     // abort + break 后重迭代 noop）。
     // 正常：目录写即迭代到 rename/change + filename；报错：7 组校验逐项；
@@ -224,7 +224,7 @@ setTimeout(() => { console.log("watch-done"); process.exit(0); }, 3000);
 }
 
 #[test]
-fn phase10f_fs_watch_active_handles() {
+fn fs_watch_active_handles() {
     // G8-5：`process._getActiveHandles()` 存活 watch 句柄集（close 即摘）。
     // 正常：watch 后集内可见、close 后消失；边界：关两次幂等，集为空数组。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -269,7 +269,7 @@ setTimeout(() => { console.log("handles-done"); process.exit(0); }, 500);
 }
 
 #[test]
-fn phase10f_fs_watch_rapid_and_rewrite() {
+fn fs_watch_rapid_and_rewrite() {
     // G8-8：持续写不饿死（前沿即刷）+ Create 二判据（重写首事件 change，
     // 新文件首事件 rename）。
     // 正常：10ms 写循环下首个 foo.txt 事件 3s 内必达；预存文件重写首事件

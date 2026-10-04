@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10b_http_keepalive_reuse() {
+fn http_keepalive_reuse() {
     // 10b：keep-alive 复用——3 请求 1 连接，reusedSocket 可观测。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -57,7 +57,7 @@ setTimeout(() => console.log("end-ok"), 1000);
 }
 
 #[test]
-fn phase10b_http_chunked_stream() {
+fn http_chunked_stream() {
     // 10b：分块编码对拍 + for-await/pipe 流消费 + 上传流式。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -141,7 +141,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
-fn phase10b_http_destroy_midflight() {
+fn http_destroy_midflight() {
     // 10b：中途 destroy——客户端杀连接，服务端见 close，客户端无 end 有 close。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -194,7 +194,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
-fn phase10f_http_pipeline_upload_interrupt_and_dechunk() {
+fn http_pipeline_upload_interrupt_and_dechunk() {
     // 10f：上传中断（pipeline(req,res) + 客户端 11 块 chunked 上传 + 读 10 块后 destroy）。
     // 真机 11 次 data（Agent noDelay 默认 + 未连通缓冲逐帧刷出保分包）；合包即 hang（blk09）。
     // 另断言连通后逐写 11 块 → 服务端 11 次 data（分包回归）。
@@ -251,7 +251,7 @@ setTimeout(() => console.log("end-ok"), 3000);
 }
 
 #[test]
-fn phase10b_http_big_body() {
+fn http_big_body() {
     // 10b：大体压测（≥1MB 上下行；GC 压力回归 §4.40）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

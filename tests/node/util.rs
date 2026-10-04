@@ -150,7 +150,7 @@ try { parseEnv(42); } catch (e) { console.log("pe-t", e.code); }
 }
 
 #[test]
-fn phase10a_util_parse_args_mime_errno() {
+fn util_parse_args_mime_errno() {
     // 10a：parseArgs/MIMEType/getSystemError*（真机 26.8.2 探针结论转断言）。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("u10.mjs");
@@ -267,7 +267,7 @@ for (const [tag, fn] of [
 }
 
 #[test]
-fn phase10a_sys_alias() {
+fn sys_alias() {
     // 10a：`node:sys` 是 util 的废弃别名——import 与 require 同实例，无运行时警告。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("s.mjs");
@@ -305,7 +305,7 @@ console.log("same-cross", sysDefault === utilReq);
 }
 
 #[test]
-fn phase10f_util_getcallsites() {
+fn util_getcallsites() {
     // 10f：util.getCallSites（SM 栈解析；test/common mustNotCall 前置）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -330,7 +330,7 @@ console.log("methods", typeof sites[0].getFileName, typeof sites[0].getLineNumbe
 }
 
 #[test]
-fn phase10f_util_deep_separator_depth() {
+fn util_deep_separator_depth() {
     // 10f 套件点名修：skipPrototype 第三参 + 装箱槽判定 + numericSeparator + %s + depth。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -372,7 +372,7 @@ console.log("depth0", util.inspect({ a: [1] }, { depth: 0 }));
 }
 
 #[test]
-fn phase11_inspect_control_escapes() {
+fn inspect_control_escapes() {
     // P2-process R6 附带：inspect 控制字符转义与真机 meta 表一致
     //（\0 → \x00，\x07 → \x07，\v → \x0B，\x1b → \x1B；旧表误用 \0/\a/\v/\e）。
     let dir = assert_fs::TempDir::new().unwrap();

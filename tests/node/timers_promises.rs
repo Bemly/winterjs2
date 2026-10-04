@@ -60,7 +60,7 @@ console.log("default", typeof tp.setTimeout === "function", typeof tp.scheduler 
 // ── Phase 9c-1：fs 同步面增补（link 系/时间戳/权限/access/fd 系/cp/opendir）──
 
 #[test]
-fn phase10f_timers_promises_namespace_scheduler() {
+fn timers_promises_namespace_scheduler() {
     // 10f 对拍：CJS 双取同一对象（真机 `require(tp) === require(timers).promises`；
     // ESM namespace 恒带 default 键、与对象不等，真机同——黑盒按真机比法；
     // R2-iter 翻转：旧断言 `import * === .promises` 超真机严格，4.65）。

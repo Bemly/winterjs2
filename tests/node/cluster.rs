@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10e_cluster_fork_message_exit() {
+fn cluster_fork_message_exit() {
     // 主/子同文件：子端回消息→主端回信→子端断开→双边 exit，进程自然退出
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -50,7 +50,7 @@ if (cluster.isPrimary) {
 }
 
 #[test]
-fn phase10e_cluster_surface_errors() {
+fn cluster_surface_errors() {
     // 不 fork 的纯面：常量/策略/设置/Worker 类/错误形状（hermetic，子端不参与）
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

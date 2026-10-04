@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10f_http_parity_round1() {
+fn http_parity_round1() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -282,7 +282,7 @@ setTimeout(() => console.log("END"), 900);
 }
 
 #[test]
-fn phase11_http_socket_push_and_server_parse_errors() {
+fn http_socket_push_and_server_parse_errors() {
     // 基建轮 Slice A：Socket.push 可读侧注入 + 服务端 llhttp 解析错三件
     // （code/message/bytesParsed/rawPacket）+ TE+CL/重 CL 门 + 客户端数组头
     // 分行。正常（push 读写/null 收尾）+ 报错（overflow/method/TE/CL 四形）+
@@ -399,7 +399,7 @@ console.log("pushparse-done");
 }
 
 #[test]
-fn phase11_http_outgoing_writable_length_faces() {
+fn http_outgoing_writable_length_faces() {
     // 基建轮 Slice B1：ServerResponse.writableLength 精确字节（渲染头同步计 +
     // 帧化块同步计 + 落盘递减 + _final 兜底清零）。正常（131/139/finish 0/
     // standalone 累计）+ writeHead 先行形三件套。
@@ -479,7 +479,7 @@ console.log("wllen-done");
 }
 
 #[test]
-fn phase11_http_pipelined_outgoing_queue_faces() {
+fn http_pipelined_outgoing_queue_faces() {
     // 基建轮 Slice B2：eager-parse 管线队列（后继 res.socket null + 写停靠 +
     // 前响 finish 即 assignSocket 轮转 + drain 递延至落盘清零）。正常（null/
     // 回压/drain 零值/双体有序）三件套。
@@ -547,7 +547,7 @@ console.log("queuedone");
 }
 
 #[test]
-fn phase11_http_header_join_faces() {
+fn http_header_join_faces() {
     // 头合并面：joinDuplicateHeaders 缺省首个赢/true 即合并（单例表亦压过）、
     // cookie 恒 '; '（解析/双端 wire）、缺 Host 1.1 即静默 400。
     // 正常（缺省/合并/cookie）+ 报错（400）+ 边界（set-cookie 恒数组）三件套。
@@ -658,7 +658,7 @@ console.log("joindone");
 /// 构造器，无监听经 EE 落 uncaught（修前 err 被吞 → 套件
 /// test-http-createConnection TIMEOUT）。
 #[test]
-fn phase11_http_create_connection_error_routing() {
+fn http_create_connection_error_routing() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -700,7 +700,7 @@ setTimeout(() => { console.log("uncaught MISSING"); process.exit(1); }, 500);
 /// 自身 'error' 收同一对象。边界：socket 无用户 error 监听 → 裸杀静默
 /// （吞错口径，无 uncaught）。
 #[test]
-fn phase11_http_outgoing_capture_rejection_routing() {
+fn http_outgoing_capture_rejection_routing() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -787,7 +787,7 @@ await new Promise((resolve) => {
 /// （修前只看 conn !== 'close'，入池后被复用撞服务端单发语义 → 无响应
 /// 挂死）；池态 socket 收 EOF 即销毁摘池。六请求跑完即完成（修前 TIMEOUT）。
 #[test]
-fn phase11_http_should_keep_alive_matrix() {
+fn http_should_keep_alive_matrix() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -850,7 +850,7 @@ watchdog.unref();
 /// ② pause 转换沿：同一次暂停期不重复发。③ 慢消费：req._read 拉取即解
 /// 暂停续读，迟到 30ms 的消费仍收齐全部体。
 #[test]
-fn phase11_http_server_body_backpressure_flow() {
+fn http_server_body_backpressure_flow() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -937,7 +937,7 @@ await new Promise((resolve) => {
 /// 落回发 'resume'，泵不停读不中断）——停读+续喂耦合在"体一次性到齐"形
 /// 死锁（残段扣 fr.buf 等再喂而包不会再有，§4.206 坑二同源实录）。
 #[test]
-fn phase11_http_outgoing_flush_drain_no_deadlock() {
+fn http_outgoing_flush_drain_no_deadlock() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

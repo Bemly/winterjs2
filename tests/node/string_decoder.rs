@@ -70,7 +70,7 @@ try { new StringDecoder("utf8").write.call({ __wjs2Id: undefined }, Buffer.alloc
 }
 
 #[test]
-fn phase10f_string_decoder_suite_fixes() {
+fn string_decoder_suite_fixes() {
     // 10f 套件点名修：utf16 hold/配对/end 丢孤字节 + lastChar 4B + text() + base64url。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("s.mjs");

@@ -55,7 +55,7 @@ try { dc.subscribe("t-ch2", "nope"); } catch (e) { console.log("e2", e.message.i
 }
 
 #[test]
-fn phase10f_diagnostics_channel_parity_fixes() {
+fn diagnostics_channel_parity_fixes() {
     // 10f 对拍牵引回归（test-diagnostics-channel-* 套件门）：
     // 正常：订阅者抛错走 uncaughtException（非 unhandled rejection）/
     //   transform 抛错同路由/enterWith 进入 + withStoreScope 恢复；

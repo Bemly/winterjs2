@@ -441,7 +441,7 @@ b.on("exit", (c) => console.log("stdio-exit", c === 0, ended === 2, b.stdout.rea
 }
 
 #[test]
-fn phase10f_worker_error_shape_and_event_faces() {
+fn worker_error_shape_and_event_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -574,7 +574,7 @@ function run5() {
 }
 
 #[test]
-fn phase10f_worker_typed_view_and_sab_envelope() {
+fn worker_typed_view_and_sab_envelope() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -646,7 +646,7 @@ port1.close(); port2.close();
 }
 
 #[test]
-fn phase10f_worker_terminate_interrupt_busy_loop() {
+fn worker_terminate_interrupt_busy_loop() {
     // 10f：terminate 打断忙 JS 循环（interrupt 机制）——timer 回调内 while(true)、
     // 微任务自递归、nextTick 环、postMessage 洪泛、worker 内 busy 循环退出码 1
     // 且不发 error 事件。标签互不为子串（§4.42）：tmr-term/mt-term/tick-term/
@@ -731,7 +731,7 @@ import assert from "node:assert";
 }
 
 #[test]
-fn phase10f_worker_bc_surface_and_env_snapshot() {
+fn worker_bc_surface_and_env_snapshot() {
     // 10f：BroadcastChannel 校验面（name/postMessage 缺参边界、显式 undefined
     // 合法、Symbol 转换错、同步收信、inspect 形、ref/unref 品牌门）+ worker
     // env 快照隔离（子线程写不回主线程）+ threadId 退出后 -1。

@@ -238,7 +238,7 @@ try { getEventListeners(42, "a"); } catch (e) { console.log(e.code); }
 }
 
 #[test]
-fn phase10f_events_signal_listenercount() {
+fn events_signal_listenercount() {
     // 10f：once() 的 abort 接线对 listenerCount 可见（原生侧表；test-events-once 点名）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -262,7 +262,7 @@ console.log("after", listenerCount(ac.signal, "abort"), ee.listenerCount("error"
 }
 
 #[test]
-fn phase10f_events_max_listeners_target() {
+fn events_max_listeners_target() {
     // 10f：getMaxListeners(EventTarget) 回默认、AbortSignal 回 0（test-events-getmaxlisteners 点名）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

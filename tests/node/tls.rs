@@ -105,7 +105,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 // ── Phase 9d-7：node:http2 ────
 
 #[test]
-fn phase11_tls_x509_v1_certificates() {
+fn tls_x509_v1_certificates() {
     // P1（2026-09-25）：X.509 v1 证书（node fixtures agent* 同形，OpenSSL 照收、webpki 拒）——
     // 服务端出示 + 客户端经 ca 校验（v1 兜底：issuer 验签 + 有效期 + CN 主机名）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -149,7 +149,7 @@ server.listen(0, "127.0.0.1", () => {{
 }
 
 #[test]
-fn phase11_tls_socket_surface() {
+fn tls_socket_surface() {
     // P2（2026-09-25）：TLSSocket 建在 net.Socket 上（流面继承）+ 握手信息查询 + 顶层 API。
     let dir = assert_fs::TempDir::new().unwrap();
     let (cert_path, key_path) = write_self_signed(&dir);
@@ -207,7 +207,7 @@ console.log("nocert", tls.createServer({{}}) instanceof tls.Server);
 }
 
 #[test]
-fn phase11_tls_secure_context_validation() {
+fn tls_secure_context_validation() {
     // P2（2026-09-26）：SecureContext/createSecureContext/configSecureContext 按 node 逐字移植——
     // 选项校验、OpenSSL 可观察报错（未知方法 / no cipher match / 密钥不配对）、Server 构造器校验、
     // tls.Server 无 new 可调、rootCertificates 只读、setDefaultCACertificates 报错面。

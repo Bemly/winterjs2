@@ -131,7 +131,7 @@ try { p.send("x"); } catch (e) { console.log("send", e.code === "ERR_NOT_SUPPORT
 }
 
 #[test]
-fn phase10f_spawn_default_pipe_close_args() {
+fn spawn_default_pipe_close_args() {
     // 10f：spawn 缺省 stdio = pipe×3（node 口径——child.stderr 非 null 可
     // setEncoding/on('data')）；exit/close 事件 node 双参 (code, signal)，
     // 用户代码解构可收（§4.101）。正常+报错+边界。
@@ -184,7 +184,7 @@ await new Promise((r) => setTimeout(r, 200));
 }
 
 #[test]
-fn phase10f_child_spawn_abort_and_surface() {
+fn child_spawn_abort_and_surface() {
     // 10f：spawn/execFile AbortSignal 面（预中止/中止中/自定义 reason/abort
     // 后 error+exit 形）、spawn PATH 解析与 ENOENT error 事件、cwd file URL、
     // execvp 失败 close(-errno)。标签互不为子串（§4.42）。
@@ -272,7 +272,7 @@ setTimeout(() => process.exit(0), 500);
 }
 
 #[test]
-fn phase10f_child_constructor_spawn_method() {
+fn child_constructor_spawn_method() {
     // G5：`new ChildProcess().spawn(options)` 方法面（constructor 套件）+
     // kill 未知信号 ERR_UNKNOWN_SIGNAL + 成功 spawn 后 pid 自有属性。
     // 正常：sleep 起后 hasOwn(pid)/整数/kill() true；报错：四组校验逐项
@@ -344,7 +344,7 @@ console.log("kill", c.kill() === true);
 }
 
 #[test]
-fn phase10f_child_spawn_arg_validation() {
+fn child_spawn_arg_validation() {
     // spawn-typeerror 套件回归：spawn file/args/options/uid-gid 逐项 code +
     // execFile 位移 + fork 位移 + fork 子会话续命（无监听即退/有监听迟发可达）。
     let out = stdout_of(&mut winterjs2().args(["--eval",
@@ -424,7 +424,7 @@ setTimeout(() => console.log("done"), 2500);"#)]));
 }
 
 #[test]
-fn phase10f_child_kill_stdin_surface() {
+fn child_kill_stdin_surface() {
     // kill 套件回归：kill 即 SIGTERM + stdout/stderr end + kill(0) 只验活不杀 +
     // 父写 stdin/子回显（cat）+ 自家 stdout 逐次 flush（常驻不滞留）。
     let out = stdout_of(&mut winterjs2().args(["--eval",
@@ -467,7 +467,7 @@ console.log("bye", e.signalCode === "SIGTERM");"#]));
 }
 
 #[test]
-fn phase10f_child_stdin_backpressure() {
+fn child_stdin_backpressure() {
     // big-write-end 套件回归：stdin.write 持续写必回 false（16KB 高水位）+
     // drain 到达 + 全量按序回显 + end 关。
     let out = stdout_of(&mut winterjs2().args(["--eval",
@@ -502,7 +502,7 @@ console.log("closed", c.exitCode === 0);"#]));
 }
 
 #[test]
-fn phase10f_child_stdio_stream_handoff() {
+fn child_stdio_stream_handoff() {
     // pipe-dataflow/merge/reuse 套件回归：stdio 数组流对象转交（stdin 位读流
     // data/end 转入、stdout 位写流只转 data 不转 end）+ stdout._handle 桩。
     let out = stdout_of(&mut winterjs2().args(["--eval",

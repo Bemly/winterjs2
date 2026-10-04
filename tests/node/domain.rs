@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10e_domain_thin() {
+fn domain_thin() {
     let dir = assert_fs::TempDir::new().unwrap();
     const_probe(&dir);
     dir.close().unwrap();

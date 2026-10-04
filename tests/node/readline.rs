@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10c_readline_lines_history() {
+fn readline_lines_history() {
     // 行提交 + history（recent-first/去空去重/上限）+ question + prompt。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -48,7 +48,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn phase10c_readline_terminal_edit() {
+fn readline_terminal_edit() {
     // 终端编辑 Emacs 子集 + history + question + prompt 回显。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -118,7 +118,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn phase10c_readline_keypress_validate() {
+fn readline_keypress_validate() {
     // 按键形状 + 校验 + 迭代器 + pause/resume + 自关。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

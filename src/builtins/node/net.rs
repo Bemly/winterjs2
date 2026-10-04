@@ -152,7 +152,7 @@ pub use super::net_pumps::{
 /// 真机 macOS/Linux 均支持）。UNSAFE-BOUNDARY：libc socket FFI——前置条件：
 /// `socket()` 返回的 fd 由本函数独占管理（成功路径经 `FromRawFd` 接管为
 /// `TcpListener`，任一步失败即 `close(fd)` 回收后再返回）；setsockopt/bind/listen
-/// 参数全为栈上值、无别名。覆盖：`tests/node/net.rs::phase10f_net_validators_family`
+/// 参数全为栈上值、无别名。覆盖：`tests/node/net.rs::net_validators_family`
 /// reusePort 双绑 + 主流平台 setsockopt 恒成功（macOS/Linux ≥3.9）。
 #[cfg(unix)]
 pub(crate) fn bind_tcp_reuseport(addr_str: &str) -> std::io::Result<std::net::TcpListener> {

@@ -518,7 +518,7 @@ pub unsafe extern "C" fn vm_keys_all(
 /// 目标 global 自有键计数快照（仅调试/探针用；`{"strings": [...], "symbols": n}` JSON 回传，
 /// symbol 只计数——跨 realm 无字符串身份，存在性由计数断言）。
 /// `__wjs2_vm_keys_count(id)` → `'{"strings":[...],"symbols":0}'`。
-/// UNSAFE-BOUNDARY: 前置同 `vm_keys`；枚举经 `own_keys_json` 同源（覆盖测试 `phase10f_vm_sync_all_keys`）。
+/// UNSAFE-BOUNDARY: 前置同 `vm_keys`；枚举经 `own_keys_json` 同源（覆盖测试 `vm_sync_all_keys`）。
 pub unsafe extern "C" fn vm_keys_count(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -571,7 +571,7 @@ pub unsafe extern "C" fn vm_keys_count(
 
 /// 跨 compartment SameValue 比较（sync-out 快照比较用；`__wjs2_vm_same(a, b)` → boolean）。
 /// UNSAFE-BOUNDARY: 前置——cx 在 realm 内；a/b 由 Frame rooted 后传入（§4.80）。
-/// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_snapshot`。
+/// 覆盖：`tests/node/vm.rs::vm_sync_snapshot`。
 pub unsafe extern "C" fn vm_same(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

@@ -21,7 +21,7 @@ fn phase4_node_test_runner() {
 }
 
 #[test]
-fn phase10f_test_suite_alias_and_ctx() {
+fn test_suite_alias_and_ctx() {
     // suite 别名 + SuiteContext 回调 + fullName 嵌套 + t.test 子测试。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
@@ -37,7 +37,7 @@ fn phase10f_test_suite_alias_and_ctx() {
 }
 
 #[test]
-fn phase10f_test_t_assert_and_register() {
+fn test_t_assert_and_register() {
     // t.assert 全键 + ok 源码行 + assert.register 自定义（含覆盖与 this)。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
@@ -53,7 +53,7 @@ fn phase10f_test_t_assert_and_register() {
 }
 
 #[test]
-fn phase10f_test_options_tags_plan_waitfor() {
+fn test_options_tags_plan_waitfor() {
     // options 归一（name/fn 覆盖、单 options 形）+ 超时/并发校验 + tags 继承 +
     // plan 计数 + waitFor 轮询 + getTestContext。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -70,7 +70,7 @@ fn phase10f_test_options_tags_plan_waitfor() {
 }
 
 #[test]
-fn phase10f_test_skip_todo_after_hook() {
+fn test_skip_todo_after_hook() {
     // 运行时 skip/todo + 测试级 after（含零子测试）+ plan 失配 fail。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
@@ -91,7 +91,7 @@ fn phase10f_test_skip_todo_after_hook() {
 }
 
 #[test]
-fn phase10f_test_mock_fn_and_method() {
+fn test_mock_fn_and_method() {
     // mock.fn 调用记录/覆盖实现/复原 + mock.method 间谍/复原 + 自动复原。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
@@ -107,7 +107,7 @@ fn phase10f_test_mock_fn_and_method() {
 }
 
 #[test]
-fn phase10f_test_mock_timers_date() {
+fn test_mock_timers_date() {
     // mock.timers Date 面：替换/推进/复原 + 未启用门。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
@@ -123,7 +123,7 @@ fn phase10f_test_mock_timers_date() {
 }
 
 #[test]
-fn phase10f_test_mock_timers_scheduler() {
+fn test_mock_timers_scheduler() {
     // mock.timers scheduler.wait 面：tick 推进落定 + 中止拒绝。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
@@ -139,7 +139,7 @@ fn phase10f_test_mock_timers_scheduler() {
 }
 
 #[test]
-fn phase10f_test_run_none_and_plan_gates() {
+fn test_run_none_and_plan_gates() {
     // run({isolation:"none"}) 文件加载 + 事件配对 + plan 校验门。
     let dir = assert_fs::TempDir::new().unwrap();
     let probe = dir.child("probe.test.mjs");
@@ -160,7 +160,7 @@ fn phase10f_test_run_none_and_plan_gates() {
 }
 
 #[test]
-fn phase10f_test_run_process_and_expect_failure() {
+fn test_run_process_and_expect_failure() {
     // run({isolation:"process"}) worker 传输 + expectFailure 布尔反转。
     let dir = assert_fs::TempDir::new().unwrap();
     let probe = dir.child("probe.test.mjs");
@@ -181,7 +181,7 @@ fn phase10f_test_run_process_and_expect_failure() {
 }
 
 #[test]
-fn phase10f_test_run_semantics_timeout_plan_wait() {
+fn test_run_semantics_timeout_plan_wait() {
     // 超时失败 + plan wait 语义（快时钟）。
     let dir = assert_fs::TempDir::new().unwrap();
     let probe = dir.child("probe.test.mjs");
@@ -203,7 +203,7 @@ fn phase10f_test_run_semantics_timeout_plan_wait() {
 }
 
 #[test]
-fn phase10f_test_run_tag_filter_and_randomize() {
+fn test_run_tag_filter_and_randomize() {
     // 标签过滤 + 随机种子顺序。
     let dir = assert_fs::TempDir::new().unwrap();
     let probe_src = "import { test, describe } from \"node:test\";\ndescribe(\"g\", { tags: [\"db\"] }, () => {\n  test(\"t1\", () => {});\n  test(\"t2\", { tags: [\"x\"] }, () => {});\n});\ntest(\"plain\", () => {});\ntest(\"parent\", (t) => {\n  t.test(\"a\", () => {});\n  t.test(\"b\", () => {});\n  t.test(\"c\", () => {});\n});\n";
@@ -225,7 +225,7 @@ fn phase10f_test_run_tag_filter_and_randomize() {
 }
 
 #[test]
-fn phase10f_test_mock_property_and_top() {
+fn test_mock_property_and_top() {
     // mock.property 访问记录/复原 + 顶层 mock + 校验报错两件。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.cjs");

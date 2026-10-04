@@ -432,7 +432,7 @@ fn ca_certs_json(kind: &str) -> String {
 
 /// `__wjs2_tls_ca_certs(kind)` → PEM 数组 JSON 串。
 ///
-/// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效；覆盖测试——`tests/node/tls.rs::phase11_tls_socket_surface`。
+/// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效；覆盖测试——`tests/node/tls.rs::tls_socket_surface`。
 pub unsafe extern "C" fn tls_ca_certs(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

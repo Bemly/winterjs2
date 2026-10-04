@@ -506,7 +506,7 @@ pub unsafe extern "C" fn ec_import_pub(
 /// 压缩/混合 SEC1 点导入——轮子内解压 + 上曲线校验；非法即 `DataError`。
 /// UNSAFE-BOUNDARY: 前置 = 同文件既有 ec 系 natives（`wrap_cx` + `Frame::from_raw`
 /// 边界块；`view_bytes` 越界断言）；覆盖 = `tests/node/crypto.rs`
-/// `phase10f_crypto_raw_seed_parity` 的 `r5-ec-compressed-*` 行（正常/坏点/错长）。
+/// `crypto_raw_seed_parity` 的 `r5-ec-compressed-*` 行（正常/坏点/错长）。
 pub unsafe extern "C" fn ec_import_compressed(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

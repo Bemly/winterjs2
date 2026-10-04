@@ -248,7 +248,7 @@ console.log("filemod", typeof buffer.File);
 }
 
 #[test]
-fn phase10f_buffer_parity_fixes() {
+fn buffer_parity_fixes() {
     // 10f buffer 对拍牵引的回归（test-buffer-* 套件门）：
     // 正常：伪 AB 品牌拒收/真 AB 直通/transfer detach 后 isAscii 真/池共享/
     //   INSPECT_MAX_BYTES 具名 50/Uint8Array 子类化透传；

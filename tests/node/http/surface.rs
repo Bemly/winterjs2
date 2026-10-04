@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase10g_http_chunk_ext_and_trailer_limits() {
+fn http_chunk_ext_and_trailer_limits() {
     // 欠账 G3：chunk 扩展限深 + trailer 计数（llhttp 计数语义，真机 26.8.2
     // 逐项实测定标）。正常（16384 恰好过/换 chunk 清零）+ 报错（413/431/400
     // 精确字节）+ 边界（分包累计 16385 拒、16384 过）三件套。
@@ -89,7 +89,7 @@ console.log("limits-done");
 }
 
 #[test]
-fn phase10g_http_ipc_socket_path() {
+fn http_ipc_socket_path() {
     // 欠账 G3：ClientRequest 的 IPC 形（options.socketPath → UDS；node
     // lib/_http_client.js 口径：req.socketPath 自有属性、池键
     // 'localhost:::<path>' 槽）。正常（回环 200）+ 报错（ENOENT）+ 边界
@@ -174,7 +174,7 @@ setTimeout(() => console.log("ipc-done"), 400);
 }
 
 #[test]
-fn phase10g_http_timeout_agent_surface() {
+fn http_timeout_agent_surface() {
     // 欠账 G3：Agent({timeout})/req timeout 双级 + createSocket cb 错误 +
     // defaultPort 逐级（真机 26.8.2 逐项实测定标）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -285,7 +285,7 @@ setTimeout(() => console.log("tmo-done"), 700);
 }
 
 #[test]
-fn phase10g_http_validation_gates() {
+fn http_validation_gates() {
     // 欠账 G3：校验长尾（真机 26.8.2 逐项对拍——错误码/名/消息原文）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -435,7 +435,7 @@ setTimeout(() => console.log("gates-done"), 500);
 }
 
 #[test]
-fn phase10g_http_parser_strict_client() {
+fn http_parser_strict_client() {
     // 欠账 G3：客户端响应严格门（llhttp strict；真机 26.8.2 对拍）——TE+CL 并存
     // HPE_INVALID_TRANSFER_ENCODING、裸 CR HPE_LF_EXPECTED，response 回调不得触发。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -480,7 +480,7 @@ console.log("strict-done");
 }
 
 #[test]
-fn phase11_http_header_face_batch5() {
+fn http_header_face_batch5() {
     // 头面 batch5（真机 26.8.2 逐项对拍）：数字头名 HTTP_TOKEN（"3840" 本身合法
     // token 故须 typeof 先判）+ 奇长 writeHead 数组 ARG_VALUE + 已发头再 write
     // 即 HEADERS_SENT + writeHead 覆写拼写 + 220 短语 unknown + 数组同键双行 +
@@ -653,7 +653,7 @@ console.log("batch5-done");
 }
 
 #[test]
-fn phase11_http_timeout_deep_host_auth_connect() {
+fn http_timeout_deep_host_auth_connect() {
     // TIMEOUT 深水第一铲（真机 26.8.2 逐项对拍）：url.parse 对象 hostname 优先
     // （host 含端口不再当主机名）+ options.auth 补 Basic（显式 Authorization
     // 恒赢）+ CONNECT authority-form（请求行不补斜杠、Host 取 path 本体）+
@@ -767,7 +767,7 @@ console.log("deep1-done");
 }
 
 #[test]
-fn phase11_http_server_options_surface() {
+fn http_server_options_surface() {
     // TIMEOUT 深水第二铲：server IncomingMessage/ServerResponse 自定义类 +
     // 请求级 createConnection 透传 + socket/res HWM 对齐（真机逐项实测）。
     // 正常 + 边界（子类方法/无参 res 形/HWM 定制）件。
@@ -850,7 +850,7 @@ console.log("srvopt-done");
 }
 
 #[test]
-fn phase11_http_invalid_char_key() {
+fn http_invalid_char_key() {
     // splitting 套件：头值非法字符报错带 ["key"] 后缀（set/append/writeHead
     // 三路；无键走裸文案）。正常（合法值过）+ 报错三件。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -896,7 +896,7 @@ console.log("charkey-done");
 }
 
 #[test]
-fn phase11_http_response_gates() {
+fn http_response_gates() {
     // response 面：write-after-end（error 发射 + 回 false，不毒化在途终结块）
     // + writeHead 状态码门（13 形态：`|0` 后判、错抛原值 `%s` 遇对象走 inspect）。
     // 正常 + 报错 + 边界三件。

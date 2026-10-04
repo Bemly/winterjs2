@@ -274,7 +274,7 @@ fn dispatch_head(
 /// `__wjs2_serve_head(id, metaJson)`：投递响应头。幂等：未知 id（过期响应）
 /// 静默成功；非法状态即 500 短路（含头+空体），调用方无需再推。
 /// UNSAFE-BOUNDARY：引擎回调帧 + 会话 env；裸指针只在 realm 内解引用；
-/// 覆盖测试：`tests/serve.rs::phase11_serve_dynamic_*`（head 非法/重复终结行）。
+/// 覆盖测试：`tests/serve.rs::serve_dynamic_*`（head 非法/重复终结行）。
 pub unsafe extern "C" fn serve_head(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -487,7 +487,7 @@ pub fn serve_ws_take(
 
 /// `__wjs2_serve_ws_create(serveId)` → wsId：分配 ws 表项 + 发送端并挂靠。
 /// 工厂（`__wjs2_serve_socket`）调用；101 前未配对由 decline/fail 回收。
-/// UNSAFE-BOUNDARY：引擎回调帧 + 会话 env；覆盖测试：`tests/serve.rs::phase11_serve_ws_echo`。
+/// UNSAFE-BOUNDARY：引擎回调帧 + 会话 env；覆盖测试：`tests/serve.rs::serve_ws_echo`。
 pub unsafe extern "C" fn serve_ws_create(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

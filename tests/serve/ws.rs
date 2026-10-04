@@ -4,7 +4,7 @@ use assert_fs::prelude::*;
 use super::helpers::*;
 
 #[test]
-fn phase11_serve_ws_echo() {
+fn serve_ws_echo() {
     // 正常：WS 回声经 JS onmessage（文本 + 二进制）+ 干净关闭握手；随后 HTTP 照常。
     use futures::{SinkExt as _, StreamExt as _};
     let dir = serve_fixture();
@@ -57,7 +57,7 @@ fn phase11_serve_ws_echo() {
 }
 
 #[test]
-fn phase11_serve_ws_bad_handshake() {
+fn serve_ws_bad_handshake() {
     // 报错：缺 key / 错版本 / 非 GET 升级即 400（不进 JS）。
     // 正常：非 WS 的 Upgrade 头（h2c）零干扰，走普通 HTTP。
     let dir = serve_fixture();
@@ -90,7 +90,7 @@ fn phase11_serve_ws_bad_handshake() {
 }
 
 #[test]
-fn phase11_serve_ws_static_first() {
+fn serve_ws_static_first() {
     // 路由序：已存在静态文件路径的升级仍优先进 WS（`/` 有 index.html，照返 101）。
     let dir = serve_fixture();
     dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();

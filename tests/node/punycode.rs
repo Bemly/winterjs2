@@ -40,7 +40,7 @@ try { punycode.decode("!!!!!"); } catch (e) { console.log("err", e instanceof Ra
 }
 
 #[test]
-fn phase10f_punycode_dep0040_warning() {
+fn punycode_dep0040_warning() {
     // 10f：require('punycode') 发 DEP0040（test-punycode.js 点名；url 改懒加载不断链）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

@@ -113,7 +113,7 @@ c.on("exit", (code) => console.log("EXIT-EV", code !== 0, c.exitCode !== 0, c.ki
 }
 
 #[test]
-fn phase10f_child_stdin_legacy_and_fork_silent() {
+fn child_stdin_legacy_and_fork_silent() {
     // 10f：stdin legacy Writable 面（write/end/writable/readable）、fork
     // silent 管形流（pipe 可用）、fork abort 合成 exit(null, killSignal)、
     // exec maxBuffer 截断 RangeError。标签互不为子串（§4.42）。
@@ -197,7 +197,7 @@ const self = process.execPath;
 }
 
 #[test]
-fn phase10f_entry_failure_open_handle_exit() {
+fn entry_failure_open_handle_exit() {
     // §4.70 姊妹（10f 根修）：入口失败（throw / 未处理 rejection）+ 开着的子进程
     // 句柄 = 事件循环永不 idle、循环尾收割永不到的 hang。修后 fatal 检查点提前
     // 跳出：eval 包装路径经 entry reactions 重抛挂载；模块路径经 unhandled 表
@@ -240,7 +240,7 @@ Promise.reject(new Error("mod-rej-handle"));
 }
 
 #[test]
-fn phase10f_fork_nonsilent_stdio_null() {
+fn fork_nonsilent_stdio_null() {
     // 真机 26 逐项：fork 非 silent（stdio 继承）`c.stdout/stderr/stdin === null`
     // 三面（10f 起恢复——silent 才挂管形流；旧构造器 null 缺省被流式面覆盖丢失）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -257,7 +257,7 @@ c.disconnect();"#)]));
 }
 
 #[test]
-fn phase10f_child_fork_env_and_internal() {
+fn child_fork_env_and_internal() {
     // fork env 透传（旧忽略致子复走父分支指数 fork）+ NODE_ 前缀 internalMessage 分流。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("env-child.mjs")

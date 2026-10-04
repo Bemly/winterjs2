@@ -143,7 +143,7 @@ pub fn get_prop_value(cx: &mut JSContext, obj: *mut JSObject, name: &CStr) -> Op
 
 /// UNSAFE-BOUNDARY: 写对象属性值（赋值语义；失败 false，pending 由调用方处理）。
 /// 前置：cx 在 realm 内；obj 为有效对象；val 为 rooted 值。
-/// 覆盖：`tests/node/vm.rs::phase10c_vm_rerun_with_new_globals`（经 vm sync-in 回落）。
+/// 覆盖：`tests/node/vm.rs::vm_rerun_with_new_globals`（经 vm sync-in 回落）。
 pub fn set_prop_value(cx: &mut JSContext, obj: *mut JSObject, name: &CStr, val: JSVal) -> bool {
     rooted!(&in(cx) let v = val);
     // SAFETY: cx 为有效 wrapper；标记位置指针直拷；raw 调用不触发 GC
@@ -321,7 +321,7 @@ pub fn pending_exception_error(
 /// UNSAFE-BOUNDARY: 取走当前 pending exception（JS_GetPendingException 语义：
 /// 成功取走即清除 pending）。前置：cx 在 realm 内；刚一次失败的 JSAPI 调用；
 /// 取出的值必须 rooted 后再用于后续 JS 调用（§4.80 链式调用铁律）。
-/// 覆盖：`tests/node/timers.rs::phase10f_timer_uncaught_routing`（有监听分发）
+/// 覆盖：`tests/node/timers.rs::timer_uncaught_routing`（有监听分发）
 /// 与无监听 fatal 路径（探针保证不进本函数）。
 pub fn take_pending_exception(cx: &mut JSContext) -> Option<JSVal> {
     rooted!(&in(cx) let mut val = UndefinedValue());
@@ -334,7 +334,7 @@ pub fn take_pending_exception(cx: &mut JSContext) -> Option<JSVal> {
 /// （node 口径 NodeError 为 `super()` 后 defineProperty 设 message，引擎内部
 /// message 槽为空——修前入口报错恒 `Error: file:L:C: ` 空文案）。
 /// UNSAFE-BOUNDARY：经 `get_prop_string` 只读；exc 须已 rooted（调用方槽位 `.get()`）。
-/// 覆盖：`tests/node/require.rs::phase11_require_rethrows_original_exception`。
+/// 覆盖：`tests/node/require.rs::require_rethrows_original_exception`。
 pub fn fill_message(
     cx: &mut JSContext,
     info: Option<mozjs::rust::ErrorInfo>,
@@ -359,7 +359,7 @@ pub fn fill_message(
 }
 
 /// UNSAFE-BOUNDARY: 是否有 pending exception（JS_IsExceptionPending 只读位，无副作用）。
-/// 前置：cx 有效。覆盖：`tests/node/require.rs::phase11_require_rethrows_original_exception`。
+/// 前置：cx 有效。覆盖：`tests/node/require.rs::require_rethrows_original_exception`。
 pub fn exception_pending(cx: &mut JSContext) -> bool {
     // SAFETY: cx 有效；只读 pending 位
     unsafe { mozjs::jsapi::JS_IsExceptionPending(cx.raw_cx()) }
@@ -454,7 +454,7 @@ pub fn call_one(
 /// 展开实参；native 内禁 `Rooted<ValueArray>`，§4.9）。
 /// 前置：cx 在 realm 内；fun 为可调用；调用后 pending exception 由调用方处理。
 /// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_data_and_file`（经 fetch deliver）、
-/// `tests/builtins.rs::phase10a_immediate_and_timeout_class`（经 timer fire）。
+/// `tests/builtins.rs::immediate_and_timeout_class`（经 timer fire）。
 pub fn call_two(
     cx: &mut JSContext,
     global: *mut JSObject,
@@ -566,7 +566,7 @@ pub fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
 /// 以 JSON 数组回传（字符串键为 JSON 串、symbol 键为 `{"__wjs2_symbol":true}` 占位；
 /// 空对象回 `"[]"`）。占位无跨 realm 身份，调用方只做存在性/计数口径。
 /// 前置：cx 在 obj 所属 realm 内；obj 为有效对象；调用后 pending 由调用方处理。
-/// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_all_keys`（经 vm sync-out/创建快照）。
+/// 覆盖：`tests/node/vm.rs::vm_sync_all_keys`（经 vm sync-out/创建快照）。
 pub fn own_keys_json(cx: &mut JSContext, obj: *mut JSObject) -> Option<String> {
     use mozjs::rust::IdVector;
     // SAFETY: realm 内；obj 有效；IdVector 为 rooted 槽（§4.40 定址纪律同源）
@@ -617,7 +617,7 @@ pub fn own_keys_json(cx: &mut JSContext, obj: *mut JSObject) -> Option<String> {
 /// UNSAFE-BOUNDARY: 跨 compartment SameValue 比较（`JS::SameValue` 语义：NaN 自等，
 /// +0/-0 不等；CCW 参数由引擎自动解包比对底层身份）。
 /// 前置：cx 在 realm 内；a/b 为 rooted 值（调用方 rooted 后传入 §4.80）。
-/// 覆盖：`tests/node/vm.rs::phase10f_vm_sync_snapshot`（经 vm sync-out 快照比较）。
+/// 覆盖：`tests/node/vm.rs::vm_sync_snapshot`（经 vm sync-out 快照比较）。
 pub fn same_value(cx: &mut JSContext, a: JSVal, b: JSVal) -> Option<bool> {
     rooted!(&in(cx) let a_root = a);
     rooted!(&in(cx) let b_root = b);

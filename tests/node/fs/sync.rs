@@ -250,7 +250,7 @@ setTimeout(() => console.log("end-ok"), 50);
 // ── Phase 9d-1：node:net TCP 回环（hermetic，port 0 避冲突）─────────────────
 
 #[test]
-fn phase10f_mkdtemp_disposable_sync_cjs_export() {
+fn mkdtemp_disposable_sync_cjs_export() {
     // node 26 双名都在：`require('fs').mkdtempDisposableSync` 具名（套件点名）
     // 与 `mkdtempDisposable` 别名并存；返回 {path, remove} 且二次 remove 不抛。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -277,7 +277,7 @@ console.log("twice-remove-ok");
 }
 
 #[test]
-fn phase10f_file_handle_read_empty() {
+fn file_handle_read_empty() {
     // 空 buffer + 零长读合法（length===0 先于空检查，node 序）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

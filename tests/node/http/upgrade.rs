@@ -8,7 +8,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase11_http_upgrade_faces() {
+fn http_upgrade_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

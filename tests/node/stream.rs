@@ -307,7 +307,7 @@ try { await consumers.json(Readable.from(["nope"])); } catch (e) { console.log("
 // ── Phase 9b-5：node:timers/promises ────────────────────────────────────────
 
 #[test]
-fn phase10f_stream_parity_tick_scheduler_and_fs_readstream() {
+fn stream_parity_tick_scheduler_and_fs_readstream() {
     // 10f stream 对拍收口面：nextTick 原生队列（实参展开/uncaughtException
     // 路由/微任务期入队 tick 恒后于整轮微任务——V8 checkpoint 原子性）、
     // compose post-loop throw 经管线 reject、fs.ReadStream 事件序、stdout
@@ -399,7 +399,7 @@ process.nextTick(() => { throw new Error("tickboom"); });
 }
 
 #[test]
-fn phase11_stream_r1_eos_hooks_faces() {
+fn stream_r1_eos_hooks_faces() {
     // P2-stream R1：eos 三套件 + 连字符回落 + tty_wrap（node 原文口径）。
     // 正常：finished 回调触发；AsyncResource 构造触发 init（STREAM_END_OF_STREAM
     //   上下文传播）；enable 后 enabledHooksExist 真。
@@ -463,7 +463,7 @@ console.log("hyphen-aas", ok);
 }
 
 #[test]
-fn phase11_stream_r2_iter_faces() {
+fn stream_r2_iter_faces() {
     // P2-stream R2：`stream/iter` 门控面（node 原文口径）。
     // 正常（旗开）：push/write/end + text() 回环；Stream 命名空间冻结 + 工厂齐备；
     //   fromSync 跨 realm 按结构收（internal/types 口径）。
@@ -516,7 +516,7 @@ console.log("err-variant", new E.ERR_INVALID_STATE.TypeError("x").code === "ERR_
 }
 
 #[test]
-fn phase11_stream_r3_shim_faces() {
+fn stream_r3_shim_faces() {
     // P2-stream R3：zlib 句柄 shim + Web 锁码 + 同批单 tick（node 原文口径）。
     // 正常：gzip 回环（缓冲式 shim 经同步引擎）；同 cb 百写仅一次 TickObject。
     // 报错：web 锁错带 ERR_INVALID_STATE；TextDecoder 非源带 ERR_INVALID_ARG_TYPE。

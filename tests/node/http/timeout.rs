@@ -9,7 +9,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase11_http_client_request_timeout_faces() {
+fn http_client_request_timeout_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -259,7 +259,7 @@ console.log("END");
 }
 
 #[test]
-fn phase11_http_abort_faces() {
+fn http_abort_faces() {
     // abort 级联：客户端 abort → 双侧 aborted + ECONNRESET；服务端无 error
     // 监听时仅 aborted（不抛）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -334,7 +334,7 @@ console.log("END");
 }
 
 #[test]
-fn phase11_http_outgoing_faces() {
+fn http_outgoing_faces() {
     // G11 流出面：背压有限循环 + 重复 end 语义 + 抛错不毒化 + capture 透传。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -426,7 +426,7 @@ console.log("END");
 }
 
 #[test]
-fn phase11_http_pipeline_and_limits_faces() {
+fn http_pipeline_and_limits_faces() {
     // G11 管线面：前导空行多连发 + 残缺头 408 + maxRequests 503 + 毁后写丢弃。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -550,7 +550,7 @@ console.log("END");
 }
 
 #[test]
-fn phase11_http_cork_faces() {
+fn http_cork_faces() {
     // cork/uncork 面（response-cork / response-drain-cork / outgoing-end-cork
     // 三套件形态）：镜像计数（res.writableCorked === res.socket.writableCorked）
     // + corked 期间 socket.write 不被调（字节滞留，uncork/end 排空）+
@@ -656,7 +656,7 @@ console.log("cork-done");
 }
 
 #[test]
-fn phase11_http_uncaught_throws() {
+fn http_uncaught_throws() {
     // 用户回调 throw 路由（uncaught-from-request-callback 套件 + handler-throw
     // 真机 crash 口径）：客户端 response 监听 throw 与服务端 request handler
     // throw 均须到 uncaughtException（原文 message），不吞、不 hang、不进

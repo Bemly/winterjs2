@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase10f_fs_write_flush_option() {
+fn fs_write_flush_option() {
     // G8-7：write/append/stream 的 `flush` 选项（布尔校验 + true 即 fsync 落盘）。
     // 正常：flush:true 写后内容可读（sync/callback/stream 三面）；
     // 报错：7 种非法值逐项 ARG_TYPE；边界：flush:false 与缺省等价。
@@ -98,7 +98,7 @@ console.log("fs-stream-ok");
 }
 
 #[test]
-fn phase10f_fs_cp_validation_and_stream_opts() {
+fn fs_cp_validation_and_stream_opts() {
     // cp 校验族（validateCpOptions 逐字）+ 流构造器 getOptions/病 fd path。
     // 对拍：test-fs-cp-sync-mode-invalid/options-invalid-type/incompatible/
     // src-dest-identical/copy-directory-without-recursive + write-stream-throw-type-error/read-stream-fd。
@@ -174,7 +174,7 @@ fs.closeSync(fd);
 }
 
 #[test]
-fn phase10f_fs_stream_lifetime() {
+fn fs_stream_lifetime() {
     // fs 流续命（__wjs2_fs_stream_ref/unref + idle 门）：裸 end() 后挂监听仍收
     // finish/close；只构造不用的流不续命（进程正常退出）；close 双调只释一次。
     // UNSAFE-BOUNDARY(fs_stream_ref/unref) 覆盖：饱和减无 panic 路径。
@@ -214,7 +214,7 @@ import fs from "node:fs";
 }
 
 #[test]
-fn phase10f_read_stream_live_follow() {
+fn read_stream_live_follow() {
     // 2026-09-26 按真机 26.8.2 翻转：旧断言"短读不断流"是旧实现 live-follow 特判，
     // node 读到 EOF（bytesRead 0）即 push(null) 落定——边写边读也照样 end（真机输出
     // `live false true false`，shorts/cur 随时序浮动不断言）。read-pos 套件的"跟随"
@@ -267,7 +267,7 @@ fs.writeFileSync("g.txt", "0123456789");
 }
 
 #[test]
-fn phase10f_cp_async_filter() {
+fn cp_async_filter() {
     // async-filter 套件回归：异步 cp 逐项 await filter（含子目录递归），
     // 同步校验（mode/options）仍同步抛；cpSync 拒 async filter 不变。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -303,7 +303,7 @@ catch (e) { console.log("async-mode-sync-throw", e.code); }
 }
 
 #[test]
-fn phase10f_read_stream_offsets_and_props() {
+fn read_stream_offsets_and_props() {
     // start/end 校验 + start/end 暴露 + 缺失文件异步 error + fd 复用定位读。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -378,7 +378,7 @@ await new Promise((res) => {
 }
 
 #[test]
-fn phase10f_read_write_stream_encoding() {
+fn read_write_stream_encoding() {
     // 编码流：base64 读→pipe→base64 写→finish→latin1 读验整块。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -424,7 +424,7 @@ await new Promise((res) => {
 }
 
 #[test]
-fn phase10f_read_stream_fifo_end() {
+fn read_stream_fifo_end() {
     // fifo + end:1：写者先行时 open 即会合（双 open 死锁回归——__doOpen 经已开 fd 读）。
     // 无 mkfifo 即跳过（windows 记档）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -457,7 +457,7 @@ else {
 }
 
 #[test]
-fn phase11_fs_streams_node_port() {
+fn fs_streams_node_port() {
     // 2026-09-26：fs 流按 node lib/internal/fs/streams.js 逐字移植——读写关经 `this[kFs]`
     // （缺省 = node:fs 默认导出，mock 可见；options.fs 自定义）；destroy(err) 先 error 后 close；
     // 读流跟随追加（fs 回调在后续轮次送达，定时器可插入两次读之间）。

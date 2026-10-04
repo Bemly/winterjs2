@@ -169,7 +169,7 @@ console.log("stored", gunzipSync(gzipSync(big, { level: 0 })).toString() === big
 }
 
 #[test]
-fn phase10a_zlib_crc32() {
+fn zlib_crc32() {
     // 10a：crc32（ISO-HDLC；真机值对拍：空串/链式/双报错）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -202,7 +202,7 @@ try { crc32("a", "x"); } catch (e) { console.log("t-value", e.code, e.message); 
 }
 
 #[test]
-fn phase10f_zlib_stream_teardown() {
+fn zlib_stream_teardown() {
     // 10f zlib 流收尾与内部小面（真机 26.8.2 对拍）：_handle/_closed 生命周期、
     // _processChunk（含 _outOffset 越界门）、空输入 flush 尺寸（20/1/9）、
     // flush kind 逐族校验、reset 分发中/已关闭双形、ZSTD_e_* 常量。
@@ -270,7 +270,7 @@ console.log("zstd-const", z.constants.ZSTD_e_continue === 0, z.constants.ZSTD_e_
 }
 
 #[test]
-fn phase10f_zlib_flush_opts() {
+fn zlib_flush_opts() {
     // 10f zlibFlush 选项校验（真机逐字）：flush/finishFlush/fullFlush 三键
     // 构造期校验；另覆盖 write 后 close 即关（close-after-write 套件同形）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -313,7 +313,7 @@ z.gzip("hello", (err, out) => {
 }
 
 #[test]
-fn phase10f_zlib_zip_archive() {
+fn zlib_zip_archive() {
     // 10f zlib Zip归档面（node lib/internal/zip逐字移植）：round-trip/store回落/
     // ZipBuffer索引/maxSize与CRC门/坏档形状。正常+报错+边界三件。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -554,7 +554,7 @@ console.log("gz-multi-sync", z.gunzipSync(Buffer.concat([z.gzipSync("abc"), z.gz
 }
 
 #[test]
-fn phase10g_zlib_dict_pledged_webstream() {
+fn zlib_dict_pledged_webstream() {
     // G9-3 收官三面：raw 字典流式（G9-3a）/ 字典严格校验 + pledgedSrcSize（G9-3b/c）/
     // Web CompressionStream·DecompressionStream（G9-3d，type-error 套件同款）。
     let dir = assert_fs::TempDir::new().unwrap();

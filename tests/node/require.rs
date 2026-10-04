@@ -390,7 +390,7 @@ fn phase9m_require_resolve_caller_relative() {
 }
 
 #[test]
-fn phase10f_require_cjs_entry_relative() {
+fn require_cjs_entry_relative() {
     // 10f：CJS 入口（typeless .js）相对 require 以入口文件为 base
     //（caller_base 裸路径回落；修前 "eval has no file base URL"）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -414,7 +414,7 @@ fn phase10f_require_cjs_entry_relative() {
 }
 
 #[test]
-fn phase10f_cjs_top_level_return_entry_and_dep() {
+fn cjs_top_level_return_entry_and_dep() {
     // CJS 函数包装语义（node 口径）：顶层 return 合法——入口 typeless .js
     // 与 require 依赖双形。export 文件不被误判 CJS（cjs_goal_probe 的模块
     // 信号拒绝；phase9k require(esm) 同源）。
@@ -459,7 +459,7 @@ fn phase10f_cjs_top_level_return_entry_and_dep() {
 }
 
 #[test]
-fn phase11_require_rethrows_original_exception() {
+fn require_rethrows_original_exception() {
     // 2026-09-25：require 透传用户代码原异常（身份/类/code/stack，node 同），
     // 入口报错取真实抛点行号（CJS 包装头编在第 0 行，行号 = 物理行），
     // NodeError（super() 后 defineProperty message）文案不再为空。

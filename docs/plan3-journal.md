@@ -1318,3 +1318,17 @@ G1/G2/G3/G9 已收官。）
   serialize-leak 附带转绿（--expose-gc gc 既有 + 断言 <10x 宽松）。
 - 验证：黑盒 `v8_serialize_faces` + `process_config_rss_faces` +
   nodemodule 扩展断言；process/v8/module 黑盒 36/36；冒烟 5/5。
+
+## 2026-10-05 console 簇 +2（instance/methods；group 记档待布局引擎）
+
+- instance/methods 转绿（3→5/16）：Console 类改 function 形态（无 new 可调、
+  custom instanceof 认全局、构造器内箭头包装+正名——forEach 点名绑定、
+  new/Reflect.construct 点名不可构造、子类重写优先）；流校验收紧
+  （stderr 缺省跟 stdout；无 write 即 ERR_CONSOLE_WRITABLE_STREAM；
+  inspectOptions 非对象 ARG_TYPE，文案对 invalidArgTypeHelper）；
+  写错透传原错；全局正名+别名搬 REQUIRE_PRELUDE 尾（shim 后加载才稳）；
+  require('console')===全局（default 导出本体 + Console 侧表破自循环）；
+  原生余方法包构造守卫。
+- group 记档：组缩进已落地，余对象多行——node inspect 缺省 breakLength 80
+  的布局引擎（本仓 inspect 单行），动全局换行会摇 util 绿件，深水另案。
+- 验证：node 套件 console 5/16；黑盒 console 4/4；冒烟 5/5。

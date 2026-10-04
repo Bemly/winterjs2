@@ -405,6 +405,7 @@ globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
     const raw = console[k];
     if (typeof raw !== "function") continue;
     console[k] = function (...args) {
+      if (new.target) throw new TypeError(`console.${k} is not a constructor`);
       if (args.every(prim) && !(typeof args[0] === "string" && args[0].includes("%"))) {
         return raw.apply(this, args);
       }
@@ -414,12 +415,14 @@ globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
   const rawDir = console.dir;
   if (typeof rawDir === "function") {
     console.dir = function (obj, options) {
+      if (new.target) throw new TypeError("console.dir is not a constructor");
       return rawDir.call(this, getFmt().inspect(obj, { customInspect: false, ...options }));
     };
   }
   // assert(expression, ...args)：constructor.js 原文——首参字符串即前缀
   // `Assertion failed: `，否则 unshift；再经 warn（二次格式化）。
   console.assert = function (expression, ...args) {
+    if (new.target) throw new TypeError("console.assert is not a constructor");
     if (!expression) {
       if (args.length > 0 && typeof args[0] === "string") {
         args[0] = `Assertion failed: ${args[0]}`;
@@ -432,6 +435,7 @@ globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
   // trace(...args)：message 经 stderr 格式化 + 栈（captureStackTrace 本引擎
   // 不合成首行，故自拼首行；空消息时 V8 省略 `: ` 即裸 `Trace`）→ error。
   console.trace = function (...args) {
+    if (new.target) throw new TypeError("console.trace is not a constructor");
     const msg = getFmt().format(...args);
     let frames = "";
     try {
@@ -445,11 +449,23 @@ globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
     const head = msg === "" ? "Trace" : `Trace: ${msg}`;
     return this.error(`${head}${frames}`);
   };
+  // 其余原生方法包一层构造守卫（真机 console 方法皆不可 new；原生直挂可构造）。
+  // 置别名前，使 groupCollapsed 取到守卫版 group（同体）。
+  for (const __gk of ["count", "countReset", "time", "timeLog", "timeEnd",
+      "group", "groupEnd", "clear"]) {
+    const __raw = console[__gk];
+    if (typeof __raw !== "function") continue;
+    console[__gk] = function (...__ga) {
+      if (new.target) throw new TypeError(`console.${__gk} is not a constructor`);
+      return __raw.apply(this, __ga);
+    };
+  }
   // 别名（constructor.js 末：dirxml=log、groupCollapsed=group 同函数对象）。
   console.dirxml = console.log;
   console.groupCollapsed = console.group;
   // table：沿模块面偏离（format 落盘；非对象直 log，与 constructor.js 同分支）。
   console.table = function (data) {
+    if (new.target) throw new TypeError("console.table is not a constructor");
     return this.log(data);
   };
   // inspector 旁路 stubs（与 node:console 模块面同形；真机为 native）。
@@ -460,9 +476,11 @@ globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
     return { run(f, ...args) { return f(...args); } };
   };
   // context()/Console 经 node:console 模块面惰性取（与模块同一类/同一语义；
-  // 不在启动期加载，首调才进模块）。
-  let consoleMod = null;
-  const getConsoleMod = () => (consoleMod ??= globalThis.require("node:console"));
+  // 不在启动期加载，首调才进模块；经侧表 __wjs2_consoleMod 取——require 回
+  // 的是 default（即全局本体），直接读 .Console/.context 会自循环）。
+  const getConsoleMod = () => (
+    globalThis.require("node:console"), globalThis.console.__wjs2_consoleMod
+  );
   console.context = function () {
     return getConsoleMod().context();
   };
@@ -470,6 +488,24 @@ globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
     configurable: true,
     get() { return getConsoleMod().Console; },
   });
+  // 正名 + 别名（真机口径；本 shim 在 prelude 之后包装，名/别名落此处才稳：
+  // 包装函数匿名（name ''），debug/info/dirxml 与 log 同体、error 与 warn
+  // 同体、groupCollapsed 与 group 同体，methods 套件点名 .name）。
+  console.debug = console.log;
+  console.info = console.log;
+  console.dirxml = console.log;
+  console.error = console.warn;
+  console.groupCollapsed = console.group;
+  for (const __cn of ["log", "warn", "trace", "dir", "assert", "count",
+      "countReset", "time", "timeLog", "timeEnd", "group", "groupEnd",
+      "clear", "table"]) {
+    try {
+      const __fn = console[__cn];
+      if (typeof __fn === "function" && !__fn.name) {
+        Object.defineProperty(__fn, "name", { value: __cn, configurable: true });
+      }
+    } catch {}
+  }
 }
 // 直挂原生（禁 JS 闭包包装）：describe_scripted_caller 的最内层帧须是调用方
 // 文件——闭包帧（本 prelude）会盖掉它，相对 require.resolve 即丢 base

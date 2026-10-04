@@ -4769,3 +4769,22 @@
 - 复现：`rg -n 'fn phase(10|11)' tests/ src/` 归零。
 - 推广铁律：**标识符禁阶段命名**——变量/函数/文件名按域行为命名，
   P0/P1/phase10/phase11/W1 等计划号禁进标识符（注释与 journal 除外）。
+
+### 4.272 阶段命名第二轮：里程碑与内嵌轮次（2026-10-05）
+
+- 症状：4.271 只罩了 `phase10/11`——全仓扫出漏网 279（`phase1–9/9a–9m`、
+ `phase_napi(_m1–m6)`、`p2_`、`phase_mapper_`、`phase_g92_`）+ 内嵌轮次 22
+ （`stream_r1/r2/r3`、`crypto_round1/2/4`、`http_parity_round1`、
+ `http_header_face_batch5`、`process_r9/r9b`、`child_g5×2`、`wcover_b1–b6`）。
+- 根因：首轮正则只写了当下两切片；同类 token（里程碑 mN、轮次 rN/round、
+ 批次 bN/batch、组 gN）同属过程元信息。
+- 修法：前缀一律纯剥（`phase_napi_m1_values_matrix`→`napi_values_matrix`，
+ 里程碑号连带去）；内嵌 token 按体裁域行为名（`crypto_round2_parity`→
+ `crypto_dh_rsa_keyobject_basics`，`wcover_b1/b2_errors_boundary` 按覆盖面
+ 拆 `wcover_assert/net_errors_boundary`）；`src/` 覆盖指针对同步
+ （`phase_napi_m1_values` 残缺指针顺手补全 `_matrix`）。
+- 复现：`rg -n -e 'fn (phase|p[0-9]_[a-z])' tests/ src/ benches/` 归零；
+ 穷举 `round|batch|_r[0-9]|_g[0-9]|_b[0-9]|_m[0-9]` 余者皆域语义
+ （roundtrip 往返/Batch 批写/slice 切片，逐项 eyeball 确认）。
+- 推广铁律：**改名先穷举 token 全族再动手**——首轮修的正则即 scope，
+ 动手前把同族变体（大小写/单复数/缩写）一次列全，禁"修一处漏一族"。

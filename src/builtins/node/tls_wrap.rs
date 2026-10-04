@@ -548,7 +548,7 @@ pub unsafe extern "C" fn tls_wrap_eof(
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
-    unsafe { tls_wrap_call1(cx_raw, argc, vp, "eof") }
+    unsafe { tls_wrap_drain_call(cx_raw, argc, vp, "eof") }
 }
 
 /// `__wjs2_tls_wrap_shutdown(id)` → 结果 JSON（close_notify 出站）。
@@ -557,11 +557,11 @@ pub unsafe extern "C" fn tls_wrap_shutdown(
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
-    unsafe { tls_wrap_call1(cx_raw, argc, vp, "shutdown") }
+    unsafe { tls_wrap_drain_call(cx_raw, argc, vp, "shutdown") }
 }
 
 /// eof/shutdown 共用：无输入处理，仅排空/close_notify 后回结果。
-unsafe fn tls_wrap_call1(
+unsafe fn tls_wrap_drain_call(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
     vp: *mut JSVal,

@@ -257,7 +257,7 @@ console.log("readable", Buffer.concat(bufs).toString().trim() === "123");"#]));
     assert_eq!(
         out,
         "nullbytes true\nbare-ipc true\ndbl-ipc true\ndash-p true true\nreadable true\n",
-        "g5-validators: {out}"
+        "validators: {out}"
     );
 }
 

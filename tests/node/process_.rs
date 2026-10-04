@@ -29,8 +29,8 @@ fn node_process_argv_env() {
         "argv"
     );
     let out = stdout_of(&mut winterjs2().args(["--eval",
-        r#"process.env.WINTERJS2_T4 = "v1"; console.log(process.env.WINTERJS2_T4, "WINTERJS2_T4" in process.env, Object.keys(process.env).includes("WINTERJS2_T4")); delete process.env.WINTERJS2_T4; console.log(process.env.WINTERJS2_T4, "WINTERJS2_T4" in process.env);"#]));
-    assert_eq!(out, "v1 true true\nundefined false\n", "env: {out}");
+        r#"process.env.WINTERJS2_ENV_PROBE = "probe"; console.log(process.env.WINTERJS2_ENV_PROBE, "WINTERJS2_ENV_PROBE" in process.env, Object.keys(process.env).includes("WINTERJS2_ENV_PROBE")); delete process.env.WINTERJS2_ENV_PROBE; console.log(process.env.WINTERJS2_ENV_PROBE, "WINTERJS2_ENV_PROBE" in process.env);"#]));
+    assert_eq!(out, "probe true true\nundefined false\n", "env: {out}");
     dir.close().unwrap();
 }
 

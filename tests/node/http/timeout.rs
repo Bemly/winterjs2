@@ -461,7 +461,7 @@ import assert from "node:assert";
     }, 400);
   });
   srv.close();
-  console.log("p1 leading-crlf ok");
+  console.log("leading-crlf ok");
 }
 
 // 残缺头：管线第二请求不完整 → requestTimeout 内 408。
@@ -486,7 +486,7 @@ import assert from "node:assert";
   assert.ok(got.includes("200 OK"), "first response 200");
   assert.ok(got.includes("408 Request Timeout"), "second stalls to 408");
   srv.close();
-  console.log("p2 partial-head-408 ok");
+  console.log("partial-head-408 ok");
 }
 
 // maxRequestsPerSocket：3 额内 keep-alive，第 4 路 503 + 关连接。
@@ -512,7 +512,7 @@ import assert from "node:assert";
   });
   assert.ok(buf.includes("503 Service Unavailable"), "over-limit 503");
   srv.close();
-  console.log("p3 max-requests-503 ok");
+  console.log("max-requests-503 ok");
 }
 
 // 毁后写丢弃：管线中毁连接，续行响应不抛。
@@ -531,17 +531,17 @@ import assert from "node:assert";
     setTimeout(resolve, 800);
   });
   srv.close();
-  console.log("p4 write-after-destroy-drop ok");
+  console.log("write-after-destroy-drop ok");
 }
 
 console.log("END");
 "#,
     );
     for tag in [
-        "p1 leading-crlf ok",
-        "p2 partial-head-408 ok",
-        "p3 max-requests-503 ok",
-        "p4 write-after-destroy-drop ok",
+        "leading-crlf ok",
+        "partial-head-408 ok",
+        "max-requests-503 ok",
+        "write-after-destroy-drop ok",
         "END",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");

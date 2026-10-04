@@ -197,9 +197,9 @@ fn gc_pressure_keeps_rooted_targets() {
     // 修前：2 万小对象分配触发 minor GC，读到 Vec 搬运后悬垂的 store-buffer 边，
     // 进程 SIGSEGV/SIGBUS（exit=138/139），t2 永不打印。
     let out = stdout_of(&mut winterjs2().args(["--eval",
-        "setTimeout(()=>{let acc=0; for(let i=0;i<20000;i++){acc+=({x:i,s:'pad-'+i}).x;} console.log('t1',acc)},50); setTimeout(()=>console.log('t2-ok'),400)"]));
-    assert!(out.contains("t1 199990000"), "gc pressure t1: {out}");
-    assert!(out.contains("t2-ok"), "gc pressure t2: {out}");
+        "setTimeout(()=>{let acc=0; for(let i=0;i<20000;i++){acc+=({x:i,s:'pad-'+i}).x;} console.log('early',acc)},50); setTimeout(()=>console.log('late-ok'),400)"]));
+    assert!(out.contains("early 199990000"), "gc pressure t1: {out}");
+    assert!(out.contains("late-ok"), "gc pressure t2: {out}");
 }
 
 #[test]

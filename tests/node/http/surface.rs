@@ -46,41 +46,41 @@ function once(build, expect, label) {
 const head = (p) => `GET / HTTP/1.1\r\nHost: localhost:${p}\r\nTransfer-Encoding: chunked\r\n\r\n`;
 
 // 1) 扩展总量 17000 > 16KiB → 413 精确字节 + 连接关闭。
-await once((s, p) => s.end(head(p) + `2;${"a".repeat(17000)}\r\nAA\r\n0\r\n\r\n`), R413, "b1-413");
+await once((s, p) => s.end(head(p) + `2;${"a".repeat(17000)}\r\nAA\r\n0\r\n\r\n`), R413, "cl-413");
 // 2) 扩展恰好 16384 → 过（200，writeHead 后 end 走 chunked 响应口径）。
-await once((s, p) => s.end(head(p) + `2;${"a".repeat(16384)}\r\nAA\r\n0\r\n\r\n`), OK200, "b2-16k-ok");
+await once((s, p) => s.end(head(p) + `2;${"a".repeat(16384)}\r\nAA\r\n0\r\n\r\n`), OK200, "cl-16k-ok");
 // 3) 分包累计（8500+8500=17000）→ 413（计数跨包有效）。
 await once((s, p) => {
   s.write(head(p) + "2;");
   s.write("A".repeat(8500));
   setTimeout(() => s.write("A".repeat(8500) + "\r\nAA\r\n0\r\n\r\n"), 10);
-}, R413, "b3-split-413");
+}, R413, "cl-split-413");
 // 4) 换 chunk 清零：3×10KB 扩展三分块全过 → 200 精确字节。
 await once((s, p) => s.end(head(p) +
   `2;${"A".repeat(10000)}=bar\r\nAA\r\n` +
   `2;${"A".repeat(10000)}=bar\r\nAA\r\n` +
   `2;${"A".repeat(10000)}=bar\r\nAA\r\n` +
-  "0\r\n\r\n"), OK200, "b4-reset-200");
+  "0\r\n\r\n"), OK200, "cl-reset-200");
 // 5) 扩展字符集：裸 LF（smuggling 形 `2;\n`）→ 400。
-await once((s, p) => s.end(head(p) + "2;\nxx\r\nAA\r\n0\r\n\r\n"), R400, "b5-ext-lf-400");
+await once((s, p) => s.end(head(p) + "2;\nxx\r\nAA\r\n0\r\n\r\n"), R400, "cl-ext-lf-400");
 // 6) trailer 名+值累计 16384 → 431 精确字节（': '/CRLF 不计入）。
-await once((s, p) => s.end(head(p) + `2;a\r\nAA\r\n0\r\nX: ${"a".repeat(16383)}\r\n\r\n`), R431, "b6-trailer-431");
+await once((s, p) => s.end(head(p) + `2;a\r\nAA\r\n0\r\nX: ${"a".repeat(16383)}\r\n\r\n`), R431, "cl-trailer-431");
 // 7) trailer 名+值 16383 → 过 → 200。
-await once((s, p) => s.end(head(p) + `2;a\r\nAA\r\n0\r\nX: ${"a".repeat(16382)}\r\n\r\n`), OK200, "b7-trailer-ok");
+await once((s, p) => s.end(head(p) + `2;a\r\nAA\r\n0\r\nX: ${"a".repeat(16382)}\r\n\r\n`), OK200, "cl-trailer-ok");
 // 8) trailer 无冒号行 → 400。
-await once((s, p) => s.end(head(p) + "2;a\r\nAA\r\n0\r\njustname\r\n\r\n"), R400, "b8-trailer-colon-400");
+await once((s, p) => s.end(head(p) + "2;a\r\nAA\r\n0\r\njustname\r\n\r\n"), R400, "cl-trailer-colon-400");
 console.log("limits-done");
 "#,
     );
     for tag in [
-        "b1-413 ok",
-        "b2-16k-ok ok",
-        "b3-split-413 ok",
-        "b4-reset-200 ok",
-        "b5-ext-lf-400 ok",
-        "b6-trailer-431 ok",
-        "b7-trailer-ok ok",
-        "b8-trailer-colon-400 ok",
+        "cl-413 ok",
+        "cl-16k-ok ok",
+        "cl-split-413 ok",
+        "cl-reset-200 ok",
+        "cl-ext-lf-400 ok",
+        "cl-trailer-431 ok",
+        "cl-trailer-ok ok",
+        "cl-trailer-colon-400 ok",
         "limits-done",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
@@ -524,7 +524,7 @@ import assert from "node:assert";
     if (req.url === "/220") {
       res.writeHead(220, ["test", "1"]);
       console.log("msg220", res.statusMessage);
-      try { res.writeHead(200, ["t2", "2"]); console.log("re220 BAD"); }
+      try { res.writeHead(200, ["xh", "2"]); console.log("re220 BAD"); }
       catch (e) { console.log("re220", e.code); }
       res.end();
     } else if (req.url === "/dup") {
@@ -624,7 +624,7 @@ await rawHost({ host: "::1" });
     });
   });
 }
-console.log("batch5-done");
+console.log("heads-done");
 "##,
     );
     for tag in [
@@ -645,7 +645,7 @@ console.log("batch5-done");
         "host {\"host\":\"foo:1234\"} \"foo:1234:80\"",
         "host {\"host\":\"::1\"} \"[::1]:80\"",
         "trailer bar",
-        "batch5-done",
+        "heads-done",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
     }
@@ -744,7 +744,7 @@ import assert from "node:assert";
   const sock = new net.Socket();
   console.log("sock-hwm", sock.writableHighWaterMark);
 }
-console.log("deep1-done");
+console.log("deep-done");
 "##,
     );
     for tag in [
@@ -759,7 +759,7 @@ console.log("deep1-done");
         "req-close true",
         "om-timeout 42",
         "sock-hwm 65536",
-        "deep1-done",
+        "deep-done",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
     }

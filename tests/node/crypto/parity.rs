@@ -18,117 +18,117 @@ import crypto, { KeyObject, createDiffieHellman, createDiffieHellmanGroup,
   randomBytes } from "node:crypto";
 import { types } from "node:util";
 // DH 组与 flavor
-console.log("r2-modp", getDiffieHellman("modp1").getPrime("hex").length === 192,
+console.log("t-modp", getDiffieHellman("modp1").getPrime("hex").length === 192,
   getDiffieHellman("modp2").getPrime("hex").length === 256);
-const r2g = getDiffieHellman("modp2");
-console.log("r2-flav", r2g.constructor === crypto.DiffieHellmanGroup,
-  r2g.setPrivateKey === undefined, r2g.setPublicKey === undefined);
-console.log("r2-gen", createDiffieHellman(getDiffieHellman("modp14").getPrime(), Buffer.from([2])).getGenerator("hex") === "02");
+const dhg = getDiffieHellman("modp2");
+console.log("t-flav", dhg.constructor === crypto.DiffieHellmanGroup,
+  dhg.setPrivateKey === undefined, dhg.setPublicKey === undefined);
+console.log("t-gen", createDiffieHellman(getDiffieHellman("modp14").getPrime(), Buffer.from([2])).getGenerator("hex") === "02");
 // RSA 位长与 details
-const r2rsa = generateKeyPairSync("rsa", { modulusLength: 512 });
-console.log("r2-rsa512", r2rsa.publicKey.asymmetricKeyDetails.modulusLength === 512,
-  typeof r2rsa.publicKey.asymmetricKeyDetails.publicExponent === "bigint");
-try { generateKeyPairSync("rsa", { modulusLength: 511 }); console.log("r2-small", "NO-THROW"); }
-catch (e) { console.log("r2-small", e.code); }
+const rsak = generateKeyPairSync("rsa", { modulusLength: 512 });
+console.log("t-rsa512", rsak.publicKey.asymmetricKeyDetails.modulusLength === 512,
+  typeof rsak.publicKey.asymmetricKeyDetails.publicExponent === "bigint");
+try { generateKeyPairSync("rsa", { modulusLength: 511 }); console.log("t-small", "NO-THROW"); }
+catch (e) { console.log("t-small", e.code); }
 // KeyObject 品牌面
-const r2sec = createSecretKey(Buffer.alloc(16));
-console.log("r2-noown", Object.getOwnPropertyNames(r2sec).length === 0,
-  Object.getOwnPropertySymbols(r2sec).length === 0);
-console.log("r2-tag", String(r2sec) === "[object KeyObject]");
-console.log("r2-isKO", types.isKeyObject(r2sec) === true, types.isKeyObject({}) === false);
-try { crypto.KeyObject.prototype.type.call({}); console.log("r2-brand", "NO-THROW"); }
-catch (e) { console.log("r2-brand", e.code); }
-const r2asymGet = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Object.getPrototypeOf(r2rsa.publicKey)), "asymmetricKeyType").get;
-try { r2asymGet.call(r2sec); console.log("r2-secasym", "NO-THROW"); }
-catch (e) { console.log("r2-secasym", e.code); }
-console.log("r2-eq", r2sec.equals(r2sec) === true);
-try { r2sec.equals({}); console.log("r2-eqbad", "NO-THROW"); }
-catch (e) { console.log("r2-eqbad", e.code); }
-try { KeyObject.from("x"); console.log("r2-from", "NO-THROW"); }
-catch (e) { console.log("r2-from", e.code); }
-try { new KeyObject("nope"); console.log("r2-ctor", "NO-THROW"); }
-catch (e) { console.log("r2-ctor", e.code); }
+const seck = createSecretKey(Buffer.alloc(16));
+console.log("t-noown", Object.getOwnPropertyNames(seck).length === 0,
+  Object.getOwnPropertySymbols(seck).length === 0);
+console.log("t-tag", String(seck) === "[object KeyObject]");
+console.log("t-isKO", types.isKeyObject(seck) === true, types.isKeyObject({}) === false);
+try { crypto.KeyObject.prototype.type.call({}); console.log("t-brand", "NO-THROW"); }
+catch (e) { console.log("t-brand", e.code); }
+const asymGet = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Object.getPrototypeOf(rsak.publicKey)), "asymmetricKeyType").get;
+try { asymGet.call(seck); console.log("t-secasym", "NO-THROW"); }
+catch (e) { console.log("t-secasym", e.code); }
+console.log("t-eq", seck.equals(seck) === true);
+try { seck.equals({}); console.log("t-eqbad", "NO-THROW"); }
+catch (e) { console.log("t-eqbad", e.code); }
+try { KeyObject.from("x"); console.log("t-from", "NO-THROW"); }
+catch (e) { console.log("t-from", e.code); }
+try { new KeyObject("nope"); console.log("t-ctor", "NO-THROW"); }
+catch (e) { console.log("t-ctor", e.code); }
 // ESM 具名导出 + 回调异步形
-console.log("r2-esm", typeof KeyObject === "function");
-crypto.sign("sha256", Buffer.from("m"), r2rsa.privateKey, (e, s) =>
-  console.log("r2-async", e === null, s.length === 64));
+console.log("t-esm", typeof KeyObject === "function");
+crypto.sign("sha256", Buffer.from("m"), rsak.privateKey, (e, s) =>
+  console.log("t-async", e === null, s.length === 64));
 // pkcs1 与派生规则
-const r2pkcs1 = r2rsa.publicKey.export({ type: "pkcs1", format: "pem" });
-console.log("r2-pkcs1pem", r2pkcs1.split("\n")[0] === "-----BEGIN RSA PUBLIC KEY-----");
-console.log("r2-derive", createPublicKey(r2rsa.privateKey).type === "public");
-try { createPublicKey(r2rsa.publicKey); console.log("r2-pubpub", "NO-THROW"); }
-catch (e) { console.log("r2-pubpub", e.code); }
-try { createPrivateKey(r2rsa.privateKey); console.log("r2-privpriv", "NO-THROW"); }
-catch (e) { console.log("r2-privpriv", e.code); }
+const pkcs1Pem = rsak.publicKey.export({ type: "pkcs1", format: "pem" });
+console.log("t-pkcs1pem", pkcs1Pem.split("\n")[0] === "-----BEGIN RSA PUBLIC KEY-----");
+console.log("t-derive", createPublicKey(rsak.privateKey).type === "public");
+try { createPublicKey(rsak.publicKey); console.log("t-pubpub", "NO-THROW"); }
+catch (e) { console.log("t-pubpub", e.code); }
+try { createPrivateKey(rsak.privateKey); console.log("t-privpriv", "NO-THROW"); }
+catch (e) { console.log("t-privpriv", e.code); }
 // 加密 PEM 往返 + 缺/错口令
-const r2enc = r2rsa.privateKey.export({ type: "pkcs1", format: "pem", cipher: "aes-128-cbc", passphrase: "pw" });
-console.log("r2-enchdr", r2enc.split("\n")[1] === "Proc-Type: 4,ENCRYPTED");
-const r2back = createPrivateKey({ key: r2enc, passphrase: "pw" });
-console.log("r2-encrt", r2back.type === "private");
-try { createPrivateKey({ key: r2enc }); console.log("r2-nopass", "NO-THROW"); }
-catch (e) { console.log("r2-nopass", e.code); }
-try { createPrivateKey({ key: r2enc, passphrase: "bad" }); console.log("r2-badpass", "NO-THROW"); }
-catch (e) { console.log("r2-badpass", e.code); }
+const encPem = rsak.privateKey.export({ type: "pkcs1", format: "pem", cipher: "aes-128-cbc", passphrase: "pw" });
+console.log("t-enchdr", encPem.split("\n")[1] === "Proc-Type: 4,ENCRYPTED");
+const backKey = createPrivateKey({ key: encPem, passphrase: "pw" });
+console.log("t-encrt", backKey.type === "private");
+try { createPrivateKey({ key: encPem }); console.log("t-nopass", "NO-THROW"); }
+catch (e) { console.log("t-nopass", e.code); }
+try { createPrivateKey({ key: encPem, passphrase: "bad" }); console.log("t-badpass", "NO-THROW"); }
+catch (e) { console.log("t-badpass", e.code); }
 // 混合 OAEP + 反向操作 + NO_PADDING
-const r2msg = Buffer.from("hello-mgf1");
-const r2rsa1k = generateKeyPairSync("rsa", { modulusLength: 1024 });
-const r2ct = publicEncrypt({ key: r2rsa1k.publicKey, padding: 4, oaepHash: "sha256", mgf1Hash: "sha1" }, r2msg);
-console.log("r2-mgf1", privateDecrypt({ key: r2rsa1k.privateKey, padding: 4, oaepHash: "sha256", mgf1Hash: "sha1" }, r2ct).toString() === "hello-mgf1");
-try { publicEncrypt({ key: r2rsa1k.publicKey, padding: 4, oaepHash: "sha256", mgf1Hash: 1 }, r2msg); console.log("r2-mgf1bad", "NO-THROW"); }
-catch (e) { console.log("r2-mgf1bad", e.code); }
-const r2pe = privateEncrypt(r2rsa.privateKey, r2msg);
-console.log("r2-privenc", publicDecrypt(r2rsa.publicKey, r2pe).toString() === "hello-mgf1");
-const r2raw = publicEncrypt({ key: r2rsa.publicKey, padding: 3 }, Buffer.alloc(64, 7));
-console.log("r2-nopad", privateDecrypt({ key: r2rsa.privateKey, padding: 3 }, r2raw).equals(Buffer.alloc(64, 7)));
+const msg = Buffer.from("hello-mgf1");
+const rsa1024 = generateKeyPairSync("rsa", { modulusLength: 1024 });
+const ct = publicEncrypt({ key: rsa1024.publicKey, padding: 4, oaepHash: "sha256", mgf1Hash: "sha1" }, msg);
+console.log("t-mgf1", privateDecrypt({ key: rsa1024.privateKey, padding: 4, oaepHash: "sha256", mgf1Hash: "sha1" }, ct).toString() === "hello-mgf1");
+try { publicEncrypt({ key: rsa1024.publicKey, padding: 4, oaepHash: "sha256", mgf1Hash: 1 }, msg); console.log("t-mgf1bad", "NO-THROW"); }
+catch (e) { console.log("t-mgf1bad", e.code); }
+const pe = privateEncrypt(rsak.privateKey, msg);
+console.log("t-privenc", publicDecrypt(rsak.publicKey, pe).toString() === "hello-mgf1");
+const rawOut = publicEncrypt({ key: rsak.publicKey, padding: 3 }, Buffer.alloc(64, 7));
+console.log("t-nopad", privateDecrypt({ key: rsak.privateKey, padding: 3 }, rawOut).equals(Buffer.alloc(64, 7)));
 // 验签形态错回 false + 输出编码形
-const r2sig = crypto.sign("sha256", r2msg, r2rsa.privateKey);
-console.log("r2-verifyfalse", crypto.verify("sha256", r2msg, r2rsa.publicKey, Buffer.alloc(0)) === false);
-const r2s = crypto.createSign("SHA256"); r2s.update(r2msg);
-console.log("r2-signenc", typeof r2s.sign(r2rsa.privateKey, "hex") === "string");
+const sig = crypto.sign("sha256", msg, rsak.privateKey);
+console.log("t-verifyfalse", crypto.verify("sha256", msg, rsak.publicKey, Buffer.alloc(0)) === false);
+const signer = crypto.createSign("SHA256"); signer.update(msg);
+console.log("t-signenc", typeof signer.sign(rsak.privateKey, "hex") === "string");
 // export 门与 JWK 非法形
-try { r2rsa.publicKey.export(undefined); console.log("r2-expopt", "NO-THROW"); }
-catch (e) { console.log("r2-expopt", e.code); }
-try { r2rsa.publicKey.export({ format: "der", type: "pkcs8" }); console.log("r2-expmat", "NO-THROW"); }
-catch (e) { console.log("r2-expmat", e.code); }
-try { createPrivateKey({ key: { kty: "RSA", n: "AQAB", e: "AQAB" }, format: "jwk" }); console.log("r2-jwkbad", "NO-THROW"); }
-catch (e) { console.log("r2-jwkbad", e.code); }
-setTimeout(() => console.log("r2-done"), 20);
+try { rsak.publicKey.export(undefined); console.log("t-expopt", "NO-THROW"); }
+catch (e) { console.log("t-expopt", e.code); }
+try { rsak.publicKey.export({ format: "der", type: "pkcs8" }); console.log("t-expmat", "NO-THROW"); }
+catch (e) { console.log("t-expmat", e.code); }
+try { createPrivateKey({ key: { kty: "RSA", n: "AQAB", e: "AQAB" }, format: "jwk" }); console.log("t-jwkbad", "NO-THROW"); }
+catch (e) { console.log("t-jwkbad", e.code); }
+setTimeout(() => console.log("t-done"), 20);
 "#,
     );
-    assert!(out.contains("r2-modp true true"), "out: {out}");
-    assert!(out.contains("r2-flav true true true"), "out: {out}");
-    assert!(out.contains("r2-gen true"), "out: {out}");
-    assert!(out.contains("r2-rsa512 true true"), "out: {out}");
-    assert!(out.contains("r2-small ERR_OSSL_KEY_SIZE_TOO_SMALL"), "out: {out}");
-    assert!(out.contains("r2-noown true true"), "out: {out}");
-    assert!(out.contains("r2-tag true"), "out: {out}");
-    assert!(out.contains("r2-isKO true true"), "out: {out}");
-    assert!(out.contains("r2-brand ERR_INVALID_THIS"), "out: {out}");
-    assert!(out.contains("r2-secasym ERR_INVALID_THIS"), "out: {out}");
-    assert!(out.contains("r2-eq true"), "out: {out}");
-    assert!(out.contains("r2-eqbad ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("r2-from ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("r2-ctor ERR_INVALID_ARG_VALUE"), "out: {out}");
-    assert!(out.contains("r2-esm true"), "out: {out}");
-    assert!(out.contains("r2-async true true"), "out: {out}");
-    assert!(out.contains("r2-pkcs1pem true"), "out: {out}");
-    assert!(out.contains("r2-derive true"), "out: {out}");
-    assert!(out.contains("r2-pubpub ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE"), "out: {out}");
-    assert!(out.contains("r2-privpriv ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("r2-enchdr true"), "out: {out}");
-    assert!(out.contains("r2-encrt true"), "out: {out}");
-    assert!(out.contains("r2-nopass ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED"), "out: {out}");
-    assert!(out.contains("r2-badpass ERR_OSSL_BAD_DECRYPT"), "out: {out}");
-    assert!(out.contains("r2-mgf1 true"), "out: {out}");
-    assert!(out.contains("r2-mgf1bad ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("r2-privenc true"), "out: {out}");
-    assert!(out.contains("r2-nopad true"), "out: {out}");
-    assert!(out.contains("r2-verifyfalse true"), "out: {out}");
-    assert!(out.contains("r2-signenc true"), "out: {out}");
-    assert!(out.contains("r2-expopt ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("r2-expmat ERR_INVALID_ARG_VALUE"), "out: {out}");
-    assert!(out.contains("r2-jwkbad ERR_CRYPTO_INVALID_JWK"), "out: {out}");
-    assert!(out.contains("r2-done"), "out: {out}");
+    assert!(out.contains("t-modp true true"), "out: {out}");
+    assert!(out.contains("t-flav true true true"), "out: {out}");
+    assert!(out.contains("t-gen true"), "out: {out}");
+    assert!(out.contains("t-rsa512 true true"), "out: {out}");
+    assert!(out.contains("t-small ERR_OSSL_KEY_SIZE_TOO_SMALL"), "out: {out}");
+    assert!(out.contains("t-noown true true"), "out: {out}");
+    assert!(out.contains("t-tag true"), "out: {out}");
+    assert!(out.contains("t-isKO true true"), "out: {out}");
+    assert!(out.contains("t-brand ERR_INVALID_THIS"), "out: {out}");
+    assert!(out.contains("t-secasym ERR_INVALID_THIS"), "out: {out}");
+    assert!(out.contains("t-eq true"), "out: {out}");
+    assert!(out.contains("t-eqbad ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("t-from ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("t-ctor ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("t-esm true"), "out: {out}");
+    assert!(out.contains("t-async true true"), "out: {out}");
+    assert!(out.contains("t-pkcs1pem true"), "out: {out}");
+    assert!(out.contains("t-derive true"), "out: {out}");
+    assert!(out.contains("t-pubpub ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE"), "out: {out}");
+    assert!(out.contains("t-privpriv ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("t-enchdr true"), "out: {out}");
+    assert!(out.contains("t-encrt true"), "out: {out}");
+    assert!(out.contains("t-nopass ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED"), "out: {out}");
+    assert!(out.contains("t-badpass ERR_OSSL_BAD_DECRYPT"), "out: {out}");
+    assert!(out.contains("t-mgf1 true"), "out: {out}");
+    assert!(out.contains("t-mgf1bad ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("t-privenc true"), "out: {out}");
+    assert!(out.contains("t-nopad true"), "out: {out}");
+    assert!(out.contains("t-verifyfalse true"), "out: {out}");
+    assert!(out.contains("t-signenc true"), "out: {out}");
+    assert!(out.contains("t-expopt ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("t-expmat ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("t-jwkbad ERR_CRYPTO_INVALID_JWK"), "out: {out}");
+    assert!(out.contains("t-done"), "out: {out}");
     dir.close().unwrap();
 }
 
@@ -272,148 +272,148 @@ const { privateKey: rsaPriv, publicKey: rsaPub } = generateKeyPairSync("rsa", { 
 // ── 正常件：EC raw 往返（raw-private=定长标量 32B；raw-public=04||X||Y 65B）──
 const rawPriv = ecPriv.export({ format: "raw-private" });
 const rawPub = ecPub.export({ format: "raw-public" });
-log("r4-raw-len", rawPriv.length, rawPub.length, rawPub[0] === 4);
+log("ex-raw-len", rawPriv.length, rawPub.length, rawPub[0] === 4);
 const impPriv = createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "prime256v1" });
 const impPub = createPublicKey({ key: rawPub, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" });
-log("r4-raw-rt", impPriv.type, impPriv.equals(ecPriv), impPub.type, impPub.equals(ecPub));
+log("ex-raw-rt", impPriv.type, impPriv.equals(ecPriv), impPub.type, impPub.equals(ecPub));
 // raw-private 建公钥 → 派生；P-256 别名 'P-256' 同收
 const impPub2 = createPublicKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "P-256" });
-log("r4-raw-derive", impPub2.equals(ecPub), impPub2.asymmetricKeyDetails.namedCurve);
+log("ex-raw-derive", impPub2.equals(ecPub), impPub2.asymmetricKeyDetails.namedCurve);
 // EC sec1 导出（真机逐字节头：307702010104200f；PEM 标签 EC PRIVATE KEY）
 const sec1 = ecPriv.export({ format: "der", type: "sec1" });
-log("r4-sec1", sec1.length > 100, sec1.subarray(0, 8).toString("hex"), ecPriv.export({ format: "pem", type: "sec1" }).startsWith("-----BEGIN EC PRIVATE KEY-----"));
+log("ex-sec1", sec1.length > 100, sec1.subarray(0, 8).toString("hex"), ecPriv.export({ format: "pem", type: "sec1" }).startsWith("-----BEGIN EC PRIVATE KEY-----"));
 const sec1Back = createPrivateKey({ key: sec1, format: "der", type: "sec1" });
-log("r4-sec1-rt", sec1Back.equals(ecPriv), sec1Back.asymmetricKeyDetails.namedCurve);
+log("ex-sec1-rt", sec1Back.equals(ecPriv), sec1Back.asymmetricKeyDetails.namedCurve);
 
 // ── 正常件：asymmetricKeyDetails（EC=OpenSSL 名；OKP={}；DSA 现状）──
-log("r4-details-ec", ecPriv.asymmetricKeyDetails.namedCurve, ecPub.asymmetricKeyDetails.namedCurve,
+log("ex-details-ec", ecPriv.asymmetricKeyDetails.namedCurve, ecPub.asymmetricKeyDetails.namedCurve,
   createPublicKey(ecPriv).asymmetricKeyDetails.namedCurve);
-log("r4-details-okp", typeof edPriv.asymmetricKeyDetails === "object",
+log("ex-details-okp", typeof edPriv.asymmetricKeyDetails === "object",
   Object.keys(edPriv.asymmetricKeyDetails).length, edPub.asymmetricKeyDetails !== undefined);
 
 // ── 报错件：导出 type 门矩阵（真机 26 逐项：ARG_VALUE 'options.type' / INCOMPATIBLE）──
-log("r4-gate-typeless", throws(() => rsaPriv.export({ format: "pem" })));
-log("r4-gate-banana", throws(() => ecPub.export({ format: "pem", type: "banana" })));
-log("r4-gate-pub-pkcs8", throws(() => ecPub.export({ format: "pem", type: "pkcs8" })));
-log("r4-gate-pub-sec1", throws(() => rsaPub.export({ format: "pem", type: "sec1" })));
-log("r4-gate-priv-spki", throws(() => ecPriv.export({ format: "der", type: "spki" })));
-log("r4-gate-ec-pkcs1", throws(() => ecPriv.export({ format: "pem", type: "pkcs1" })));
-log("r4-gate-ec-pub-pkcs1", throws(() => ecPub.export({ format: "pem", type: "pkcs1" })));
-log("r4-gate-rsa-sec1", throws(() => rsaPriv.export({ format: "pem", type: "sec1" })));
-log("r4-gate-pss-pkcs1", throws(() => {
+log("ex-gate-typeless", throws(() => rsaPriv.export({ format: "pem" })));
+log("ex-gate-banana", throws(() => ecPub.export({ format: "pem", type: "banana" })));
+log("ex-gate-pub-pkcs8", throws(() => ecPub.export({ format: "pem", type: "pkcs8" })));
+log("ex-gate-pub-sec1", throws(() => rsaPub.export({ format: "pem", type: "sec1" })));
+log("ex-gate-priv-spki", throws(() => ecPriv.export({ format: "der", type: "spki" })));
+log("ex-gate-ec-pkcs1", throws(() => ecPriv.export({ format: "pem", type: "pkcs1" })));
+log("ex-gate-ec-pub-pkcs1", throws(() => ecPub.export({ format: "pem", type: "pkcs1" })));
+log("ex-gate-rsa-sec1", throws(() => rsaPriv.export({ format: "pem", type: "sec1" })));
+log("ex-gate-pss-pkcs1", throws(() => {
   generateKeyPairSync("rsa-pss", { modulusLength: 512 }).publicKey.export({ format: "pem", type: "pkcs1" });
 }));
 // format 门：非对称 'buffer'/缺 format → ARG_VALUE；secret 'pem' → must-be-one-of
-log("r4-gate-fmt-buffer", throws(() => ecPriv.export({ format: "buffer" })));
-log("r4-gate-fmt-undef", throws(() => ecPriv.export({ format: undefined })));
-log("r4-gate-sec-pem", throws(() => createSecretKey(Buffer.alloc(8)).export({ format: "pem" })));
-log("r4-gate-sec-ok", createSecretKey(Buffer.alloc(8)).export({ format: undefined }).length === 8);
+log("ex-gate-fmt-buffer", throws(() => ecPriv.export({ format: "buffer" })));
+log("ex-gate-fmt-undef", throws(() => ecPriv.export({ format: undefined })));
+log("ex-gate-sec-pem", throws(() => createSecretKey(Buffer.alloc(8)).export({ format: "pem" })));
+log("ex-gate-sec-ok", createSecretKey(Buffer.alloc(8)).export({ format: undefined }).length === 8);
 
 // ── 报错件：raw 门（kind 错位/非对称 raw 不支持/EC raw 坏形）──
-log("r4-raw-kind", throws(() => ecPub.export({ format: "raw-private" })));
-log("r4-raw-rsa", throws(() => rsaPriv.export({ format: "raw-private" })));
-log("r4-raw-noCurve", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec" })));
-log("r4-raw-badCurve", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "banana" })));
-log("r4-raw-secp256r1", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "secp256r1" })));
-log("r4-raw-aktBanana", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "banana", namedCurve: "prime256v1" })));
-log("r4-raw-aktRsa", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "rsa", namedCurve: "prime256v1" })));
-log("r4-raw-badPoint", throws(() => createPublicKey({ key: Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 7)]), format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
-log("r4-raw-compressed", throws(() => createPublicKey({ key: Buffer.concat([Buffer.from([2]), rawPub.subarray(1)]), format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
-log("r4-raw-wrongSize", throws(() => createPublicKey({ key: rawPub, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "secp384r1" })));
+log("ex-raw-kind", throws(() => ecPub.export({ format: "raw-private" })));
+log("ex-raw-rsa", throws(() => rsaPriv.export({ format: "raw-private" })));
+log("ex-raw-noCurve", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec" })));
+log("ex-raw-badCurve", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "banana" })));
+log("ex-raw-secp256r1", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ec", namedCurve: "secp256r1" })));
+log("ex-raw-aktBanana", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "banana", namedCurve: "prime256v1" })));
+log("ex-raw-aktRsa", throws(() => createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "rsa", namedCurve: "prime256v1" })));
+log("ex-raw-badPoint", throws(() => createPublicKey({ key: Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 7)]), format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
+log("ex-raw-compressed", throws(() => createPublicKey({ key: Buffer.concat([Buffer.from([2]), rawPub.subarray(1)]), format: "raw-public", asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
+log("ex-raw-wrongSize", throws(() => createPublicKey({ key: rawPub, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "secp384r1" })));
 
 // ── 报错件：OKP JWK 校验矩阵（真机 26 逐项）──
 const edJwk = edPriv.export({ format: "jwk" });
-log("r4-okp-badx", throws(() => createPrivateKey({ key: { ...edJwk, x: "A" + edJwk.x.slice(1) }, format: "jwk" })));
-log("r4-okp-noD", throws(() => createPrivateKey({ key: { kty: edJwk.kty, crv: edJwk.crv, x: edJwk.x }, format: "jwk" })));
-log("r4-okp-noCrv", throws(() => createPublicKey({ key: { kty: edJwk.kty, x: edJwk.x }, format: "jwk" })));
-log("r4-okp-badCrv", throws(() => createPublicKey({ key: { ...edJwk, crv: "invalid" }, format: "jwk" })));
-log("r4-okp-badD", throws(() => createPublicKey({ key: { ...edJwk, d: "AAAA" }, format: "jwk" })));
+log("ex-okp-badx", throws(() => createPrivateKey({ key: { ...edJwk, x: "A" + edJwk.x.slice(1) }, format: "jwk" })));
+log("ex-okp-noD", throws(() => createPrivateKey({ key: { kty: edJwk.kty, crv: edJwk.crv, x: edJwk.x }, format: "jwk" })));
+log("ex-okp-noCrv", throws(() => createPublicKey({ key: { kty: edJwk.kty, x: edJwk.x }, format: "jwk" })));
+log("ex-okp-badCrv", throws(() => createPublicKey({ key: { ...edJwk, crv: "invalid" }, format: "jwk" })));
+log("ex-okp-badD", throws(() => createPublicKey({ key: { ...edJwk, d: "AAAA" }, format: "jwk" })));
 // 带 d 的 JWK 建公钥：x 必带（真机：d 无 x → INVALID_JWK）；x,d 齐即由 d 派生
-log("r4-okp-fromD", throws(() => createPublicKey({ key: { kty: "OKP", crv: "Ed25519", d: edJwk.d }, format: "jwk" })));
-log("r4-okp-fromDxd", createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: edJwk.x, d: edJwk.d }, format: "jwk" }).equals(edPub));
-log("r4-okp-privD", createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", x: edJwk.x, d: edJwk.d }, format: "jwk" }).equals(edPriv));
+log("ex-okp-fromD", throws(() => createPublicKey({ key: { kty: "OKP", crv: "Ed25519", d: edJwk.d }, format: "jwk" })));
+log("ex-okp-fromDxd", createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: edJwk.x, d: edJwk.d }, format: "jwk" }).equals(edPub));
+log("ex-okp-privD", createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", x: edJwk.x, d: edJwk.d }, format: "jwk" }).equals(edPriv));
 
 // ── 报错件：EC JWK 校验矩阵（真机 26 逐项；注意 crv 缺失=INVALID_JWK、非法=INVALID_CURVE）──
 const ecJwk = ecPriv.export({ format: "jwk" });
 deepStrictEqual(ecJwk, { kty: "EC", crv: "P-256",
   x: "X0mMYR_uleZSIPjNztIkAS3_ud5LhNpbiIFp6fNf2Gs", y: "UbJuPy2Xi0lW7UYTBxPK3yGgDu9EAKYIecjkHX5s2lI",
   d: "DxBsPQPIgMuMyQbxzbb9toew6Ev6e9O6ZhpxLNgmAEo" });
-log("r4-ec-jwkexp", true);
-log("r4-ec-badx", throws(() => createPrivateKey({ key: { ...ecJwk, x: "A" + ecJwk.x.slice(1) }, format: "jwk" })));
-log("r4-ec-bady", throws(() => createPrivateKey({ key: { ...ecJwk, y: "A" + ecJwk.y.slice(1) }, format: "jwk" })));
-log("r4-ec-noD", throws(() => createPrivateKey({ key: { kty: "EC", crv: ecJwk.crv, x: ecJwk.x, y: ecJwk.y }, format: "jwk" })));
-log("r4-ec-noCrv", throws(() => createPublicKey({ key: { kty: "EC", x: ecJwk.x, y: ecJwk.y }, format: "jwk" })));
-log("r4-ec-badCrv", throws(() => createPublicKey({ key: { ...ecJwk, crv: "invalid" }, format: "jwk" })));
-log("r4-ec-badD", throws(() => createPublicKey({ key: { ...ecJwk, d: "AAAA" }, format: "jwk" })));
-log("r4-ec-badPoint", throws(() => createPublicKey({ key: { kty: "EC", crv: "P-256", x: Buffer.alloc(32, 9).toString("base64url"), y: Buffer.alloc(32, 9).toString("base64url") }, format: "jwk" })));
-log("r4-ec-priv-rt", createPrivateKey({ key: ecJwk, format: "jwk" }).equals(ecPriv));
-log("r4-ec-pub-fromD", createPublicKey({ key: ecJwk, format: "jwk" }).equals(ecPub));
+log("ex-ec-jwkexp", true);
+log("ex-ec-badx", throws(() => createPrivateKey({ key: { ...ecJwk, x: "A" + ecJwk.x.slice(1) }, format: "jwk" })));
+log("ex-ec-bady", throws(() => createPrivateKey({ key: { ...ecJwk, y: "A" + ecJwk.y.slice(1) }, format: "jwk" })));
+log("ex-ec-noD", throws(() => createPrivateKey({ key: { kty: "EC", crv: ecJwk.crv, x: ecJwk.x, y: ecJwk.y }, format: "jwk" })));
+log("ex-ec-noCrv", throws(() => createPublicKey({ key: { kty: "EC", x: ecJwk.x, y: ecJwk.y }, format: "jwk" })));
+log("ex-ec-badCrv", throws(() => createPublicKey({ key: { ...ecJwk, crv: "invalid" }, format: "jwk" })));
+log("ex-ec-badD", throws(() => createPublicKey({ key: { ...ecJwk, d: "AAAA" }, format: "jwk" })));
+log("ex-ec-badPoint", throws(() => createPublicKey({ key: { kty: "EC", crv: "P-256", x: Buffer.alloc(32, 9).toString("base64url"), y: Buffer.alloc(32, 9).toString("base64url") }, format: "jwk" })));
+log("ex-ec-priv-rt", createPrivateKey({ key: ecJwk, format: "jwk" }).equals(ecPriv));
+log("ex-ec-pub-fromD", createPublicKey({ key: ecJwk, format: "jwk" }).equals(ecPub));
 
 // ── 报错件：DSA JWK 面（无）──
 const { publicKey: dsaPub } = generateKeyPairSync("dsa", { modulusLength: 1024, divisorLength: 160 });
-log("r4-dsa-jwkexp", throws(() => dsaPub.export({ format: "jwk" })));
-log("r4-dsa-jwkimp", throws(() => createPublicKey({ key: { kty: "DSA", p: "AA", q: "AA", g: "AA", y: "AA" }, format: "jwk" })));
+log("ex-dsa-jwkexp", throws(() => dsaPub.export({ format: "jwk" })));
+log("ex-dsa-jwkimp", throws(() => createPublicKey({ key: { kty: "DSA", p: "AA", q: "AA", g: "AA", y: "AA" }, format: "jwk" })));
 // DSA details（真机 {modulusLength, divisorLength}）
-log("r4-dsa-details", typeof dsaPub.asymmetricKeyDetails === "object",
+log("ex-dsa-details", typeof dsaPub.asymmetricKeyDetails === "object",
   typeof dsaPub.asymmetricKeyDetails.modulusLength === "number",
   typeof dsaPub.asymmetricKeyDetails.divisorLength === "number",
   dsaPub.asymmetricKeyDetails.publicExponent === undefined);
-log("r4-done");
+log("ex-done");
 "#,
     );
     for line in [
-        "r4-raw-len 32 65 true",
-        "r4-raw-rt private true public true",
-        "r4-raw-derive true prime256v1",
-        "r4-sec1 true 307702010104200f true",
-        "r4-sec1-rt true prime256v1",
-        "r4-details-ec prime256v1 prime256v1 prime256v1",
-        "r4-details-okp true 0 true",
-        "r4-gate-typeless ERR_INVALID_ARG_VALUE",
-        "r4-gate-banana ERR_INVALID_ARG_VALUE",
-        "r4-gate-pub-pkcs8 ERR_INVALID_ARG_VALUE",
-        "r4-gate-pub-sec1 ERR_INVALID_ARG_VALUE",
-        "r4-gate-priv-spki ERR_INVALID_ARG_VALUE",
-        "r4-gate-ec-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
-        "r4-gate-ec-pub-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
-        "r4-gate-rsa-sec1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
-        "r4-gate-pss-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
-        "r4-gate-fmt-buffer ERR_INVALID_ARG_VALUE",
-        "r4-gate-fmt-undef ERR_INVALID_ARG_VALUE",
-        "r4-gate-sec-pem ERR_INVALID_ARG_VALUE",
-        "r4-gate-sec-ok true",
-        "r4-raw-kind ERR_INVALID_ARG_VALUE",
-        "r4-raw-rsa ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
-        "r4-raw-noCurve ERR_INVALID_ARG_TYPE",
-        "r4-raw-badCurve ERR_CRYPTO_INVALID_CURVE",
-        "r4-raw-secp256r1 ERR_CRYPTO_INVALID_CURVE",
-        "r4-raw-aktBanana ERR_INVALID_ARG_VALUE",
-        "r4-raw-aktRsa ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
-        "r4-raw-badPoint ERR_INVALID_ARG_VALUE",
-        "r4-raw-compressed ERR_INVALID_ARG_VALUE",
-        "r4-raw-wrongSize ERR_INVALID_ARG_VALUE",
-        "r4-okp-badx ERR_CRYPTO_INVALID_JWK",
-        "r4-okp-noD ERR_CRYPTO_INVALID_JWK",
-        "r4-okp-noCrv ERR_CRYPTO_INVALID_JWK",
-        "r4-okp-badCrv ERR_CRYPTO_INVALID_JWK",
-        "r4-okp-badD ERR_CRYPTO_INVALID_JWK",
-        "r4-okp-fromD ERR_CRYPTO_INVALID_JWK",
-        "r4-okp-fromDxd true",
-        "r4-okp-privD true",
-        "r4-ec-jwkexp true",
-        "r4-ec-badx ERR_CRYPTO_INVALID_JWK",
-        "r4-ec-bady ERR_CRYPTO_INVALID_JWK",
-        "r4-ec-noD ERR_CRYPTO_INVALID_JWK",
-        "r4-ec-noCrv ERR_CRYPTO_INVALID_JWK",
-        "r4-ec-badCrv ERR_CRYPTO_INVALID_CURVE",
-        "r4-ec-badD ERR_CRYPTO_INVALID_JWK",
-        "r4-ec-badPoint ERR_CRYPTO_INVALID_JWK",
-        "r4-ec-priv-rt true",
-        "r4-ec-pub-fromD true",
-        "r4-dsa-jwkexp ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE",
-        "r4-dsa-jwkimp ERR_CRYPTO_INVALID_JWK",
-        "r4-dsa-details true true true true",
-        "r4-done",
+        "ex-raw-len 32 65 true",
+        "ex-raw-rt private true public true",
+        "ex-raw-derive true prime256v1",
+        "ex-sec1 true 307702010104200f true",
+        "ex-sec1-rt true prime256v1",
+        "ex-details-ec prime256v1 prime256v1 prime256v1",
+        "ex-details-okp true 0 true",
+        "ex-gate-typeless ERR_INVALID_ARG_VALUE",
+        "ex-gate-banana ERR_INVALID_ARG_VALUE",
+        "ex-gate-pub-pkcs8 ERR_INVALID_ARG_VALUE",
+        "ex-gate-pub-sec1 ERR_INVALID_ARG_VALUE",
+        "ex-gate-priv-spki ERR_INVALID_ARG_VALUE",
+        "ex-gate-ec-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "ex-gate-ec-pub-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "ex-gate-rsa-sec1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "ex-gate-pss-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "ex-gate-fmt-buffer ERR_INVALID_ARG_VALUE",
+        "ex-gate-fmt-undef ERR_INVALID_ARG_VALUE",
+        "ex-gate-sec-pem ERR_INVALID_ARG_VALUE",
+        "ex-gate-sec-ok true",
+        "ex-raw-kind ERR_INVALID_ARG_VALUE",
+        "ex-raw-rsa ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "ex-raw-noCurve ERR_INVALID_ARG_TYPE",
+        "ex-raw-badCurve ERR_CRYPTO_INVALID_CURVE",
+        "ex-raw-secp256r1 ERR_CRYPTO_INVALID_CURVE",
+        "ex-raw-aktBanana ERR_INVALID_ARG_VALUE",
+        "ex-raw-aktRsa ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS",
+        "ex-raw-badPoint ERR_INVALID_ARG_VALUE",
+        "ex-raw-compressed ERR_INVALID_ARG_VALUE",
+        "ex-raw-wrongSize ERR_INVALID_ARG_VALUE",
+        "ex-okp-badx ERR_CRYPTO_INVALID_JWK",
+        "ex-okp-noD ERR_CRYPTO_INVALID_JWK",
+        "ex-okp-noCrv ERR_CRYPTO_INVALID_JWK",
+        "ex-okp-badCrv ERR_CRYPTO_INVALID_JWK",
+        "ex-okp-badD ERR_CRYPTO_INVALID_JWK",
+        "ex-okp-fromD ERR_CRYPTO_INVALID_JWK",
+        "ex-okp-fromDxd true",
+        "ex-okp-privD true",
+        "ex-ec-jwkexp true",
+        "ex-ec-badx ERR_CRYPTO_INVALID_JWK",
+        "ex-ec-bady ERR_CRYPTO_INVALID_JWK",
+        "ex-ec-noD ERR_CRYPTO_INVALID_JWK",
+        "ex-ec-noCrv ERR_CRYPTO_INVALID_JWK",
+        "ex-ec-badCrv ERR_CRYPTO_INVALID_CURVE",
+        "ex-ec-badD ERR_CRYPTO_INVALID_JWK",
+        "ex-ec-badPoint ERR_CRYPTO_INVALID_JWK",
+        "ex-ec-priv-rt true",
+        "ex-ec-pub-fromD true",
+        "ex-dsa-jwkexp ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE",
+        "ex-dsa-jwkimp ERR_CRYPTO_INVALID_JWK",
+        "ex-dsa-details true true true true",
+        "ex-done",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
@@ -446,32 +446,32 @@ const { privateKey: ecPriv } = generateKeyPairSync("ec", { namedCurve: "prime256
 const rawPriv = edPriv.export({ format: "raw-private" });
 
 // ── 正常件：raw 往返不受新门影响 ──
-log("r5-raw-rt", Buffer.isBuffer(rawPriv) && rawPriv.length === 32,
+log("rs-raw-rt", Buffer.isBuffer(rawPriv) && rawPriv.length === 32,
   createPrivateKey({ key: rawPriv, format: "raw-private", asymmetricKeyType: "ed25519" }).equals(edPriv));
 
 // ── 报错件：导出 passphrase 门（先于 kind/format 门）──
-log("r5-raw-priv-pp", throws(() => edPriv.export({ format: "raw-private", passphrase: "test" })));
-log("r5-raw-pub-pp", throws(() => edPriv.export({ format: "raw-public", passphrase: "test" })));
-log("r5-raw-seed-pp", throws(() => edPriv.export({ format: "raw-seed", passphrase: "test" })));
-log("r5-raw-seed", throws(() => edPriv.export({ format: "raw-seed" })));
-log("r5-ec-raw-seed", throws(() => ecPriv.export({ format: "raw-seed" })));
-log("r5-ec-raw-seed-type", throws(() => ecPriv.export({ format: "raw-seed", type: "banana" })));
-log("r5-banana-pp", throws(() => edPriv.export({ format: "banana", passphrase: "x" })));
-log("r5-undef-pp", throws(() => edPriv.export({ passphrase: "x" })));
+log("rs-raw-priv-pp", throws(() => edPriv.export({ format: "raw-private", passphrase: "test" })));
+log("rs-raw-pub-pp", throws(() => edPriv.export({ format: "raw-public", passphrase: "test" })));
+log("rs-raw-seed-pp", throws(() => edPriv.export({ format: "raw-seed", passphrase: "test" })));
+log("rs-raw-seed", throws(() => edPriv.export({ format: "raw-seed" })));
+log("rs-ec-raw-seed", throws(() => ecPriv.export({ format: "raw-seed" })));
+log("rs-ec-raw-seed-type", throws(() => ecPriv.export({ format: "raw-seed", type: "banana" })));
+log("rs-banana-pp", throws(() => edPriv.export({ format: "banana", passphrase: "x" })));
+log("rs-undef-pp", throws(() => edPriv.export({ passphrase: "x" })));
 
 // ── 报错件：导入 raw-seed（走 akt 链后 INCOMPATIBLE）──
-log("r5-imp-seed", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed", asymmetricKeyType: "ed25519" })));
-log("r5-imp-seed-ec", throws(() => createPrivateKey({
+log("rs-imp-seed", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed", asymmetricKeyType: "ed25519" })));
+log("rs-imp-seed-ec", throws(() => createPrivateKey({
   key: ecPriv.export({ format: "raw-private" }), format: "raw-seed",
   asymmetricKeyType: "ec", namedCurve: "prime256v1" })));
-log("r5-imp-seed-noakt", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed" })));
-log("r5-imp-seed-badakt", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed", asymmetricKeyType: "banana" })));
+log("rs-imp-seed-noakt", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed" })));
+log("rs-imp-seed-badakt", throws(() => createPrivateKey({ key: rawPriv, format: "raw-seed", asymmetricKeyType: "banana" })));
 
 // ── 边界件：cipher 单给忽略、公钥/secret 侧忽略 passphrase ──
-log("r5-cipher-only", Buffer.isBuffer(edPriv.export({ format: "raw-private", cipher: "aes-256-cbc" })));
-log("r5-jwk-cipher-only", typeof edPriv.export({ format: "jwk", cipher: "aes-256-cbc" }) === "object");
-log("r5-sec-pp", Buffer.isBuffer(createSecretKey(Buffer.alloc(8)).export({ passphrase: "x" })));
-log("r5-pub-pp", edPub.export({ format: "pem", type: "spki", passphrase: "x" }).startsWith("-----BEGIN PUBLIC KEY-----"));
+log("rs-cipher-only", Buffer.isBuffer(edPriv.export({ format: "raw-private", cipher: "aes-256-cbc" })));
+log("rs-jwk-cipher-only", typeof edPriv.export({ format: "jwk", cipher: "aes-256-cbc" }) === "object");
+log("rs-sec-pp", Buffer.isBuffer(createSecretKey(Buffer.alloc(8)).export({ passphrase: "x" })));
+log("rs-pub-pp", edPub.export({ format: "pem", type: "spki", passphrase: "x" }).startsWith("-----BEGIN PUBLIC KEY-----"));
 
 // ── 报错件：raw 导入不收字符串（超 28 码点截前 25 + '...'；料随机，动态验回显）──
 const hexAll = rawPriv.toString("hex");
@@ -484,9 +484,9 @@ const recvOk = (key, want) => {
   try { createPublicKey({ key, encoding: "hex", format: "raw-public", asymmetricKeyType: "ed25519" }); return "NO-THROW"; }
   catch (e) { return e.message.includes(`('${want}')`) ? "recv-ok" : "recv-bad"; }
 };
-log("r5-str-short", strPub(hex10), recvOk(hex10, hex10));
-log("r5-str-long", strPub(hexAll), recvOk(hexAll, `${hexAll.slice(0, 25)}...`));
-log("r5-str-seed", (() => {
+log("rs-str-short", strPub(hex10), recvOk(hex10, hex10));
+log("rs-str-long", strPub(hexAll), recvOk(hexAll, `${hexAll.slice(0, 25)}...`));
+log("rs-str-seed", (() => {
   try { createPrivateKey({ key: hexAll, encoding: "hex", format: "raw-seed", asymmetricKeyType: "ed25519" }); return "NO-THROW"; }
   catch (e) { return e.code + " " + (e.message.includes(`('${hexAll.slice(0, 25)}...')`) ? "recv-ok" : "recv-bad"); }
 })());
@@ -494,86 +494,86 @@ log("r5-str-seed", (() => {
 // ── 正常件：ml raw-public/seed 导出（尺寸即口径）──
 const { publicKey: kemPub, privateKey: kemPriv } = generateKeyPairSync("ml-kem-768");
 const { publicKey: dsaPub, privateKey: dsaPriv } = generateKeyPairSync("ml-dsa-44");
-log("r5-ml-pub", kemPub.export({ format: "raw-public" }).length, dsaPub.export({ format: "raw-public" }).length);
-log("r5-ml-seed", kemPriv.export({ format: "raw-seed" }).length, dsaPriv.export({ format: "raw-seed" }).length);
-log("r5-ml-priv-noraw", throws(() => kemPriv.export({ format: "raw-private" })));
-log("r5-ml-pub-kind", throws(() => kemPriv.export({ format: "raw-public" })));
+log("rs-ml-pub", kemPub.export({ format: "raw-public" }).length, dsaPub.export({ format: "raw-public" }).length);
+log("rs-ml-seed", kemPriv.export({ format: "raw-seed" }).length, dsaPriv.export({ format: "raw-seed" }).length);
+log("rs-ml-priv-noraw", throws(() => kemPriv.export({ format: "raw-private" })));
+log("rs-ml-pub-kind", throws(() => kemPriv.export({ format: "raw-public" })));
 // ml raw 导入：对尺寸过、错尺寸 ARG_VALUE、raw-private 不兼容、seed 往返
 const kemRawPub = kemPub.export({ format: "raw-public" });
 const kemSeed = kemPriv.export({ format: "raw-seed" });
-log("r5-ml-imp-ok", createPublicKey({ key: kemRawPub, format: "raw-public", asymmetricKeyType: "ml-kem-768" }).type);
-log("r5-ml-imp-badlen", throws(() => createPublicKey({ key: Buffer.alloc(800), format: "raw-public", asymmetricKeyType: "ml-kem-768" })));
-log("r5-ml-imp-norawpriv", throws(() => createPrivateKey({ key: kemSeed, format: "raw-private", asymmetricKeyType: "ml-kem-768" })));
+log("rs-ml-imp-ok", createPublicKey({ key: kemRawPub, format: "raw-public", asymmetricKeyType: "ml-kem-768" }).type);
+log("rs-ml-imp-badlen", throws(() => createPublicKey({ key: Buffer.alloc(800), format: "raw-public", asymmetricKeyType: "ml-kem-768" })));
+log("rs-ml-imp-norawpriv", throws(() => createPrivateKey({ key: kemSeed, format: "raw-private", asymmetricKeyType: "ml-kem-768" })));
 const kemSeedBack = createPrivateKey({ key: kemSeed, format: "raw-seed", asymmetricKeyType: "ml-kem-768" });
-log("r5-ml-seed-rt", kemSeedBack.type, kemSeedBack.export({ format: "raw-seed" }).equals(kemSeed));
-log("r5-ml-derive", createPublicKey({ key: kemSeed, format: "raw-seed", asymmetricKeyType: "ml-kem-768" }).type);
+log("rs-ml-seed-rt", kemSeedBack.type, kemSeedBack.export({ format: "raw-seed" }).equals(kemSeed));
+log("rs-ml-derive", createPublicKey({ key: kemSeed, format: "raw-seed", asymmetricKeyType: "ml-kem-768" }).type);
 
 // ── 正常件：EC 压缩点（导出 33B + 导入解压往返，真机逐字节对拍）──
 const { publicKey: p256Pub } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
 const comp = p256Pub.export({ format: "raw-public", type: "compressed" });
-log("r5-ec-comp-len", comp.length, comp[0] === 2 || comp[0] === 3);
-log("r5-ec-comp-rt", createPublicKey({ key: comp, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "P-256" }).equals(p256Pub));
-log("r5-ec-uncomp", p256Pub.export({ format: "raw-public", type: "uncompressed" }).length);
-log("r5-ec-comp-hybrid", throws(() => p256Pub.export({ format: "raw-public", type: "hybrid" })));
-log("r5-ec-comp-badpre", throws(() => createPublicKey({
+log("rs-ec-comp-len", comp.length, comp[0] === 2 || comp[0] === 3);
+log("rs-ec-comp-rt", createPublicKey({ key: comp, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "P-256" }).equals(p256Pub));
+log("rs-ec-uncomp", p256Pub.export({ format: "raw-public", type: "uncompressed" }).length);
+log("rs-ec-comp-hybrid", throws(() => p256Pub.export({ format: "raw-public", type: "hybrid" })));
+log("rs-ec-comp-badpre", throws(() => createPublicKey({
   key: Buffer.concat([Buffer.from([5]), comp.subarray(1)]), format: "raw-public",
   asymmetricKeyType: "ec", namedCurve: "P-256" })));
-log("r5-ec-comp-wrongcurve", throws(() => createPublicKey({
+log("rs-ec-comp-wrongcurve", throws(() => createPublicKey({
   key: comp, format: "raw-public", asymmetricKeyType: "ec", namedCurve: "P-384" })));
 
 // ── 正常件：slh 装载 + raw 尺寸（套件 fixture 内嵌落盘，§4.44）──
 const slhPub = createPublicKey(readFileSync("slh_pub.pem", "ascii"));
 const slhPriv = createPrivateKey(readFileSync("slh_priv.pem", "ascii"));
-log("r5-slh-load", slhPub.type, slhPub.asymmetricKeyType, slhPub.export({ format: "raw-public" }).length);
-log("r5-slh-priv", slhPriv.type, slhPriv.asymmetricKeyType, slhPriv.export({ format: "raw-private" }).length);
-log("r5-slh-seed", throws(() => slhPriv.export({ format: "raw-seed" })));
-log("r5-slh-rt", createPublicKey({
+log("rs-slh-load", slhPub.type, slhPub.asymmetricKeyType, slhPub.export({ format: "raw-public" }).length);
+log("rs-slh-priv", slhPriv.type, slhPriv.asymmetricKeyType, slhPriv.export({ format: "raw-private" }).length);
+log("rs-slh-seed", throws(() => slhPriv.export({ format: "raw-seed" })));
+log("rs-slh-rt", createPublicKey({
   key: slhPub.export({ format: "raw-public" }), format: "raw-public",
   asymmetricKeyType: "slh-dsa-sha2-128f" }).equals(slhPub));
-log("r5-done");
+log("rs-done");
 "#,
     );
     for line in [
-        "r5-raw-rt true true",
-        "r5-raw-priv-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-private does not support encryption.",
-        "r5-raw-pub-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-public does not support encryption.",
-        "r5-raw-seed-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-seed does not support encryption.",
-        "r5-raw-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-ec-raw-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-ec-raw-seed-type ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-banana-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding banana does not support encryption.",
-        "r5-undef-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding undefined does not support encryption.",
-        "r5-imp-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-imp-seed-ec ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-imp-seed-noakt ERR_INVALID_ARG_TYPE|The \"key.asymmetricKeyType\" property must be of type string. Received undefined",
-        "r5-imp-seed-badakt ERR_INVALID_ARG_VALUE|Invalid asymmetricKeyType: banana",
-        "r5-cipher-only true",
-        "r5-jwk-cipher-only true",
-        "r5-sec-pp true",
-        "r5-pub-pp true",
-        "r5-str-short ERR_INVALID_ARG_TYPE recv-ok",
-        "r5-str-long ERR_INVALID_ARG_TYPE recv-ok",
-        "r5-str-seed ERR_INVALID_ARG_TYPE recv-ok",
-        "r5-ml-pub 1184 1312",
-        "r5-ml-seed 64 32",
-        "r5-ml-priv-noraw ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-ml-pub-kind ERR_INVALID_ARG_VALUE|The property 'options.format' is invalid. Received 'raw-public'",
-        "r5-ml-imp-ok public",
-        "r5-ml-imp-badlen ERR_INVALID_ARG_VALUE|Invalid key data",
-        "r5-ml-imp-norawpriv ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-ml-seed-rt private true",
-        "r5-ml-derive public",
-        "r5-ec-comp-len 33 true",
-        "r5-ec-comp-rt true",
-        "r5-ec-uncomp 65",
-        "r5-ec-comp-hybrid ERR_INVALID_ARG_VALUE|The property 'options.type' must be one of: 'compressed', 'uncompressed'. Received 'hybrid'",
-        "r5-ec-comp-badpre ERR_INVALID_ARG_VALUE|Invalid key data",
-        "r5-ec-comp-wrongcurve ERR_INVALID_ARG_VALUE|Invalid key data",
-        "r5-slh-load public slh-dsa-sha2-128f 32",
-        "r5-slh-priv private slh-dsa-sha2-128f 64",
-        "r5-slh-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
-        "r5-slh-rt true",
-        "r5-done",
+        "rs-raw-rt true true",
+        "rs-raw-priv-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-private does not support encryption.",
+        "rs-raw-pub-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-public does not support encryption.",
+        "rs-raw-seed-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding raw-seed does not support encryption.",
+        "rs-raw-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-ec-raw-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-ec-raw-seed-type ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-banana-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding banana does not support encryption.",
+        "rs-undef-pp ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding undefined does not support encryption.",
+        "rs-imp-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-imp-seed-ec ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-imp-seed-noakt ERR_INVALID_ARG_TYPE|The \"key.asymmetricKeyType\" property must be of type string. Received undefined",
+        "rs-imp-seed-badakt ERR_INVALID_ARG_VALUE|Invalid asymmetricKeyType: banana",
+        "rs-cipher-only true",
+        "rs-jwk-cipher-only true",
+        "rs-sec-pp true",
+        "rs-pub-pp true",
+        "rs-str-short ERR_INVALID_ARG_TYPE recv-ok",
+        "rs-str-long ERR_INVALID_ARG_TYPE recv-ok",
+        "rs-str-seed ERR_INVALID_ARG_TYPE recv-ok",
+        "rs-ml-pub 1184 1312",
+        "rs-ml-seed 64 32",
+        "rs-ml-priv-noraw ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-ml-pub-kind ERR_INVALID_ARG_VALUE|The property 'options.format' is invalid. Received 'raw-public'",
+        "rs-ml-imp-ok public",
+        "rs-ml-imp-badlen ERR_INVALID_ARG_VALUE|Invalid key data",
+        "rs-ml-imp-norawpriv ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-ml-seed-rt private true",
+        "rs-ml-derive public",
+        "rs-ec-comp-len 33 true",
+        "rs-ec-comp-rt true",
+        "rs-ec-uncomp 65",
+        "rs-ec-comp-hybrid ERR_INVALID_ARG_VALUE|The property 'options.type' must be one of: 'compressed', 'uncompressed'. Received 'hybrid'",
+        "rs-ec-comp-badpre ERR_INVALID_ARG_VALUE|Invalid key data",
+        "rs-ec-comp-wrongcurve ERR_INVALID_ARG_VALUE|Invalid key data",
+        "rs-slh-load public slh-dsa-sha2-128f 32",
+        "rs-slh-priv private slh-dsa-sha2-128f 64",
+        "rs-slh-seed ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding is incompatible with the key type",
+        "rs-slh-rt true",
+        "rs-done",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
@@ -596,54 +596,54 @@ const throws = (fn) => { try { fn(); return "NO-THROW"; } catch (e) { return `${
 
 // ── 装载面：生成 PSS 键无约束（details 精确形）+ 导出往返 ──
 const { publicKey: pssPub, privateKey: pssPriv } = generateKeyPairSync("rsa-pss", { modulusLength: 1024 });
-log("r6-pss-type", pssPub.asymmetricKeyType, pssPriv.asymmetricKeyType);
-log("r6-pss-det", JSON.stringify(pssPub.asymmetricKeyDetails, (k, v) => typeof v === "bigint" ? "BIG" : v));
+log("ps-pss-type", pssPub.asymmetricKeyType, pssPriv.asymmetricKeyType);
+log("ps-pss-det", JSON.stringify(pssPub.asymmetricKeyDetails, (k, v) => typeof v === "bigint" ? "BIG" : v));
 const spki = pssPub.export({ format: "der", type: "spki" });
 const back = createPublicKey({ key: spki, format: "der", type: "spki" });
-log("r6-pss-rt", back.asymmetricKeyType, back.equals(pssPub));
-log("r6-pss-jwk", throws(() => pssPub.export({ format: "jwk" })));
-log("r6-pss-pkcs1", throws(() => pssPub.export({ format: "pem", type: "pkcs1" })));
+log("ps-pss-rt", back.asymmetricKeyType, back.equals(pssPub));
+log("ps-pss-jwk", throws(() => pssPub.export({ format: "jwk" })));
+log("ps-pss-pkcs1", throws(() => pssPub.export({ format: "pem", type: "pkcs1" })));
 // PSS SHA-1 自签自验（sha1_010 底座）
 const sig1 = createSign("sha1").update("foo").sign({ key: pssPriv, saltLength: 8 });
-log("r6-pss-sha1", createVerify("sha1").update("foo").verify({ key: pssPub, saltLength: 8 }, sig1));
+log("ps-pss-sha1", createVerify("sha1").update("foo").verify({ key: pssPub, saltLength: 8 }, sig1));
 
 // ── 约束面：生成键 saltLength 选项即下限 ──
 const { privateKey: lim } = generateKeyPairSync("rsa-pss", { modulusLength: 1024, saltLength: 20 });
-log("r6-lim-small", throws(() => createSign("sha256").update("x").sign({ key: lim, saltLength: 8 })));
+log("ps-lim-small", throws(() => createSign("sha256").update("x").sign({ key: lim, saltLength: 8 })));
 const sigD = createSign("sha256").update("x").sign(lim);
-log("r6-lim-def", createVerify("sha256").update("x").verify(lim, sigD));
+log("ps-lim-def", createVerify("sha256").update("x").verify(lim, sigD));
 
 // ── 入口门：key.format/key.type/JWK key 形态 ──
-log("r6-fmt", throws(() => createPrivateKey({ key: Buffer.alloc(0), format: "banana", type: "pkcs8" })));
-log("r6-typ", throws(() => createPublicKey({ key: Buffer.alloc(0), format: "der", type: "banana" })));
-log("r6-jwk-str", throws(() => createPublicKey({ key: "", format: "jwk" })));
-log("r6-jwk-null", throws(() => createPrivateKey({ key: null, format: "jwk" })));
-log("r6-curves", getCurves().join(","));
-log("r6-gen-ec-okp", throws(() => generateKeyPairSync("ec", { namedCurve: "ed25519" })));
+log("ps-fmt", throws(() => createPrivateKey({ key: Buffer.alloc(0), format: "banana", type: "pkcs8" })));
+log("ps-typ", throws(() => createPublicKey({ key: Buffer.alloc(0), format: "der", type: "banana" })));
+log("ps-jwk-str", throws(() => createPublicKey({ key: "", format: "jwk" })));
+log("ps-jwk-null", throws(() => createPrivateKey({ key: null, format: "jwk" })));
+log("ps-curves", getCurves().join(","));
+log("ps-gen-ec-okp", throws(() => generateKeyPairSync("ec", { namedCurve: "ed25519" })));
 
 // ── 加密导出缺 cipher 门 ──
 const { privateKey: rsa } = generateKeyPairSync("rsa", { modulusLength: 1024 });
-log("r6-nocipher", throws(() => rsa.export({ format: "pem", type: "pkcs8", passphrase: "s" })));
-log("r6-done");
+log("ps-nocipher", throws(() => rsa.export({ format: "pem", type: "pkcs8", passphrase: "s" })));
+log("ps-done");
 "#,
     );
     for line in [
-        "r6-pss-type rsa-pss rsa-pss",
-        "r6-pss-det {\"modulusLength\":1024,\"publicExponent\":\"BIG\"}",
-        "r6-pss-rt rsa-pss true",
-        "r6-pss-jwk ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE|Unsupported JWK Key Type.",
-        "r6-pss-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding pkcs1 can only be used for RSA keys.",
-        "r6-pss-sha1 true",
-        "r6-lim-small ERR_OSSL_PSS_SALTLEN_TOO_SMALL|error:1C8000AC:Provider routines::pss saltlen too small",
-        "r6-lim-def true",
-        "r6-fmt ERR_INVALID_ARG_VALUE|The property 'key.format' is invalid. Received 'banana'",
-        "r6-typ ERR_INVALID_ARG_VALUE|The property 'key.type' is invalid. Received 'banana'",
-        "r6-jwk-str ERR_INVALID_ARG_TYPE|The \"key.key\" property must be of type object. Received type string ('')",
-        "r6-jwk-null ERR_INVALID_ARG_TYPE|The \"key.key\" property must be of type object. Received null",
-        "r6-curves prime256v1,secp384r1,secp521r1,secp256k1",
-        "r6-gen-ec-okp ERR_CRYPTO_INVALID_CURVE|Invalid EC curve name",
-        "r6-nocipher ERR_INVALID_ARG_VALUE|The property 'options.cipher' is required when a passphrase is specified. Received undefined",
-        "r6-done",
+        "ps-pss-type rsa-pss rsa-pss",
+        "ps-pss-det {\"modulusLength\":1024,\"publicExponent\":\"BIG\"}",
+        "ps-pss-rt rsa-pss true",
+        "ps-pss-jwk ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE|Unsupported JWK Key Type.",
+        "ps-pss-pkcs1 ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS|The selected key encoding pkcs1 can only be used for RSA keys.",
+        "ps-pss-sha1 true",
+        "ps-lim-small ERR_OSSL_PSS_SALTLEN_TOO_SMALL|error:1C8000AC:Provider routines::pss saltlen too small",
+        "ps-lim-def true",
+        "ps-fmt ERR_INVALID_ARG_VALUE|The property 'key.format' is invalid. Received 'banana'",
+        "ps-typ ERR_INVALID_ARG_VALUE|The property 'key.type' is invalid. Received 'banana'",
+        "ps-jwk-str ERR_INVALID_ARG_TYPE|The \"key.key\" property must be of type object. Received type string ('')",
+        "ps-jwk-null ERR_INVALID_ARG_TYPE|The \"key.key\" property must be of type object. Received null",
+        "ps-curves prime256v1,secp384r1,secp521r1,secp256k1",
+        "ps-gen-ec-okp ERR_CRYPTO_INVALID_CURVE|Invalid EC curve name",
+        "ps-nocipher ERR_INVALID_ARG_VALUE|The property 'options.cipher' is required when a passphrase is specified. Received undefined",
+        "ps-done",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }

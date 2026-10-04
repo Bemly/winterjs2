@@ -394,7 +394,7 @@ await new Promise((res, rej) => {
   r.on("error", rej); w.on("error", rej);
   r.pipe(w).on("finish", res);
 });
-console.log("phase1", JSON.stringify(fs.readFileSync("d.txt", "utf8")));
+console.log("pipe-rt", JSON.stringify(fs.readFileSync("d.txt", "utf8")));
 await new Promise((res, rej) => {
   const got = [];
   const sink = new stream.Writable({
@@ -404,7 +404,7 @@ await new Promise((res, rej) => {
   const r = fs.createReadStream("d.txt", { encoding: "latin1" });
   r.on("error", rej);
   r.pipe(sink).on("finish", () => {
-    console.log("phase2", got.length, got.every((c) => c.equals(Buffer.from("xyz\n"))));
+    console.log("latin1-single", got.length, got.every((c) => c.equals(Buffer.from("xyz\n"))));
     res();
   });
 });
@@ -413,11 +413,11 @@ await new Promise((res) => {
   const w = fs.createWriteStream("e.txt", { encoding: "base64" });
   w.write("eHl6");
   w.end("Q2c9PQ==");
-  w.on("finish", () => { console.log("phase3", JSON.stringify(fs.readFileSync("e.txt", "utf8"))); res(); });
+  w.on("finish", () => { console.log("write-def", JSON.stringify(fs.readFileSync("e.txt", "utf8"))); res(); });
 });
 "#,
     );
-    for line in ["phase1 \"xyz\\n\"", "phase2 1 true", "phase3 \"xyzCg==\""] {
+    for line in ["pipe-rt \"xyz\\n\"", "latin1-single 1 true", "write-def \"xyzCg==\""] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
     dir.close().unwrap();

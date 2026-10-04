@@ -463,15 +463,15 @@ if (workerData?.throwKind === "str") {
 // 1) MessageEvent 全局：默认面 + init 转换（WebIDL USVString/DOMString）。
 assert.strictEqual(typeof MessageEvent, "function");
 const ev = new MessageEvent("message", { data: 2, origin: 1, lastEventId: 0 });
-console.log("p1", `${ev.type}|${ev.data}|${ev.origin}|${ev.lastEventId}|${ev.source}|${JSON.stringify(ev.ports)}` === "message|2|1|0|null|[]");
-console.log("p1-inst", new MessageEvent("m") instanceof Event);
+console.log("ev-msg", `${ev.type}|${ev.data}|${ev.origin}|${ev.lastEventId}|${ev.source}|${JSON.stringify(ev.ports)}` === "message|2|1|0|null|[]");
+console.log("ev-msg-inst", new MessageEvent("m") instanceof Event);
 let t1 = false;
 try { new MessageEvent("m", { source: 1 }); } catch (e) { t1 = /Expected eventInitDict\.source \("1"\) to be an instance of MessagePort\./.test(e.message); }
 let t2 = false;
 try { new MessageEvent("m", { ports: 0 }); } catch (e) { t2 = /eventInitDict\.ports \(0\) is not iterable\./.test(e.message); }
 let t3 = false;
 try { new MessageEvent("m", { ports: [null] }); } catch (e) { t3 = /Expected eventInitDict\.ports\[0\] \("null"\) to be an instance of MessagePort\./.test(e.message); }
-console.log("p1-err", t1, t2, t3);
+console.log("ev-msg-err", t1, t2, t3);
 
 // 2) MessagePort EventTarget 双面：自定义类型 CustomEvent(detail)；EE 裸值不变；
 //    onmessage 收真 MessageEvent（data/target/ports）。
@@ -481,18 +481,18 @@ console.log("p1-err", t1, t2, t3);
   port2.addEventListener("foo", (e) => { etType = e.type; etDetail = e.detail; });
   port2.on("foo", (v) => { eeVal = v; });
   port2.emit("foo", "bar");
-  console.log("p2", `${etType}|${etDetail}|${eeVal}` === "foo|bar|bar");
+  console.log("port-ev", `${etType}|${etDetail}|${eeVal}` === "foo|bar|bar");
   // removeEventListener 摘净
   const fn = () => { etType = "BAD"; };
   port2.addEventListener("foo", fn);
   port2.removeEventListener("foo", fn);
   port2.emit("foo", "x");
-  console.log("p2-rm", etType === "foo");
+  console.log("port-rm", etType === "foo");
   const got = await new Promise((res) => {
     port1.onmessage = (m) => res(m);
     port2.postMessage(4);
   });
-  console.log("p2-om", got instanceof MessageEvent, got.data === 4, got.target === port1, Array.isArray(got.ports) && got.ports.length === 0);
+  console.log("port-om", got instanceof MessageEvent, got.data === 4, got.target === port1, Array.isArray(got.ports) && got.ports.length === 0);
   port1.close(); port2.close();
 }
 
@@ -504,7 +504,7 @@ console.log("p1-err", t1, t2, t3);
     bc1.addEventListener("message", (e) => res(e));
     bc2.postMessage("hello");
   });
-  console.log("p3", got instanceof MessageEvent, got.data === "hello");
+  console.log("bc-msg", got instanceof MessageEvent, got.data === "hello");
   bc1.close(); bc2.close();
   const bcX = new BroadcastChannel("ch");
   bcX.close(); bcX.close();
@@ -514,24 +514,24 @@ console.log("p1-err", t1, t2, t3);
   const bcY = new BroadcastChannel("ch");
   try { bcY.postMessage(); } catch (e) { threw2 = e.message; }
   bcY.close();
-  console.log("p3-err", threw1 === "BroadcastChannel is closed", threw2 === 'The "message" argument must be specified');
+  console.log("bc-err", threw1 === "BroadcastChannel is closed", threw2 === 'The "message" argument must be specified');
 }
 
 // 4) threadName（属性 + 退出置 null）+ resourceLimits 缺省 {}。
 {
   const w = new Worker(new URL(import.meta.url).pathname, { name: "tname", workerData: { throwKind: "num" } });
-  console.log("p4-name", w.threadName === "tname", JSON.stringify(w.resourceLimits) === "{}");
+  console.log("w-name", w.threadName === "tname", JSON.stringify(w.resourceLimits) === "{}");
   const errs = [];
   w.on("error", (e) => errs.push(e));
   w.on("exit", (c) => {
-    console.log("p4-prim", c === 1, errs.length === 1, typeof errs[0] === "number", errs[0] === 42);
-    console.log("p4-null", w.threadName === null);
+    console.log("w-prim", c === 1, errs.length === 1, typeof errs[0] === "number", errs[0] === 42);
+    console.log("w-null", w.threadName === null);
     // string 原始值
     const w2 = new Worker(new URL(import.meta.url).pathname, { workerData: { throwKind: "str" } });
     const errs2 = [];
     w2.on("error", (e) => errs2.push(e));
     w2.on("exit", (c2) => {
-      console.log("p4-str", c2 === 1, errs2.length === 1, errs2[0] === "boom");
+      console.log("w-str", c2 === 1, errs2.length === 1, errs2[0] === "boom");
       run5();
     });
   });
@@ -541,7 +541,7 @@ console.log("p1-err", t1, t2, t3);
 function run5() {
   const missing = new URL("file:///no/such/worker-does-not-exist.js");
   const w3 = new Worker(missing);
-  w3.on("error", (e) => console.log("p5", /Cannot find module .+worker-does-not-exist\.js/.test(e.message)));
+  w3.on("error", (e) => console.log("missing-mod", /Cannot find module .+worker-does-not-exist\.js/.test(e.message)));
   w3.on("exit", () => console.log("END"));
 }
 "#,
@@ -553,19 +553,19 @@ function run5() {
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
     for line in [
-        "p1 true",
-        "p1-inst true",
-        "p1-err true true true",
-        "p2 true",
-        "p2-rm true",
-        "p2-om true true true true",
-        "p3 true true",
-        "p3-err true true",
-        "p4-name true true",
-        "p4-prim true true true true",
-        "p4-null true",
-        "p4-str true true true",
-        "p5 true",
+        "ev-msg true",
+        "ev-msg-inst true",
+        "ev-msg-err true true true",
+        "port-ev true",
+        "port-rm true",
+        "port-om true true true true",
+        "bc-msg true true",
+        "bc-err true true",
+        "w-name true true",
+        "w-prim true true true true",
+        "w-null true",
+        "w-str true true true",
+        "missing-mod true",
         "END",
     ] {
         assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");

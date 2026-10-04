@@ -76,7 +76,7 @@ static napi_value Init(napi_env env, napi_value exports) {
   napi_value hello, add, version;
   napi_create_function(env, "hello", NAPI_AUTO_LENGTH, Hello, NULL, &hello);
   napi_create_function(env, "add", NAPI_AUTO_LENGTH, Add, NULL, &add);
-  napi_create_string_utf8(env, "m0-ok", NAPI_AUTO_LENGTH, &version);
+  napi_create_string_utf8(env, "ok", NAPI_AUTO_LENGTH, &version);
   napi_set_named_property(env, exports, "hello", hello);
   napi_set_named_property(env, exports, "add", add);
   napi_set_named_property(env, exports, "version", version);
@@ -114,7 +114,7 @@ console.log("typefn", typeof m.hello);
         String::from_utf8_lossy(&out.stderr)
     );
     let so = String::from_utf8_lossy(&out.stdout);
-    assert!(so.contains("hello 42 add 42 ver m0-ok"), "stdout: {so}");
+    assert!(so.contains("hello 42 add 42 ver ok"), "stdout: {so}");
     assert!(so.contains("same true"), "stdout: {so}");
     assert!(so.contains("typefn function"), "stdout: {so}");
     dir.close().unwrap();

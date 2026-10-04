@@ -22,7 +22,7 @@ assert.strictEqual(http.Agent().getName({ host: "h", port: 8 }), "h:8:");
 assert.strictEqual(http.Agent().getName({}), "localhost::");
 assert.strictEqual(http.Agent().getName({ host: "h", port: 8, family: 4 }), "h:8::4");
 assert.strictEqual(http.Agent().getName({ host: "h", port: 8, localAddress: "1.2.3.4" }), "h:8:1.2.3.4");
-console.log("p1 no-new-agent ok");
+console.log("no-new-agent ok");
 
 // 2) server 选项持久化 + 默认链（headersTimeout = min(60000, requestTimeout)）。
 const s2 = http.createServer({ requestTimeout: 2000 }, () => {});
@@ -33,7 +33,7 @@ assert.strictEqual(s2.timeout, 0);
 const s2b = http.createServer();
 assert.strictEqual(s2b.requestTimeout, 300000);
 assert.strictEqual(s2b.headersTimeout, 60000);
-console.log("p2 server-options ok");
+console.log("server-options ok");
 
 // 3) server.setTimeout 链式 + 'timeout' 事件（idle 触发，带 socket）。
 {
@@ -51,7 +51,7 @@ console.log("p2 server-options ok");
   setTimeout(() => {
     assert.strictEqual(fired >= 1, true, "server timeout not fired");
     s.close();
-    console.log("p3 server-setTimeout ok", fired);
+    console.log("server-setTimeout ok", fired);
   }, 350);
 }
 
@@ -72,7 +72,7 @@ console.log("p2 server-options ok");
       assert.strictEqual(handled, 1);
       assert.strictEqual(got, "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       srv.close();
-      console.log("p4 bad-request ok");
+      console.log("bad-request ok");
     });
   });
 }
@@ -88,7 +88,7 @@ console.log("p2 server-options ok");
     c.on("close", () => {
       assert.strictEqual(got, "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n");
       srv.close();
-      console.log("p5 request-timeout ok");
+      console.log("request-timeout ok");
     });
   });
 }
@@ -103,7 +103,7 @@ console.log("p2 server-options ok");
   try { http.createServer({ keepAliveTimeout: -1 }); } catch (e) { ok2 = e.code === "ERR_OUT_OF_RANGE"; }
   assert.ok(ok2, "expected ERR_OUT_OF_RANGE for negative");
   http.createServer({ requestTimeout: 5000, headersTimeout: 5000 }).close();
-  console.log("p6 validation ok");
+  console.log("validation ok");
 }
 
 // 7) 客户端 res 面：socket 在场 + 状态行无短语解析为空串（raw 服务端）。
@@ -143,7 +143,7 @@ console.log("p2 server-options ok");
       await new Promise((r) => res2.on("end", r));
       assert.strictEqual(res2.statusMessage, "");
       rawSrv2.close();
-      console.log("p7 client-res-surface ok");
+      console.log("client-res-surface ok");
     });
     rawSrv.close();
   });
@@ -172,7 +172,7 @@ console.log("p2 server-options ok");
     res.on("data", (c) => (got += c));
     res.on("end", () => {
       assert.strictEqual(got, "hello world");
-      console.log("p8 fake-agent ok");
+      console.log("fake-agent ok");
     });
   });
   req.on("error", () => {});
@@ -186,7 +186,7 @@ console.log("p2 server-options ok");
     const c = net.createConnection(srv.address().port, "127.0.0.1");
     c.on("close", () => {
       srv.close();
-      console.log("p9 close-idle ok");
+      console.log("close-idle ok");
     });
     setTimeout(() => srv.closeIdleConnections(), 60);
   });
@@ -213,7 +213,7 @@ console.log("p2 server-options ok");
     });
     assert.strictEqual(got, "part:end");
     srv.close();
-    console.log("p10 flush-headers ok");
+    console.log("flush-headers ok");
   });
 }
 
@@ -229,7 +229,7 @@ console.log("p2 server-options ok");
   const om2 = new http.OutgoingMessage();
   assert.strictEqual(om2.writableObjectMode, false);
   assert.ok(om2.writableHighWaterMark > 0);
-  console.log("p11 outgoing ok");
+  console.log("outgoing ok");
 }
 
 // 12) 路径校验：控制字符即 ERR_UNESCAPED_CHARACTERS；普通路径不受影响。
@@ -237,7 +237,7 @@ console.log("p2 server-options ok");
   let ok = false;
   try { http.request({ host: "x", path: "/a b\u0001" }); } catch (e) { ok = e.code === "ERR_UNESCAPED_CHARACTERS"; }
   assert.ok(ok, "expected ERR_UNESCAPED_CHARACTERS");
-  console.log("p12 path-validation ok");
+  console.log("path-validation ok");
 }
 
 // 13) IncomingMessage.setTimeout 转发 socket + ClientRequest .port 非自有属性。
@@ -254,26 +254,26 @@ console.log("p2 server-options ok");
   assert.strictEqual(rq.port, undefined);
   assert.strictEqual(rq.getPort(), 1234);
   assert.strictEqual(rq.getHost(), "x");
-  console.log("p13 im-req-surface ok");
+  console.log("im-req-surface ok");
 }
 
 setTimeout(() => console.log("END"), 900);
 "#,
     );
     for tag in [
-        "p1 no-new-agent ok",
-        "p2 server-options ok",
-        "p3 server-setTimeout ok",
-        "p4 bad-request ok",
-        "p5 request-timeout ok",
-        "p6 validation ok",
-        "p7 client-res-surface ok",
-        "p8 fake-agent ok",
-        "p9 close-idle ok",
-        "p10 flush-headers ok",
-        "p11 outgoing ok",
-        "p12 path-validation ok",
-        "p13 im-req-surface ok",
+        "no-new-agent ok",
+        "server-options ok",
+        "server-setTimeout ok",
+        "bad-request ok",
+        "request-timeout ok",
+        "validation ok",
+        "client-res-surface ok",
+        "fake-agent ok",
+        "close-idle ok",
+        "flush-headers ok",
+        "outgoing ok",
+        "path-validation ok",
+        "im-req-surface ok",
         "END",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");
@@ -579,7 +579,7 @@ await new Promise((resolve) => {
 // 2) join:true 即 ', ' 合并（压过单例表）。
 await new Promise((resolve) => {
   const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
-    console.log("j2-auth", JSON.stringify(req.headers.authorization));
+    console.log("join-auth", JSON.stringify(req.headers.authorization));
     res.end();
     server.close(resolve);
   });
@@ -594,10 +594,10 @@ await new Promise((resolve) => {
 // 3) 缺 Host 1.1 即静默 400（无 request、无 clientError）。
 await new Promise((resolve) => {
   const server = createServer((req, res) => {
-    console.log("j3 REQUEST?!");
+    console.log("nohost REQUEST?!");
     res.end();
   });
-  server.on("clientError", () => console.log("j3 CLIENTERROR?!"));
+  server.on("clientError", () => console.log("nohost CLIENTERROR?!"));
   server.listen(0, "127.0.0.1", () => {
     const c = net.connect(server.address().port, () => {
       c.write("GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
@@ -605,7 +605,7 @@ await new Promise((resolve) => {
     let buf = "";
     c.on("data", (d) => (buf += d.toString()));
     c.on("end", () => {
-      console.log("j3-400", buf.startsWith("HTTP/1.1 400 Bad Request"));
+      console.log("nohost-400", buf.startsWith("HTTP/1.1 400 Bad Request"));
       c.end();
     });
     c.on("close", () => server.close(resolve));
@@ -619,7 +619,7 @@ await new Promise((resolve) => {
       buf += d.toString();
       if (buf.includes("\r\n\r\n")) {
         const line = buf.split("\r\n").find((l) => l.toLowerCase().startsWith("cookie:"));
-        console.log("j4-wire", JSON.stringify(line));
+        console.log("join-wire", JSON.stringify(line));
         sock.end("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
       }
     });
@@ -639,9 +639,9 @@ console.log("joindone");
         "j-auth \"1\"",
         "j-cookie \"a=1; b=2\"",
         "j-setck [\"s1\",\"s2\"]",
-        "j2-auth \"1, 2\"",
-        "j3-400 true",
-        "j4-wire \"cookie: a=1; b=2\"",
+        "join-auth \"1, 2\"",
+        "nohost-400 true",
+        "join-wire \"cookie: a=1; b=2\"",
         "joindone",
     ] {
         assert!(out.contains(tag), "missing `{tag}`; out:\n{out}");

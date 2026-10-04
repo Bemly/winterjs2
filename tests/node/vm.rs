@@ -113,17 +113,17 @@ fn vm_source_module_chain() {
         r#"
 import vm from "node:vm";
 const m = new vm.SourceTextModule("export const a = 40 + 1;");
-console.log("m9i-st0", m.status === "unlinked", m.identifier === "vm:module(0)", Array.isArray(m.dependencySpecifiers) && m.dependencySpecifiers.length === 0);
-console.log("m9i-inst", m instanceof vm.SourceTextModule, m instanceof vm.Module);
+console.log("mod-st0", m.status === "unlinked", m.identifier === "vm:module(0)", Array.isArray(m.dependencySpecifiers) && m.dependencySpecifiers.length === 0);
+console.log("mod-inst", m instanceof vm.SourceTextModule, m instanceof vm.Module);
 await m.link(() => {});
-console.log("m9i-st1", m.status === "linked");
+console.log("mod-st1", m.status === "linked");
 const er = m.evaluate();
-console.log("m9i-evret", er instanceof Promise);
+console.log("mod-evret", er instanceof Promise);
 await er;
-console.log("m9i-st2", m.status === "evaluated", m.namespace.a === 41);
+console.log("mod-st2", m.status === "evaluated", m.namespace.a === 41);
 // 重复求值照真机成功（无操作）。
 await m.evaluate();
-console.log("m9i-reev", m.status === "evaluated");
+console.log("mod-reev", m.status === "evaluated");
 // 上下文隔离：同名种子不同值。
 const c1 = vm.createContext({ seed: 3 });
 const c2 = vm.createContext({ seed: 4 });
@@ -133,12 +133,12 @@ await m1.link(() => {});
 await m2.link(() => {});
 await m1.evaluate();
 await m2.evaluate();
-console.log("m9i-iso", m1.namespace.v === 6, m2.namespace.v === 8, m1.identifier === "m1", m1.context === c1);
+console.log("mod-iso", m1.namespace.v === 6, m2.namespace.v === 8, m1.identifier === "m1", m1.context === c1);
 // 顶层 await 模块（异步求值认领路径）。
 const t = new vm.SourceTextModule("export const v = await Promise.resolve(41);");
 await t.link(() => {});
 await t.evaluate();
-console.log("m9i-tla", t.status === "evaluated", t.namespace.v === 41);
+console.log("mod-tla", t.status === "evaluated", t.namespace.v === 41);
 "#,
     );
     assert!(
@@ -148,14 +148,14 @@ console.log("m9i-tla", t.status === "evaluated", t.namespace.v === 41);
     );
     let out = String::from_utf8(out.stdout).unwrap();
     for line in [
-        "m9i-st0 true true true",
-        "m9i-inst true true",
-        "m9i-st1 true",
-        "m9i-evret true",
-        "m9i-st2 true true",
-        "m9i-reev true",
-        "m9i-iso true true true true",
-        "m9i-tla true true",
+        "mod-st0 true true true",
+        "mod-inst true true",
+        "mod-st1 true",
+        "mod-evret true",
+        "mod-st2 true true",
+        "mod-reev true",
+        "mod-iso true true true true",
+        "mod-tla true true",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
@@ -171,33 +171,33 @@ fn vm_module_boundary() {
         r#"
 import vm from "node:vm";
 const t = async (n, f) => { try { const r = await f(); console.log(n, "OK", r === undefined ? "undef" : "val"); } catch (e) { console.log(n, "THROW", e.code || "(nocode)"); } };
-await t("m9iB-syntax", async () => new vm.SourceTextModule("export const q = ;"));
-await t("m9iB-nonstr", async () => new vm.SourceTextModule(123));
-await t("m9iB-badctx", async () => new vm.SourceTextModule("export const a = 1;", { context: {} }));
+await t("modb-syntax", async () => new vm.SourceTextModule("export const q = ;"));
+await t("modb-nonstr", async () => new vm.SourceTextModule(123));
+await t("modb-badctx", async () => new vm.SourceTextModule("export const a = 1;", { context: {} }));
 const m = new vm.SourceTextModule("export const a = 1;");
-await t("m9iB-linknofn", async () => m.link());
-await t("m9iB-nsearly", async () => m.namespace);
-await t("m9iB-evunlinked", async () => m.evaluate());
+await t("modb-linknofn", async () => m.link());
+await t("modb-nsearly", async () => m.namespace);
+await t("modb-evunlinked", async () => m.evaluate());
 await m.link(() => {});
-await t("m9iB-relink", async () => m.link(() => {}));
-await t("m9iB-errearly", async () => m.error);
+await t("modb-relink", async () => m.link(() => {}));
+await t("modb-errearly", async () => m.error);
 const e = new vm.SourceTextModule("throw new Error('boom');");
 await e.link(() => {});
-await t("m9iB-evthrow", async () => e.evaluate());
-console.log("m9iB-est", e.status === "errored", e.error && e.error.message === "boom");
+await t("modb-evthrow", async () => e.evaluate());
+console.log("modb-est", e.status === "errored", e.error && e.error.message === "boom");
 const im = new vm.SourceTextModule("import {x} from './nope.js'; export const a = x;");
-console.log("m9iB-deps", JSON.stringify(im.dependencySpecifiers) === JSON.stringify(["./nope.js"]));
-await t("m9iB-linkimports", async () => im.link(() => {}));
+console.log("modb-deps", JSON.stringify(im.dependencySpecifiers) === JSON.stringify(["./nope.js"]));
+await t("modb-linkimports", async () => im.link(() => {}));
 const s = new vm.SyntheticModule(["x"], function () { this.setExport("x", 42); });
-console.log("m9iB-syn0", s.status === "linked", s.dependencySpecifiers === undefined);
+console.log("modb-syn0", s.status === "linked", s.dependencySpecifiers === undefined);
 await s.link();
 await s.evaluate();
-console.log("m9iB-syn1", s.status === "evaluated", s.namespace.x === 42);
-await t("m9iB-synset", async () => s.setExport("x", 1));
+console.log("modb-syn1", s.status === "evaluated", s.namespace.x === 42);
+await t("modb-synset", async () => s.setExport("x", 1));
 const se = new vm.SyntheticModule(["d"], function () { throw new Error("cbboom"); });
 await se.link(() => {});
-await t("m9iB-syncb", async () => se.evaluate());
-console.log("m9iB-synest", se.status === "errored");
+await t("modb-syncb", async () => se.evaluate());
+console.log("modb-synest", se.status === "errored");
 "#,
     );
     assert!(
@@ -206,23 +206,23 @@ console.log("m9iB-synest", se.status === "errored");
         String::from_utf8_lossy(&out.stderr)
     );
     let out = String::from_utf8(out.stdout).unwrap();
-    assert!(out.contains("m9iB-syntax THROW"), "out: {out}");
-    assert!(out.contains("m9iB-nonstr THROW ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("m9iB-badctx THROW ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("m9iB-linknofn THROW ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("m9iB-nsearly THROW ERR_VM_MODULE_STATUS"), "out: {out}");
-    assert!(out.contains("m9iB-evunlinked THROW ERR_VM_MODULE_STATUS"), "out: {out}");
-    assert!(out.contains("m9iB-relink THROW ERR_VM_MODULE_STATUS"), "out: {out}");
-    assert!(out.contains("m9iB-errearly THROW ERR_VM_MODULE_STATUS"), "out: {out}");
-    assert!(out.contains("m9iB-evthrow THROW"), "out: {out}");
-    assert!(out.contains("m9iB-est true true"), "out: {out}");
-    assert!(out.contains("m9iB-deps true"), "out: {out}");
-    assert!(out.contains("m9iB-linkimports THROW"), "out: {out}");
-    assert!(out.contains("m9iB-syn0 true true"), "out: {out}");
-    assert!(out.contains("m9iB-syn1 true true"), "out: {out}");
-    assert!(out.contains("m9iB-synset THROW ERR_VM_MODULE_STATUS"), "out: {out}");
-    assert!(out.contains("m9iB-syncb THROW"), "out: {out}");
-    assert!(out.contains("m9iB-synest true"), "out: {out}");
+    assert!(out.contains("modb-syntax THROW"), "out: {out}");
+    assert!(out.contains("modb-nonstr THROW ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("modb-badctx THROW ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("modb-linknofn THROW ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("modb-nsearly THROW ERR_VM_MODULE_STATUS"), "out: {out}");
+    assert!(out.contains("modb-evunlinked THROW ERR_VM_MODULE_STATUS"), "out: {out}");
+    assert!(out.contains("modb-relink THROW ERR_VM_MODULE_STATUS"), "out: {out}");
+    assert!(out.contains("modb-errearly THROW ERR_VM_MODULE_STATUS"), "out: {out}");
+    assert!(out.contains("modb-evthrow THROW"), "out: {out}");
+    assert!(out.contains("modb-est true true"), "out: {out}");
+    assert!(out.contains("modb-deps true"), "out: {out}");
+    assert!(out.contains("modb-linkimports THROW"), "out: {out}");
+    assert!(out.contains("modb-syn0 true true"), "out: {out}");
+    assert!(out.contains("modb-syn1 true true"), "out: {out}");
+    assert!(out.contains("modb-synset THROW ERR_VM_MODULE_STATUS"), "out: {out}");
+    assert!(out.contains("modb-syncb THROW"), "out: {out}");
+    assert!(out.contains("modb-synest true"), "out: {out}");
     dir.close().unwrap();
 }
 

@@ -18,7 +18,7 @@ if (cluster.isPrimary) {
   cluster.on("message", (w, m) => console.log("ev-message", w.id, m.n));
   cluster.on("disconnect", (w) => console.log("ev-disconnect", w.id, w.isConnected() === false));
   cluster.on("exit", (w, code) => console.log("ev-exit", w.id, code, Object.keys(cluster.workers).length));
-  const w = cluster.fork({ WJS_CLUSTER_T10E: "t10e" });
+  const w = cluster.fork({ WJS_CLUSTER_ENV_PROBE: "env-probe" });
   console.log("forked", w.id, cluster.workers[w.id] === w);
   w.on("message", (m) => {
     console.log("w-message", m.n, m.env);
@@ -26,8 +26,8 @@ if (cluster.isPrimary) {
   });
   w.on("exit", (code) => console.log("w-exit", code, w.isDead()));
 } else {
-  console.log("role worker", cluster.isWorker, cluster.worker.id, process.env.WJS_CLUSTER_T10E);
-  process.send({ n: 41, env: process.env.WJS_CLUSTER_T10E });
+  console.log("role worker", cluster.isWorker, cluster.worker.id, process.env.WJS_CLUSTER_ENV_PROBE);
+  process.send({ n: 41, env: process.env.WJS_CLUSTER_ENV_PROBE });
   process.on("message", (m) => {
     console.log("got", m.pong);
     process.disconnect();
@@ -39,8 +39,8 @@ if (cluster.isPrimary) {
     assert!(out.contains("forked 1 true"), "out: {out}");
     assert!(out.contains("ev-fork 1 true"), "out: {out}");
     assert!(out.contains("ev-online 1"), "out: {out}");
-    assert!(out.contains("role worker true 1 t10e"), "out: {out}");
-    assert!(out.contains("w-message 41 t10e"), "out: {out}");
+    assert!(out.contains("role worker true 1 env-probe"), "out: {out}");
+    assert!(out.contains("w-message 41 env-probe"), "out: {out}");
     assert!(out.contains("ev-message 1 41"), "out: {out}");
     assert!(out.contains("got 42"), "out: {out}");
     assert!(out.contains("ev-disconnect 1 true"), "out: {out}");

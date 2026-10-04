@@ -1306,3 +1306,15 @@ G1/G2/G3/G9 已收官。）
   需 expose-internals loader 特性，记档）/ readline 7/20；黑盒
   `stream_web_interop_symbols` + `readline_async_iterator_faces`；
   stream/readline/fs/fetch/compress/zlib 黑盒 96/96；冒烟 5/5。
+
+## 2026-10-05 module/v8 簇 +5（module 3 + v8 2）
+
+- module 3 件（+3，4→7/27）：`builtinModules`/`isBuiltin` 缺废弃别名
+  `sys`（require.rs 内建表尾补裸形）+ `process.config.variables`
+  缺 `node_module_version`（补 147，实测真机）。
+- v8 2 件（+2，2→4/13）：`v8.serialize/deserialize` 自洽二进制往返
+  （标量/串/Buffer/ArrayBuffer/视图/DataView/数组/对象；函数拒；
+  非 V8 线格式记档）+ `process.memoryUsage.rss()` 独立函数；
+  serialize-leak 附带转绿（--expose-gc gc 既有 + 断言 <10x 宽松）。
+- 验证：黑盒 `v8_serialize_faces` + `process_config_rss_faces` +
+  nodemodule 扩展断言；process/v8/module 黑盒 36/36；冒烟 5/5。

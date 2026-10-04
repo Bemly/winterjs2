@@ -1282,3 +1282,27 @@ G1/G2/G3/G9 已收官。）
 - 环境注：本轮中段 `worker_terminate_interrupt_busy_loop` 在 strict 里挂，
   查为另一会话同仓并发构建（load 4.71）致 terminate 竞态抖动
   （TRY1 败/TRY2 过判 FLAKY，空载稳过），非本轮回归（坑 4.275）。
+
+## 2026-10-05 readline/webstreams 簇 +7（async-iter 3 + webstreams 4）
+
+- readline async-iter 3 件（+3，4→7/20）：`rli[Symbol.asyncIterator]()`
+  自造迭代器缺 `watermarkData`——改经 `EventEmitter.on(this, 'line',
+  {close:['close'], highWaterMark:1024, 第一参直传})` 委托（node 原文），
+  附带修 EOF 残留行（onend 先发残留 line 再关，node onend 口径）。
+- webstreams 4 件（+4，3→7/10）：
+  - `kIsClosedPromise`（finished/compose 件）：prelude 原生流补内部符号，
+    以 closeWaiters 直供；`.closed` 不补（node 26 已移除流级 `.closed`）。
+  - `kControllerErrorFunction`（abort-controller 件）：controller.error
+    直达（字节流 no-op，node 同款）。
+  - close-waiter 独立成队（不吃 chunk，eos 吞块修）+ pull 早退顺带 pump
+    （读消费末块后 closeWaiter 结算）+ tee 源出错/收尾主动结算分支。
+  - close 后再 error 转 errored（abort-controller 在关流上 abort 口径）。
+  - adapter ArrayBuffer→Uint8Array（writable-buffer-sources 件）。
+  - CompressionStream 坏块 TypeError 空文案 + 引擎码（bad-chunks 件；
+    通用 writer.write 去无码 undefined 守卫 + sink 抛前先 fail 读端）。
+- 回退记：kIsClosedPromise 排空感知不可去（有队关闭无人读 node 永不结算，
+  实测）；closeWaiters/drainWaiters 曾拆队又合并（单队+排空条件即足）。
+- 验证：node 套件 webstreams 7/10（余 compose 深水路由 + adapters-sync
+  需 expose-internals loader 特性，记档）/ readline 7/20；黑盒
+  `stream_web_interop_symbols` + `readline_async_iterator_faces`；
+  stream/readline/fs/fetch/compress/zlib 黑盒 96/96；冒烟 5/5。

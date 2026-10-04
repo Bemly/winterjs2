@@ -5,6 +5,9 @@
 
 # winterjs2 ❄️
 
+> [!CAUTION]
+> This project is an experimental toy project, mainly built to serve the author's other web services. It is currently in a fully AI-managed agile development phase — most features and bugs remain undiscovered, and maintenance is hard. PRs are welcome if you have any ideas: submissions made with AI or by hand, in any language, are accepted whenever possible.
+
 [中文版](./README.zh.md) · [Docs site](https://winterjs.bemly.moe/) · [Samples](./sample/) · [Changelog](./docs/plan3-journal.md)
 
 *winterjs2 is a **Bun-like JavaScript runtime on Mozilla SpiderMonkey** — one binary that runs JS files, `package.json` scripts, tests, linters and static/dynamic HTTP services, with `node:` compatibility tracking **Bun's height**.*

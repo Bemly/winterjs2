@@ -5,6 +5,9 @@
 
 # winterjs2 ❄️
 
+> [!CAUTION]
+> 本项目为实验性玩具项目，主要用途是给作者自己的其他 web 服务添砖加瓦，目前处于完全 AI 托管的敏捷开发时期，大部分特性和 bug 尚未被发现，维护不易。如有任何想法欢迎 PR，尽可能接受大家用 AI 或者人工、以及任何语言的任何提交。
+
 [English](./README.md) · [文档站](https://winterjs.bemly.moe/) · [样例](./sample/) · [开发日志](./docs/plan3-journal.md)
 
 *winterjs2 是跑在 **Mozilla SpiderMonkey** 上的**类 Bun JS 运行时**——一个二进制跑 JS 文件、

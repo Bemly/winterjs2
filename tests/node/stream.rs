@@ -315,7 +315,7 @@ fn stream_parity_tick_scheduler_and_fs_readstream() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
-        "p10f.mjs",
+        "tick.mjs",
         r#"
 import { Readable, Writable } from "node:stream";
 import fs from "node:fs";
@@ -408,7 +408,7 @@ fn stream_eos_hooks_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
-        "r1.mjs",
+        "eos.mjs",
         r#"
 import { Readable, finished } from "node:stream";
 import { createHook, executionAsyncId } from "node:async_hooks";
@@ -472,7 +472,7 @@ fn stream_iter_faces() {
     // 边界：ERR 变体类构造器（`ERR_INVALID_STATE.TypeError` 可 new，R2-errors 面）。
     let dir = assert_fs::TempDir::new().unwrap();
     // 旗开面（显式子进程带旗；文件直写，不经无旗 run_node_file）。
-    dir.child("r2.mjs")
+    dir.child("iter.mjs")
         .write_str(
             r#"
 import { push, text, fromSync } from "node:stream/iter";
@@ -492,7 +492,7 @@ console.log("err-variant", new E.ERR_INVALID_STATE.TypeError("x").code === "ERR_
         )
         .unwrap();
     let out = winterjs2()
-        .args(["--experimental-stream-iter", "--run", "r2.mjs"])
+        .args(["--experimental-stream-iter", "--run", "iter.mjs"])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -522,7 +522,7 @@ fn stream_shim_faces() {
     // 报错：web 锁错带 ERR_INVALID_STATE；TextDecoder 非源带 ERR_INVALID_ARG_TYPE。
     // 边界：BOM 经 readFileSync 原样保留（fs 口径，preprocess 套件同构）。
     let dir = assert_fs::TempDir::new().unwrap();
-    dir.child("r3.mjs")
+    dir.child("shim.mjs")
         .write_str(
             r#"
 import S from "node:stream/iter";
@@ -545,7 +545,7 @@ setTimeout(() => console.log("ticks", n === 1), 50);
         )
         .unwrap();
     let out = winterjs2()
-        .args(["--experimental-stream-iter", "--run", "r3.mjs"])
+        .args(["--experimental-stream-iter", "--run", "shim.mjs"])
         .current_dir(dir.path())
         .output()
         .unwrap();

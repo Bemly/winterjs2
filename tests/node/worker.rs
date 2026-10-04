@@ -445,7 +445,7 @@ fn worker_error_shape_and_event_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
-        "p10f.mjs",
+        "main.mjs",
         r#"
 import { Worker, MessageChannel, MessagePort, BroadcastChannel, workerData, threadName, parentPort } from "node:worker_threads";
 import assert from "node:assert";
@@ -498,20 +498,20 @@ console.log("p1-err", t1, t2, t3);
 
 // 3) BroadcastChannel：message 事件收 MessageEvent(data)；缺参/已关报错。
 {
-  const bc1 = new BroadcastChannel("ch-10f");
-  const bc2 = new BroadcastChannel("ch-10f");
+  const bc1 = new BroadcastChannel("ch");
+  const bc2 = new BroadcastChannel("ch");
   const got = await new Promise((res) => {
     bc1.addEventListener("message", (e) => res(e));
     bc2.postMessage("hello");
   });
   console.log("p3", got instanceof MessageEvent, got.data === "hello");
   bc1.close(); bc2.close();
-  const bcX = new BroadcastChannel("ch-10f");
+  const bcX = new BroadcastChannel("ch");
   bcX.close(); bcX.close();
   let threw1 = "";
   try { bcX.postMessage(null); } catch (e) { threw1 = e.message; }
   let threw2 = "";
-  const bcY = new BroadcastChannel("ch-10f");
+  const bcY = new BroadcastChannel("ch");
   try { bcY.postMessage(); } catch (e) { threw2 = e.message; }
   bcY.close();
   console.log("p3-err", threw1 === "BroadcastChannel is closed", threw2 === 'The "message" argument must be specified');
@@ -519,8 +519,8 @@ console.log("p1-err", t1, t2, t3);
 
 // 4) threadName（属性 + 退出置 null）+ resourceLimits 缺省 {}。
 {
-  const w = new Worker(new URL(import.meta.url).pathname, { name: "tn-10f", workerData: { throwKind: "num" } });
-  console.log("p4-name", w.threadName === "tn-10f", JSON.stringify(w.resourceLimits) === "{}");
+  const w = new Worker(new URL(import.meta.url).pathname, { name: "tname", workerData: { throwKind: "num" } });
+  console.log("p4-name", w.threadName === "tname", JSON.stringify(w.resourceLimits) === "{}");
   const errs = [];
   w.on("error", (e) => errs.push(e));
   w.on("exit", (c) => {
@@ -539,9 +539,9 @@ console.log("p1-err", t1, t2, t3);
 
 // 5) 缺主模块：error 事件文案 node 形（Cannot find module '<abs>'）。
 function run5() {
-  const missing = new URL("file:///no/such/worker-10f-does-not-exist.js");
+  const missing = new URL("file:///no/such/worker-does-not-exist.js");
   const w3 = new Worker(missing);
-  w3.on("error", (e) => console.log("p5", /Cannot find module .+worker-10f-does-not-exist\.js/.test(e.message)));
+  w3.on("error", (e) => console.log("p5", /Cannot find module .+worker-does-not-exist\.js/.test(e.message)));
   w3.on("exit", () => console.log("END"));
 }
 "#,
@@ -578,7 +578,7 @@ fn worker_typed_view_and_sab_envelope() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
-        "p10f-view.mjs",
+        "view.mjs",
         r#"
 import { MessageChannel, MessagePort } from "node:worker_threads";
 import assert from "node:assert";
@@ -657,7 +657,7 @@ fn worker_terminate_interrupt_busy_loop() {
         .unwrap();
     let out = run_node_file(
         &dir,
-        "p10f-term.mjs",
+        "term.mjs",
         r#"
 import { Worker } from "node:worker_threads";
 import assert from "node:assert";
@@ -739,7 +739,7 @@ fn worker_bc_surface_and_env_snapshot() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
-        "p10f-bc.mjs",
+        "bc.mjs",
         r#"
 import { BroadcastChannel, Worker, receiveMessageOnPort, threadId } from "node:worker_threads";
 import assert from "node:assert";

@@ -12,7 +12,7 @@ fn exec_live_handle() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
-        "p10f.mjs",
+        "live.mjs",
         r#"
 import { exec, execFile } from "node:child_process";
 
@@ -266,7 +266,7 @@ fn child_disconnect_identity_fork_validation() {
     // G5-4：removeAllListeners/二次 disconnect 抛错/uid-gid EPERM/pipe 透传/
     // fork send 参数校验（message 缺席/非法型/options 非对象/句柄拒收）。
     let dir = assert_fs::TempDir::new().unwrap();
-    let file = dir.child("g5b2.mjs");
+    let file = dir.child("case.mjs");
     file.write_str(
         r#"
 import { spawn, fork } from "node:child_process";
@@ -277,7 +277,7 @@ import assert from "node:assert";
   let fired = false;
   c.on("exit", () => { fired = true; });
   c.removeAllListeners("exit");
-  c.on("exit", () => console.log("batch2-exit-clean", fired === false));
+  c.on("exit", () => console.log("exit-clean", fired === false));
   c.kill("SIGKILL");
 }
 // uid/gid 非特权抛 EPERM（真机同步抛；message 正则匹配）
@@ -286,7 +286,7 @@ import assert from "node:assert";
   try { spawn("echo", ["x"], { uid: 0 }); } catch (e) { uidOk = /EPERM/.test(e.message); }
   try { spawn("echo", ["x"], { gid: 0 }); } catch (e) { gidOk = /EPERM/.test(e.message); }
   const root = typeof process.getuid === "function" ? process.getuid() === 0 : true;
-  console.log("batch2-idcheck", root || (uidOk && gidOk));
+  console.log("idcheck", root || (uidOk && gidOk));
 }
 // pipe 最小面（stderr.pipe 透传；stdio-inherit 套件形）
 {
@@ -294,12 +294,12 @@ import assert from "node:assert";
   assert.strictEqual(typeof c.stderr.pipe, "function");
   const dest = { write() {}, end() {} };
   assert.strictEqual(c.stderr.pipe(dest), dest);
-  console.log("batch2-pipeface", true);
+  console.log("pipeface", true);
   c.on("close", () => {});
 }
 // fork send 参数校验（send-type-error 套件；子端 message 常驻监听保活）
 {
-  const mod = new URL("g5b2-child.mjs", import.meta.url).pathname;
+  const mod = new URL("case-child.mjs", import.meta.url).pathname;
   const t = fork(mod, []);
   t.on("message", () => {});
   // 注：此处不挂 error 监听——二次 disconnect 的 ERR_IPC_DISCONNECTED 经
@@ -307,22 +307,22 @@ import assert from "node:assert";
   const codes = [];
   const try_ = (label, fn) => { try { fn(); codes.push("no-throw"); } catch (e) { codes.push(e.code); } };
   try_("msg-undef", () => t.send(undefined));
-  console.log("batch2-sendmsg", codes[0] === "ERR_MISSING_ARGS");
+  console.log("sendmsg", codes[0] === "ERR_MISSING_ARGS");
   try_("opt-null", () => t.send("msg", null, null));
-  console.log("batch2-sendopt", codes[1] === "ERR_INVALID_ARG_TYPE");
+  console.log("sendopt", codes[1] === "ERR_INVALID_ARG_TYPE");
   try_("handle-meow", () => t.send("msg", "meow", undefined));
-  console.log("batch2-sendhandle", codes[2] === "ERR_INVALID_HANDLE_TYPE");
+  console.log("sendhandle", codes[2] === "ERR_INVALID_HANDLE_TYPE");
   // 二次 disconnect 抛 ERR_IPC_DISCONNECTED（disconnect 套件形；error 发射转同步抛）
   t.disconnect();
   let d2 = "";
   try { t.disconnect(); } catch (e) { d2 = e.code; }
-  console.log("batch2-disconnect2", d2 === "ERR_IPC_DISCONNECTED");
+  console.log("disconnect2", d2 === "ERR_IPC_DISCONNECTED");
   setTimeout(() => process.exit(0), 500);
 }
 "#,
     )
     .unwrap();
-    dir.child("g5b2-child.mjs")
+    dir.child("case-child.mjs")
         .write_str(r#"process.on("message", () => {}); setTimeout(() => {}, 30000);"#)
         .unwrap();
     let out = winterjs2()
@@ -334,13 +334,13 @@ import assert from "node:assert";
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     for line in [
-        "batch2-exit-clean true",
-        "batch2-idcheck true",
-        "batch2-pipeface true",
-        "batch2-sendmsg true",
-        "batch2-sendopt true",
-        "batch2-sendhandle true",
-        "batch2-disconnect2 true",
+        "exit-clean true",
+        "idcheck true",
+        "pipeface true",
+        "sendmsg true",
+        "sendopt true",
+        "sendhandle true",
+        "disconnect2 true",
     ] {
         assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
     }

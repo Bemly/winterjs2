@@ -376,7 +376,7 @@ fn vm_parity_sync_and_errors() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
-        "p10f.mjs",
+        "sync.mjs",
         r#"
 import vm from "node:vm";
 

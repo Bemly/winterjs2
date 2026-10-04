@@ -501,3 +501,120 @@ function follow() {
     assert!(out.contains("order error:D,close null"), "out: {out}");
     assert!(out.contains("follow 3") || out.contains("follow-end"), "out: {out}");
 }
+
+#[test]
+fn fs_utf8stream_surface() {
+    // Utf8Stream（node:fs 懒导出，internal/streams/fast-utf8-stream 逐字移植）。
+    // 正常：dest 开文件 + write/end/flush 回调面；报错：构造与写毁坏态；
+    // 边界：maxLength drop、buffer contentMode、destroy 早收。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs, { openSync, readFileSync } from "node:fs";
+import assert from "node:assert";
+const { Utf8Stream } = fs;
+// 正常：dest 路径开文件，异步写 + end 收尾
+{
+  const dest = "u1.txt";
+  const s = new Utf8Stream({ dest, minLength: 4096 });
+  assert.strictEqual(s.minLength, 4096);
+  assert.strictEqual(s.sync, false);
+  assert.strictEqual(s.fsync, false);
+  assert.strictEqual(s.append, true);
+  assert.strictEqual(s.contentMode, "utf8");
+  s.write("hello world\n");
+  s.write("something else\n");
+  s.on("ready", () => console.log("u1-ready", s.file === dest));
+  s.end();
+  s.on("finish", () => {
+    console.log("u1", JSON.stringify(readFileSync(dest, "utf8")));
+    s.on("close", () => console.log("u1-close"));
+  });
+}
+// flush+end 竞争：真机同款翻倍 + flush 回调收 EBADF（close 已收 fd）。
+{
+  const dest = "u1b.txt";
+  const s = new Utf8Stream({ dest, minLength: 4096 });
+  s.write("hello world\n");
+  s.write("something else\n");
+  s.flush((err) => console.log("u1-flush-cb", err === null, err && err.code));
+  s.end();
+  s.on("finish", () =>
+    console.log("u1b", JSON.stringify(readFileSync(dest, "utf8"))));
+}
+// 正常：fd 形 + sync 模式 + buffer contentMode
+{
+  const dest = "u2.txt";
+  const fd = openSync(dest, "w");
+  const s = new Utf8Stream({ fd, sync: true, contentMode: "buffer" });
+  assert.strictEqual(s.contentMode, "buffer");
+  s.write(Buffer.from("buf-mode"));
+  s.end();
+  s.on("close", () => console.log("u2", JSON.stringify(readFileSync(dest, "utf8"))));
+}
+// 报错：fd 既非 number 也非 string；minLength >= maxWrite；毁坏后写/end/reopen
+{
+  const dest = "u3.txt";
+  const s = new Utf8Stream({ dest });
+  s.end();
+  s.on("close", () => {
+    assert.throws(() => s.write("x"), /Utf8Stream is destroyed/);
+    assert.throws(() => s.end(), /Utf8Stream is destroyed/);
+    assert.throws(() => s.reopen(), /Utf8Stream is destroyed/);
+    console.log("u3-destroyed");
+  });
+}
+try { new Utf8Stream({ fd: true }); } catch (e) { console.log("u3-fd-type", e.code); }
+try { new Utf8Stream({ dest: "u3.txt", minLength: 999, maxWrite: 8 }); } catch (e) {
+  console.log("u3-minlen", e.code, e.name);
+}
+try { new Utf8Stream({ dest: "u3.txt", contentMode: "nope" }); } catch (e) {
+  console.log("u3-content", e.code);
+}
+// 边界：maxLength 触发 drop；EAGAIN 覆写 fs.writeSync 重试
+{
+  const dest = "u4.txt";
+  const fd = openSync(dest, "w");
+  const s = new Utf8Stream({ fd, maxLength: 8, minLength: 0 });
+  s.on("drop", (data) => console.log("u4-drop", data));
+  s.write("12345678");
+  s.write("overflow");
+  s.end();
+  s.on("close", () => console.log("u4", JSON.stringify(readFileSync(dest, "utf8"))));
+}
+{
+  const dest = "u5.txt";
+  const fd = openSync(dest, "w");
+  const writeReal = fs.write;
+  let calls = 0;
+  const fsOverride = {
+    write(fdn, str, enc, cb2) {
+      calls++;
+      if (calls === 1) { const e = new Error("EAGAIN"); e.code = "EAGAIN"; setImmediate(() => cb2(e)); return; }
+      return writeReal(fdn, str, enc, cb2);
+    },
+  };
+  const s = new Utf8Stream({ fd, sync: false, minLength: 0, fs: fsOverride });
+  s.write("retry-me\n");
+  s.end();
+  s.on("close", () => console.log("u5", JSON.stringify(readFileSync(dest, "utf8"))));
+}
+"#,
+    );
+    assert!(out.contains("u1 \"hello world\\nsomething else\\n\""), "out: {out}");
+    assert!(out.contains("u1-close"), "out: {out}");
+    assert!(out.contains("u1-ready true"), "out: {out}");
+    // flush 与 end 竞争：内容翻倍（flush 落一份、end 落一份）+ flush 回调 EBADF。
+    assert!(out.contains("u1b \"hello world\\nsomething else\\nhello world\\nsomething else\\n\""), "out: {out}");
+    assert!(out.contains("u1-flush-cb false EBADF"), "out: {out}");
+    assert!(out.contains("u2 \"buf-mode\""), "out: {out}");
+    assert!(out.contains("u3-destroyed"), "out: {out}");
+    assert!(out.contains("u3-fd-type ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("u3-minlen ERR_INVALID_ARG_VALUE RangeError"), "out: {out}");
+    assert!(out.contains("u3-content ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("u4-drop overflow"), "out: {out}");
+    assert!(out.contains("u4 \"12345678\""), "out: {out}");
+    assert!(out.contains("u5 \"retry-me\\n\""), "out: {out}");
+}

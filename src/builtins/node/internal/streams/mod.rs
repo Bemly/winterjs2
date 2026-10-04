@@ -9,6 +9,7 @@ pub mod duplex;
 pub mod duplexify;
 pub mod duplexpair;
 pub mod end_of_stream;
+pub mod fast_utf8_stream;
 pub mod from;
 pub mod iter_classic;
 pub mod iter_types;

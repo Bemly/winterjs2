@@ -93,6 +93,7 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/streams/utils", streams::utils::SOURCE),
     ("node:internal/streams/destroy", streams::destroy::SOURCE),
     ("node:internal/streams/end_of_stream", streams::end_of_stream::SOURCE),
+    ("node:internal/streams/fast-utf8-stream", streams::fast_utf8_stream::SOURCE),
     ("node:internal/streams/from", streams::from::SOURCE),
     ("node:internal/streams/readable", streams::readable::SOURCE),
     ("node:internal/streams/writable", streams::writable::SOURCE),
@@ -194,7 +195,7 @@ mod tests {
             Some("node:internal/streams/end_of_stream")
         );
         // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；增删同步改此数）。
-        assert_eq!(INTERNALS.len(), 79);
+        assert_eq!(INTERNALS.len(), 80);
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

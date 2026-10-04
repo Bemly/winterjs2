@@ -392,11 +392,18 @@ export function read(fd, buffer, offsetOrOptions, length, position, callback) {
   if (length === 0) { __fsDefer(() => cb(null, 0, buffer)); return; }
   __vEmptyBuffer(buffer);
   __vOffsetLength(offset, length, buffer.byteLength);
-  Promise.resolve().then(() => readSync(fd, buffer, offset, length, position))
-    .then(
-      (n) => __fsDefer(() => cb(null, n || 0, buffer)),
-      (e) => __fsDefer(() => cb(e)),
-    );
+  // 读盘同步执行、回调派发（与 write 同：node 线程池 FIFO 提交序的单线程最近似，
+  // 混合时序会让后发的同步 IO 越过挂起的读——fastutf8stream/interleave 双向点名）。
+  let __p;
+  try {
+    __p = Promise.resolve(readSync(fd, buffer, offset, length, position));
+  } catch (e) {
+    __p = Promise.reject(e);
+  }
+  __p.then(
+    (n) => __fsDefer(() => cb(null, n || 0, buffer)),
+    (e) => __fsDefer(() => cb(e)),
+  );
 }
 // util.promisify(fs.read) → { bytesRead, buffer }（test-fs-promisified 点名）。
 read[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesRead", "buffer"];
@@ -420,11 +427,18 @@ export function write(fd, buffer, offsetOrOptions, length, position, callback) {
     if (typeof length !== "number") length = buffer.byteLength - offset;
     if (typeof position !== "number") position = null;
     __fsValidateOffsetLengthWrite(offset, length, buffer.byteLength);
-    Promise.resolve().then(() => writeSync(fd, buffer, offset, length, position))
-      .then(
-        (n) => __fsDefer(() => cb(null, n || 0, buffer)),
-        (e) => __fsDefer(() => cb(e)),
-      );
+    // 写盘同步执行、回调仍派发（node 线程池"写已在飞行中"的单线程最近似；
+    // Utf8Stream flushSync/destroy 依赖写与后续同步 IO 的落盘序）。
+    let __p;
+    try {
+      __p = Promise.resolve(writeSync(fd, buffer, offset, length, position));
+    } catch (e) {
+      __p = Promise.reject(e);
+    }
+    __p.then(
+      (n) => __fsDefer(() => cb(null, n || 0, buffer)),
+      (e) => __fsDefer(() => cb(e)),
+    );
     return;
   }
   // node：非 view 非串（含 {} / Date / Promise / function / primitive）一律
@@ -445,11 +459,17 @@ export function write(fd, buffer, offsetOrOptions, length, position, callback) {
     e.code = "ERR_INVALID_ARG_TYPE"; throw e;
   }
   const pos = typeof offset === "number" ? offset : -1;
-  Promise.resolve().then(() => writeSync(fd, buffer, pos))
-    .then(
-      (n) => __fsDefer(() => cb(null, n || 0, buffer)),
-      (e) => __fsDefer(() => cb(e)),
-    );
+  // 同上：写盘同步执行、回调派发（字符串分支）。
+  let __p;
+  try {
+    __p = Promise.resolve(writeSync(fd, buffer, pos));
+  } catch (e) {
+    __p = Promise.reject(e);
+  }
+  __p.then(
+    (n) => __fsDefer(() => cb(null, n || 0, buffer)),
+    (e) => __fsDefer(() => cb(e)),
+  );
 }
 write[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesWritten", "buffer"];
 
@@ -482,11 +502,19 @@ export function readv(fd, buffers, position, cb) {
   __vFd(fd);
   __fsValidateBufferArray(buffers);
   if (typeof cb !== "function") __vErrType("cb", "function", cb);
-  Promise.resolve().then(() => readvSync(fd, buffers, position))
-    .then(
+  // 同步执行、回调派发（read/write 统一时序，见 read 注）。
+  {
+    let __p;
+    try {
+      __p = Promise.resolve(readvSync(fd, buffers, position));
+    } catch (e) {
+      __p = Promise.reject(e);
+    }
+    __p.then(
       (n) => __fsDefer(() => cb(null, n || 0, buffers)),
       (e) => __fsDefer(() => cb(e)),
     );
+  }
 }
 readv[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesRead", "buffers"];
 export function writev(fd, buffers, position, cb) {
@@ -494,13 +522,25 @@ export function writev(fd, buffers, position, cb) {
   __vFd(fd);
   __fsValidateBufferArray(buffers);
   if (typeof cb !== "function") __vErrType("cb", "function", cb);
-  Promise.resolve().then(() => writevSync(fd, buffers, position))
-    .then(
+  // 同步执行、回调派发（read/write 统一时序，见 read 注）。
+  {
+    let __p;
+    try {
+      __p = Promise.resolve(writevSync(fd, buffers, position));
+    } catch (e) {
+      __p = Promise.reject(e);
+    }
+    __p.then(
       (n) => __fsDefer(() => cb(null, n || 0, buffers)),
       (e) => __fsDefer(() => cb(e)),
     );
+  }
 }
 writev[Symbol.for("nodejs.util.promisify.customArgs")] = ["bytesWritten", "buffers"];
+
+// node lib/fs.js：Utf8Stream 懒加载（require('internal/streams/fast-utf8-stream')；
+// ESM 静态 import + 循环经懒访问解环——类体不在求值期触碰 fs）。
+import * as __fastUtf8Stream from 'node:internal/streams/fast-utf8-stream';
 
 const __api = {
   // 同步（Phase 4 基础面）
@@ -523,6 +563,7 @@ const __api = {
   mkdtempDisposableSync,
   // 类 + promises
   Stats: __Stats, Dirent: __Dirent, StatsFs: __StatsFs, Dir, FileHandle, promises,
+  get Utf8Stream() { return __fastUtf8Stream.default; },
 };
 export default __api;
 export { __Stats as Stats, __Dirent as Dirent, __StatsFs as StatsFs };

@@ -320,7 +320,7 @@ E('ERR_INVALID_ARG_VALUE', (name, value, reason = 'is invalid') => {
   if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
   const type = name.includes('.') ? 'property' : 'argument';
   return `The ${type} '${name}' ${reason}. Received ${inspected}`;
-}, TypeError, HideStackFramesError);
+}, TypeError, RangeError, HideStackFramesError);
 E('ERR_INVALID_FD', '"fd" must be a positive integer: %s', RangeError);
 // node lib/internal/errors.js TLS/crypto 段逐字（2026-09-26，tls SecureContext 移植）。
 E('ERR_CRYPTO_CUSTOM_ENGINE_NOT_SUPPORTED',

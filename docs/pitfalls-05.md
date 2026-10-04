@@ -175,32 +175,31 @@
 
 - 症状：`--serve pub --watch` 跑起后改 `index.html`，无 `restarting` 行、同端口一直回旧内容；
   改 `app.js` 才触发重启。
-- 根因：`--serve --watch` 直接复用了 test watch 的 `watchable`（只认代码/JSON 后缀）——
-  静态 serve 的被监视物恰恰是 html/css/图等非代码资源，过滤表与监视目标错配。
+- 根因：`--serve --watch` 复用 test watch 的 `watchable`（只认代码/JSON 后缀）——
+  静态 serve 的监视物恰是 html/css/图等非代码资源，过滤表与目标错配。
 - 修法：`watch.rs` 拆两层——`ignored()`（node_modules/.git/target + 点文件，三处共用）+
   `watchable()`（test/run 用，后缀表不变）/ `watch_any()`（serve 用，只去噪音不卡后缀）；
   `watch_with(roots, filter)` 可注入，serve 传 `watch_any`。
 - 复现：`tests/cli.rs::serve_watch_restarts_child_on_static_change`（改 html 断同端口新内容）。
-- 推广铁律：**监视过滤表必须按"被监视物的语言"选，不按"已有表的语言"复用**；新增 watch
-  调用点先问"目标目录里什么文件会变"，再定过滤函数。
+- 推广铁律：**监视过滤表按"被监视物的语言"选，不按"已有表"复用**；新增 watch 调用点先问
+  "目标目录里什么文件会变"，再定过滤函数。
 
 ### 4.217 按调用编译 Regex::new 是启动慢放：CJS 发现 8 正则现场编译烧 1.7s（2026-09-27，F2 轮）
 
 - 症状：vite build-only（179 模块）`cjs_static_names` 累计 1688ms/48 调用（35ms/次），
-  `nearest_pkg_type` 45ms/650 调用（逐级读 `package.json` + JSON 解析）；release 同构
-  仍是除 prepare/compile 外最大单项（cjs-names 100ms）。
-- 根因：① `Regex::new` 在函数内每次调用编译 8 个 pattern，递归每层再编
-  （debug 放大，release 亦然）；② `nearest_pkg_type` 无缓存，每文件每轮都 walk。
-  XDR 字节码同轮证伪：sm-compile 上限仅 118ms（release）且需新 unsafe，不如修这里。
-- 修法：8 正则 `OnceLock` 进程级预编译（`precompiled!`）；pkgtype 按 `package.json`
-  路径缓存（mtime 失效，Miss 也缓存 + 存在性校验，watch 安全，原语义逐字保留）；
-  `require.rs` 990→1062 行超限，按算法族拆 `require_cjs.rs`（原位重导出）。
-  memchr 锚点预检试过——大文件锚点全中、慢文件逐项耗时分毫不差，总量差落噪声带，
-  整段回退（不留投机优化）。
-- 复现：探针 `WINTERJS_TIMING=1 … --run build-only`（临时，已删；计数见 F2 commit）；
+  `nearest_pkg_type` 45ms/650 调用（逐级读 `package.json` + JSON 解析）；release 仍是除
+  prepare/compile 外最大单项（cjs-names 100ms）。
+- 根因：① `Regex::new` 函数内每次调用编译 8 个 pattern，递归每层再编（debug 放大，
+  release 亦然）；② `nearest_pkg_type` 无缓存，每文件每轮 walk。XDR 字节码证伪：
+  sm-compile 上限仅 118ms（release）且需新 unsafe，不如修这里。
+- 修法：8 正则 `OnceLock` 进程级预编译（`precompiled!`）；pkgtype 按 `package.json` 路径
+  缓存（mtime 失效，Miss 也缓存 + 存在性校验，watch 安全，原语义逐字保留）；`require.rs`
+  990→1062 超限，按算法族拆 `require_cjs.rs`（原位重导出）。memchr 锚点预检无 measurable
+  差，整段回退（不留投机优化）。
+- 复现：探针 `WINTERJS_TIMING=1 … --run build-only`（临时已删，计数见 F2 commit）；
   单测 `nearest_pkg_type_table`（改包文件即验 mtime 失效）；vite dist 哈希断行为一致。
-- 推广铁律：**热路径禁现场 `Regex::new`（一律进程级预编译）；纯 fs 判定函数配 mtime
-  目录缓存；投机优化必须有同负载前后计数，无 measurable 差即回退**。
+- 推广铁律：**热路径禁现场 `Regex::new`（一律进程级预编译）；纯 fs 判定配 mtime 目录缓存；
+  投机优化无同负载前后计数差即回退**。
 
 ### 4.218 concat ESM 具名导出≠默认导出：新类只挂具名即用户面 undefined（2026-09-27，P2-crypto）
 

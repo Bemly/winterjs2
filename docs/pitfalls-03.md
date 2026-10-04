@@ -447,19 +447,18 @@
 - 症状：`net_remote_surface`/`net_unix_socket_roundtrip` 在 cargo harness 下
   SIGBUS（exit=None 信号死亡、stderr 空），手工 3/3 稳定过；崩溃报告
   （`~/Library/Logs/DiagnosticReports/winterjs-*.ips`，**SEGV/SIGBUS 定位
-  第一手段**，比 sample/lldb 快且必落盘）栈实锤：
-  `net.rs dispatch → with_str_args → call_two → JS_CallFunctionValue →
-  js::Call memset_pattern16`。
+  第一手段**）栈实锤：`net.rs dispatch → with_str_args → call_two →
+  JS_CallFunctionValue → js::Call memset_pattern16`。
 - 根因：`with_str_args(cx, global, fun, kind, payload)` 的 `global`（裸指针）
-  与 `fun`（裸 JSVal）参数**跨 `to_jsval` 分配**——分配可触发 GC 搬移，
-  悬垂后进 `JS_CallFunctionValue` 即 SIGBUS。第一次补丁只 root 了 dispatch
-  调用点、漏了函数体内跨分配的参数，照样崩——**rooted 必须在任何分配之前
+  与 `fun`（裸 JSVal）**跨 `to_jsval` 分配**——分配可触发 GC 搬移，
+  悬垂后进 `JS_CallFunctionValue` 即 SIGBUS。首补丁只 root dispatch
+  调用点、漏函数体内跨分配参数，照样崩——**rooted 必须在任何分配前
   覆盖全部跨 GC 存活值**（§4.80 第 N 例；dispatch 三处 `net_target()` 返回值
-  与 `get_prop_value` 读出的 `__ev` 同批全部入槽）。
-- 修法：with_str_args 内 `g`/`f`/`a`/`b` 全部先入 rooted 槽再 to_jsval；
+  与 `get_prop_value` 读出 `__ev` 同批入槽）。
+- 修法：with_str_args 内 `g`/`f`/`a`/`b` 全先入 rooted 槽再 to_jsval；
   dispatch 三处 net_target() 返回值立即 `target_r` 入槽。
-- 推广为铁律：**新增 Rust→JS 调用 helper 时，函数体第一行先把全部 JS 值
-  参数入 rooted 槽，之后才允许出现任何分配型调用**；reviewer 按
+- 推广为铁律：**新增 Rust→JS 调用 helper，函数体第一行先把全部 JS 值
+  参数入 rooted 槽，之后才允许任何分配型调用**；reviewer 按
   "参数表 → 第一行 rooted"逐项对。
 
 ### 4.142 bisect 禁止连续建 worktree：每个 worktree 的 target 都是全量重编（2026-09-19，欠账轮·灾难记录）

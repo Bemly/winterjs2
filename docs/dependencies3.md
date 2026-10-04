@@ -76,7 +76,7 @@
 > 树内钉版完美咬合（当时调研漏检了 elliptic-curves 仓库的 x448 子 crate）。
 > **2026-09-18 用户拍板：引**（钉 `=0.14.0-pre.12` + `static_secrets` 特性门，
 > 与 x25519-dalek 同款按值 secret）。落地当日全链转绿：三 native + OKP DER
-> 三档 + JWK/raw 面 + 低阶点拒收（`tests/node/crypto.rs::phase10f_crypto_x448_parity`）。
+> 三档 + JWK/raw 面 + 低阶点拒收（`tests/node/crypto/parity.rs::crypto_x448_parity`）。
 
 ## §5.1 决策记录（追加）
 

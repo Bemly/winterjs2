@@ -284,7 +284,7 @@ pub(crate) async fn h2_bytes(mut b: h2::RecvStream) -> Vec<u8> {
 }
 
 /// T2 handler 形状：`/dyn` 回显 scheme，`/echo` POST 回声 201。
-pub(crate) fn t2_handler_src() -> &'static str {
+pub(crate) fn dyn_echo_handler_src() -> &'static str {
     "export default { async fetch(req) { const u = new URL(req.url); \
      if (u.pathname === '/echo' && req.method === 'POST') { \
      const b = await req.text(); return new Response('echo:' + b, { status: 201 }); } \
@@ -292,7 +292,7 @@ pub(crate) fn t2_handler_src() -> &'static str {
 }
 
 /// T4 upgrade handler 形状：upgrade 请求配对 socket 回声，其余走 HTTP。
-pub(crate) fn t4_handler_src() -> &'static str {
+pub(crate) fn upgrade_echo_handler_src() -> &'static str {
     "export default { async fetch(req) { \
      if ((req.headers.get('upgrade') || '').toLowerCase() === 'websocket') { \
      const ws = __wjs2_serve_socket(req); ws.onmessage = (e) => { ws.send(e.data); }; return ws; } \

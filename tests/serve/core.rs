@@ -445,7 +445,7 @@ fn serve_tls_dynamic() {
     // 正常：TLS 回环动态 GET（scheme=https: 透传）+ POST 回声 201 + 静态 200。
     let dir = serve_fixture();
     let (cert, key, trust) = make_self_signed(dir.path());
-    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    dir.child("handler.mjs").write_str(dyn_echo_handler_src()).unwrap();
     let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
     let cert_s = cert.to_string_lossy().into_owned();
     let key_s = key.to_string_lossy().into_owned();
@@ -469,7 +469,7 @@ fn serve_tls_dynamic() {
 fn serve_h2() {
     // 正常：明文 h2c（prior knowledge）回声 + 双流并发；TLS 经 ALPN 谈出 h2 回声。
     let dir = serve_fixture();
-    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    dir.child("handler.mjs").write_str(dyn_echo_handler_src()).unwrap();
     let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -512,7 +512,7 @@ fn serve_h2_tls_alpn() {
     // 正常：TLS + ALPN h2 回声（scheme=https:）。
     let dir = serve_fixture();
     let (cert, key, trust) = make_self_signed(dir.path());
-    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    dir.child("handler.mjs").write_str(dyn_echo_handler_src()).unwrap();
     let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
     let cert_s = cert.to_string_lossy().into_owned();
     let key_s = key.to_string_lossy().into_owned();

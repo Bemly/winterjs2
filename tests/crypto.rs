@@ -108,7 +108,7 @@ fn ecdh_derive_and_key() {
 
 #[test]
 fn asymmetric_errors() {
-    // c-4x 已收官：RSA-PSS 可生成（详见 subtle_c4x_*）；坏曲线/错用途/非私钥 derive 进报错面。
+    // c-4x 已收官：RSA-PSS 可生成（详见 subtle_*）；坏曲线/错用途/非私钥 derive 进报错面。
     let out = winterjs2()
         .args(["--eval", r#"const k = await crypto.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign"]); console.log(k.publicKey.algorithm.name);"#])
         .output()
@@ -132,11 +132,11 @@ fn asymmetric_errors() {
 }
 
 #[test]
-fn subtle_c4x_ed25519_vectors() {
+fn subtle_ed25519_vectors() {
     // 正常：openssl 向量验签 + 签名回环 + pkcs8/spki/jwk 往返；报错：坏长度/坏签；
     // 边界：64B 全零签（合法长度，验签 false 不抛）。
     let code = format!(
-        r#"{C4X_HEXJS}
+        r#"{SUBTLE_HEX_JS}
 const MSG = new TextEncoder().encode("winterjs-vector");
 const SEED = "b12d94858bb317baa5d40f669a784aa878bb17ad25e149e89594d7d9855b58a0";
 const PUB = "a9a53ddffd0e9b2d2b83eb442fac6a95391d07160fe1926f51386d31e786c869";
@@ -180,11 +180,11 @@ console.log("ed-ok");
 }
 
 #[test]
-fn subtle_c4x_x25519_vectors() {
+fn subtle_x25519_vectors() {
     // 正常：openssl 向量 derive（双方一致）+ deriveKey 落 AES-GCM；报错：错对端类型；
     // 边界：deriveBits 长度越界。
     let code = format!(
-        r#"{C4X_HEXJS}
+        r#"{SUBTLE_HEX_JS}
 const A_PRIV = "302e020100300506032b656e04220420a0e63ac582ee05d53337ba21c948389dc4e3bc0825fd506e2fa0719e038cc84d";
 const B_PUB = "302a300506032b656e0321002c1c3ea839b4fb38c52c098df2af755e34cce1d2f657d8d58e3ec58529b56f73";
 const EXPECT = "31526c245be4719dee9b1d1efe980c8ac796a6a2c6179a4ffe4ae018a3bc8763";
@@ -220,7 +220,7 @@ console.log("x-ok");
 }
 
 #[test]
-fn subtle_c4x_pss_roundtrip() {
+fn subtle_pss_roundtrip() {
     // 正常：生成→签名→验签 + 篡改/错 salt 为 false + jwk PS256；
     // 报错：公钥签名、私钥验签；边界：saltLength 缺省 = digest 长。
     let code = r#"const MSG = new TextEncoder().encode("pss-hello");
@@ -248,7 +248,7 @@ console.log("pss-ok");
 }
 
 #[test]
-fn subtle_c4x_aes192() {
+fn subtle_aes_gcm_192() {
     // 正常：192 回环 + raw 24B 导入；报错：20B；边界：192 派生（deriveKey 落 192）。
     let code = r#"const k192 = await crypto.subtle.generateKey({ name: "AES-GCM", length: 192 }, true, ["encrypt", "decrypt"]);
 if (k192.algorithm.length !== 192) throw new Error("bad length");
@@ -273,5 +273,5 @@ console.log("aes192-ok");
 // ── Web 流收官：TextDecoder 流式 / Abort 事件 / BYOB ──────────────────────────
 
 /// c-4x 通用：hex 串转 ArrayBuffer（各用例内联，避免 helper 依赖）。
-const C4X_HEXJS: &str =
+const SUBTLE_HEX_JS: &str =
     r#"const bx = (s) => new Uint8Array(s.match(/../g).map(h => parseInt(h, 16))).buffer;"#;

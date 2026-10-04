@@ -8,7 +8,7 @@ fn serve_ws_echo() {
     // 正常：WS 回声经 JS onmessage（文本 + 二进制）+ 干净关闭握手；随后 HTTP 照常。
     use futures::{SinkExt as _, StreamExt as _};
     let dir = serve_fixture();
-    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    dir.child("handler.mjs").write_str(upgrade_echo_handler_src()).unwrap();
     let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -61,7 +61,7 @@ fn serve_ws_bad_handshake() {
     // 报错：缺 key / 错版本 / 非 GET 升级即 400（不进 JS）。
     // 正常：非 WS 的 Upgrade 头（h2c）零干扰，走普通 HTTP。
     let dir = serve_fixture();
-    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    dir.child("handler.mjs").write_str(upgrade_echo_handler_src()).unwrap();
     let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
     let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
     let base = "GET /ws HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\n";
@@ -93,7 +93,7 @@ fn serve_ws_bad_handshake() {
 fn serve_ws_static_first() {
     // 路由序：已存在静态文件路径的升级仍优先进 WS（`/` 有 index.html，照返 101）。
     let dir = serve_fixture();
-    dir.child("handler.mjs").write_str(t4_handler_src()).unwrap();
+    dir.child("handler.mjs").write_str(upgrade_echo_handler_src()).unwrap();
     let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
     let srv = spawn_serve_args(dir.path(), &["--handler", handler.as_str()]);
     let (st, h, _) = ws_handshake_raw(

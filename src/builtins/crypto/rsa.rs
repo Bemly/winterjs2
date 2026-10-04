@@ -537,7 +537,7 @@ pub unsafe extern "C" fn rsa_import_pub(
     set_rval_bytes(&mut cx, &frame, &der)
 }
 // 边界惯例同文件头：每 native 固定 `wrap_cx` + `Frame::from_raw` 两块
-//（UNSAFE-BOUNDARY，结构性计数；黑盒见 tests/cli.rs `subtle_c4x_*`）。
+//（UNSAFE-BOUNDARY，结构性计数；黑盒见 tests/crypto.rs `subtle_*`）。
 // AES-192 经泛型 `AesGcm<Aes192, U12>`（aes-gcm 只给 128/256 起别名，无新依赖）。
 
 /// `__wjs2_pss_sign(hash, saltLen, privDer, data)` → 签名（RSA-PSS，salt 随机）。

@@ -9,7 +9,7 @@ fn serve_h3_same_router() {
     // 环境注：本机 curl 无 http3（SecureTransport 版），以 harness 探针验收（plan4 §3 T3）。
     let dir = serve_fixture();
     let (cert, key, trust) = make_self_signed(dir.path());
-    dir.child("handler.mjs").write_str(t2_handler_src()).unwrap();
+    dir.child("handler.mjs").write_str(dyn_echo_handler_src()).unwrap();
     let handler = dir.path().join("handler.mjs").to_string_lossy().into_owned();
     let cert_s = cert.to_string_lossy().into_owned();
     let key_s = key.to_string_lossy().into_owned();

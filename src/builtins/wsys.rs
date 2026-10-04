@@ -496,7 +496,7 @@ fn log_capped(level: &str, msg: &str) {
 }
 
 /// `__wjs2_wsys_log(level, msg)`（level 越界即错）。
-/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
+/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc_util_faces`。
 pub unsafe extern "C" fn wlog(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -526,7 +526,7 @@ pub unsafe extern "C" fn wlog(
 // ── mime / cookie / httpdate ───────────────────────────────────────────────
 
 /// `__wjs2_wsys_mime_lookup(path)` → MIME 串（fallback octet-stream）。
-/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
+/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc_util_faces`。
 pub unsafe extern "C" fn mime_lookup(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -542,7 +542,7 @@ pub unsafe extern "C" fn mime_lookup(
 }
 
 /// `__wjs2_wsys_cookie_parse(header)` → 首 cookie `{name,value}` JSON。
-/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
+/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc_util_faces`。
 pub unsafe extern "C" fn cookie_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -571,7 +571,7 @@ pub unsafe extern "C" fn cookie_parse(
 }
 
 /// `__wjs2_wsys_cookie_serialize(name, value, optsJson?)` 。
-/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
+/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc_util_faces`。
 pub unsafe extern "C" fn cookie_serialize(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -623,7 +623,7 @@ pub unsafe extern "C" fn cookie_serialize(
 }
 
 /// `__wjs2_wsys_httpdate_parse(s)` → 纪元毫秒.
-/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
+/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc_util_faces`。
 pub unsafe extern "C" fn httpdate_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -653,7 +653,7 @@ pub unsafe extern "C" fn httpdate_parse(
 }
 
 /// `__wjs2_wsys_httpdate_format(ms)` → IMF 串.
-/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc2_faces`。
+/// UNSAFE-BOUNDARY：见本文件头注；覆盖 `tests/wsys.rs::wsys_misc_util_faces`。
 pub unsafe extern "C" fn httpdate_format(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

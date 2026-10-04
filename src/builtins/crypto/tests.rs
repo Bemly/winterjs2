@@ -1,7 +1,7 @@
 //! crypto 回归向量（c4x 系；按属主分散前集中一处，见 §0.9 拆分）。
 
 #[cfg(test)]
-mod c4x_tests {
+mod regression_vector_tests {
     use super::super::{
         der_ecdsa_sig_to_raw, der_tlv, ec_curve_name, okp_unwrap_pkcs8, okp_unwrap_spki,
         okp_wrap_pkcs8, okp_wrap_spki, rsa_pss_verify_manual, rsa_v15_verify_manual,

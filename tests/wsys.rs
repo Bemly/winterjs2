@@ -73,7 +73,7 @@ fn wsys_oauth_transpile_faces() {
 }
 
 #[test]
-fn wsys_misc2_faces() {
+fn wsys_misc_util_faces() {
     let stdout = eval_ok(
         r#"WinterJS2.log.info("wsys-probe"); console.log("mime", WinterJS2.mime.lookup("a.png") === "image/png"); console.log("cookie", JSON.stringify(WinterJS2.cookie.parse("a=1; Path=/")) === '{"name":"a","value":"1"}'); console.log("ser", WinterJS2.cookie.serialize("a", "1", { path: "/", httpOnly: true }) === "a=1; HttpOnly; Path=/"); const ms = WinterJS2.httpdate.parse("Sun, 06 Nov 1994 08:49:37 GMT"); console.log("date", WinterJS2.httpdate.format(ms) === "Sun, 06 Nov 1994 08:49:37 GMT");"#,
     );

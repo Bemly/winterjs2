@@ -4806,3 +4806,22 @@
 - 推广铁律：**标识符审计按"种类 × token 族"双轴**——种类（fn/mod/const/
  static/helper/文件名/文档指针）× token 族（phase/m/r/b/g/tier/misc +
  数字），单轴扫必漏。
+
+### 4.274 一口气查完：门禁脚本 + 碰撞原则（2026-10-05）
+
+- 症状：命名清理连开四轮（4.271/4.272/4.273 追补 + fixture/标签），每轮都
+ "以为完了"——分轮扫 = 把 scope 拆小，每轮正则即当轮 scope 的天花板。
+- 根因：无统一检查清单 + 无回归门禁；另有两类易误判：① 与历史计划 token
+ 碰撞的才算污染（r2/r4/r5/r6、p1-p9、b1-b8、m0、t1/t2、j2-j4、
+ batch5、g5）；② 纯局部序号与域语义永远放过（rq2/s2/cli2/res2/e1、
+ 方向缩写 w2w/t2w/f2w、算法名 x448/sha512/chacha20、协议版本 h2/v1、
+ 类型名 u8/utf8、argv0、fd 号 ws99）。
+- 修法：`scripts/check-naming.py` 一次覆盖五轴（标识符声明位/fixture 名/
+ console 标签/环境变量键/非历史文档指针）+ 白名单注明每条放过理由；
+ `r4/r5/r6→ex-/rs-/ps-`、`m0→ok`、`t1/t2→early/late-ok`、`b1-b8→cl-`、
+ `p1-p13/timeout-p1-p4→裸描述`、`j2/j3/j4→join-auth/nohost/join-wire`、
+ `batch5-done→heads-done`、`g5-validators→validators`、
+ `WINTERJS2_T4→WINTERJS2_ENV_PROBE`、`v0-ok→ok`、`latin1-1→latin1-single`。
+- 复现：`python3 scripts/check-naming.py` 归零（exit 0）。
+- 推广铁律：**"查完"以门禁脚本绿为准，不以人眼为准**——新命名规则落地
+ 必须配守门脚本进提交前检查；误报一律写进脚本白名单并注理由，禁口头豁免。

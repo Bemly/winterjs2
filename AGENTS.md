@@ -126,7 +126,7 @@ cargo build
 
 **测试与跑分**
 - 黑盒标签禁子串、一行多断言分参打印（4.42）；读全局态的单测先复位（4.41）。
-- 标识符禁阶段命名：测试函数名按域行为命名（如 `fs_utf8stream_surface`），phaseN/pN_/mN_/rN_/round/batch 等计划号禁进变量/函数/文件名，只许出现在注释与 journal（4.271/4.272）。
+- 标识符禁阶段命名：测试函数名按域行为命名（如 `fs_utf8stream_surface`），phaseN/pN_/mN_/rN_/round/batch 等计划号禁进变量/函数/文件名，只许出现在注释与 journal（4.271/4.272）；提交前跑 `python3 scripts/check-naming.py`（4.274）。
 - 跑分包装 `exec @ARGV or die` + glob 解析路径；"全绿/全红得可疑"先查执行痕迹（4.145/4.168/4.205）。
 - 并行跑 node 套件逐进程设 `TEST_THREAD_ID`；对拍前断言 fixtures 完备（4.122/4.158）。
 - 判 hang 只认退出码；长驻探针输出落盘；管道取 `${PIPESTATUS[0]}`（4.45/4.67/4.93）。

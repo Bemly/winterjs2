@@ -812,3 +812,29 @@ fn process_warning_throw_deprecation_async() {
     assert!(out.contains("no-sync-throw"), "must not throw sync: {out}");
     assert!(out.contains("caught DeprecationWarning: test"), "async uncaught delivery: {out}");
 }
+
+#[test]
+fn process_config_rss_faces() {
+    // config.variables.node_module_version（整数 > 0，module-version 套件门）；
+    // memoryUsage.rss() 独立函数（与 memoryUsage().rss 同值）。
+    // 正常/边界：双通道一致 + 正数；报错：无（纯读面）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import process from "node:process";
+const v = process.config.variables.node_module_version;
+console.log("nmv", Number.isInteger(v) && v > 0);
+const a = process.memoryUsage().rss;
+const b = process.memoryUsage.rss();
+console.log("rss", typeof process.memoryUsage.rss, Number.isInteger(a) && a > 0, Number.isInteger(b) && b > 0);
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in ["nmv true", "rss function true true"] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

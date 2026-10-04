@@ -742,6 +742,9 @@ pub unsafe extern "C" fn builtin_modules_json(
             }
         }
     }
+    // node 口径：废弃别名 `sys`（= util）在列（isBuiltin/builtinModules 套件点名；
+    // 真机仅裸形，无 `node:sys`）。
+    names.push("sys");
     let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
     rooted!(&in(cx) let mut v = UndefinedValue());
     json.to_jsval(&mut cx, v.handle_mut());

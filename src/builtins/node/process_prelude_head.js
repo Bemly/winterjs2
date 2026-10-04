@@ -314,6 +314,7 @@ globalThis.process = {
       asan: 0,
       node_shared: false,
       node_use_ffi: false,
+      node_module_version: 147,
       v8_enable_i18n_support: 1,
       v8_enable_temporal_support: 1,
       v8_use_perfetto: false,
@@ -462,6 +463,9 @@ globalThis.process = {
     { bigint: () => BigInt(__wjs2_hrtime_ns()) },
   ),
   memoryUsage() { return JSON.parse(__wjs2_memory_usage()); },
+  // node 口径：memoryUsage.rss() 独立函数（serialize-leak 等直调；与
+  // memoryUsage().rss 同值，均为 native 实测）。
+  // 函数体外挂（对象字面量内 `memoryUsage.rss =` 非法，故尾部补挂）。
   // abort 为箭头函数：无 prototype（套件点名），new 即 TypeError；调用即 SIGABRT。
   abort: () => { __wjs2_process_abort(); },
   availableMemory() { return __wjs2_available_memory(); },

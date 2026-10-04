@@ -21,7 +21,7 @@ console.log("cr-builtin", typeof req("node:path").join);
 console.log("cr-resolve", req.resolve("./helper.cjs").endsWith("helper.cjs"));
 const req2 = Module.createRequire(import.meta.url);
 console.log("mod-cr", req2("./helper.cjs").v);
-console.log("bl", builtinModules.includes("node:module") && builtinModules.includes("module") && isBuiltin("fs") && isBuiltin("node:fs") && !isBuiltin("node:nope"));
+console.log("bl", builtinModules.includes("node:module") && builtinModules.includes("module") && builtinModules.includes("sys") && isBuiltin("fs") && isBuiltin("node:fs") && isBuiltin("sys") && !isBuiltin("node:nope"));
 console.log("sync", Module.syncBuiltinESMExports() === undefined);
 try { req("./nope-missing-xyz.cjs"); } catch (e) { console.log("miss", String(e.message).includes("Cannot find module")); }
 try { createRequire(42); } catch (e) { console.log("badbase", e.code); }

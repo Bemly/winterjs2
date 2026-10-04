@@ -1,3 +1,10 @@
+// memoryUsage.rss 独立函数（node 口径；与 memoryUsage().rss 同值）。
+try {
+  const __p = globalThis.process;
+  if (__p && typeof __p.memoryUsage === 'function' && typeof __p.memoryUsage.rss !== 'function') {
+    __p.memoryUsage.rss = function rss() { return JSON.parse(__wjs2_memory_usage()).rss; };
+  }
+} catch {}
 // Node 兼容旗语义（CLI 起点剥下，见 cli::strip_node_compat_args）：
 // --expose-gc 即暴露 globalThis.gc（async no-op——真收集另案，调用形状先行；
 // 无旗不暴露，真机口径）；名单挂内部位供 http 默认宽松等消费（不进 process.env）。

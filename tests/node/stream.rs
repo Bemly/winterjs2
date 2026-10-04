@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9b_stream_readable_writable_core() {
+fn stream_readable_writable_core() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -89,7 +89,7 @@ console.log("same", stream.Readable === Readable, stream.Writable === Writable, 
 }
 
 #[test]
-fn phase9b_stream_duplex_transform_pipeline() {
+fn stream_duplex_transform_pipeline() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -193,7 +193,7 @@ console.log("hwm", stream.getDefaultHighWaterMark(true), stream.getDefaultHighWa
 // ── Phase 9b-4：Readable.from / 异步迭代器 / stream/web / consumers ─────────
 
 #[test]
-fn phase9b_stream_from_iterators() {
+fn stream_from_iterators() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -239,7 +239,7 @@ try { Readable.from(42); } catch (e) { console.log("e1", e.code); }
 }
 
 #[test]
-fn phase9b_stream_web_and_consumers() {
+fn stream_web_and_consumers() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -399,7 +399,7 @@ process.nextTick(() => { throw new Error("tickboom"); });
 }
 
 #[test]
-fn stream_r1_eos_hooks_faces() {
+fn stream_eos_hooks_faces() {
     // P2-stream R1：eos 三套件 + 连字符回落 + tty_wrap（node 原文口径）。
     // 正常：finished 回调触发；AsyncResource 构造触发 init（STREAM_END_OF_STREAM
     //   上下文传播）；enable 后 enabledHooksExist 真。
@@ -463,7 +463,7 @@ console.log("hyphen-aas", ok);
 }
 
 #[test]
-fn stream_r2_iter_faces() {
+fn stream_iter_faces() {
     // P2-stream R2：`stream/iter` 门控面（node 原文口径）。
     // 正常（旗开）：push/write/end + text() 回环；Stream 命名空间冻结 + 工厂齐备；
     //   fromSync 跨 realm 按结构收（internal/types 口径）。
@@ -516,7 +516,7 @@ console.log("err-variant", new E.ERR_INVALID_STATE.TypeError("x").code === "ERR_
 }
 
 #[test]
-fn stream_r3_shim_faces() {
+fn stream_shim_faces() {
     // P2-stream R3：zlib 句柄 shim + Web 锁码 + 同批单 tick（node 原文口径）。
     // 正常：gzip 回环（缓冲式 shim 经同步引擎）；同 cb 百写仅一次 TickObject。
     // 报错：web 锁错带 ERR_INVALID_STATE；TextDecoder 非源带 ERR_INVALID_ARG_TYPE。

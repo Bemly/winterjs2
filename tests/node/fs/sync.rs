@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9c_fs_sync_extras() {
+fn fs_sync_extras() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -97,7 +97,7 @@ console.log("done-ok");
 // ── Phase 9c-2a：FileHandle + fs/promises 新件 ──────────────────────────────
 
 #[test]
-fn phase9c_fs_filehandle_and_promises() {
+fn fs_filehandle_and_promises() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -175,7 +175,7 @@ console.log("end-ok");
 // ── Phase 9c-2b：fs 回调全家 + promisify 互操作 ─────────────────────────────
 
 #[test]
-fn phase9c_fs_callback_surface() {
+fn fs_callback_surface() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

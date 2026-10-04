@@ -7,7 +7,7 @@ use common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase2_relative_import() {
+fn relative_import() {
     let (_dir, entry) = mod_dir(
         &[
             ("lib.js", "export const x = 40 + 2;\n"),
@@ -22,7 +22,7 @@ fn phase2_relative_import() {
 }
 
 #[test]
-fn phase2_typescript_transpile() {
+fn typescript_transpile() {
     let (_dir, entry) = mod_dir(
         &[
             (
@@ -40,7 +40,7 @@ fn phase2_typescript_transpile() {
 }
 
 #[test]
-fn phase2_circular_import_no_deadlock() {
+fn circular_import_no_deadlock() {
     let (_dir, entry) = mod_dir(
         &[
             ("a.js", "import \"./b.js\";\nconsole.log(\"a\");\n"),
@@ -56,7 +56,7 @@ fn phase2_circular_import_no_deadlock() {
 }
 
 #[test]
-fn phase2_import_meta_url() {
+fn import_meta_url() {
     let (_dir, entry) = mod_dir(&[("meta.js", "console.log(import.meta.url);\n")], "meta.js");
     let out = stdout_of(&mut winterjs2().arg("--run").arg(&entry));
     assert!(
@@ -66,7 +66,7 @@ fn phase2_import_meta_url() {
 }
 
 #[test]
-fn phase2_bare_specifier_missing_friendly_error() {
+fn bare_specifier_missing_friendly_error() {
     let (_dir, entry) = mod_dir(
         &[("bare.js", "import \"left-pad-xyz-absent\";\n")],
         "bare.js",
@@ -81,7 +81,7 @@ fn phase2_bare_specifier_missing_friendly_error() {
 }
 
 #[test]
-fn phase2_bare_specifier_node_modules() {
+fn bare_specifier_node_modules() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("node_modules/left-pad/package.json")
         .write_str("{\"name\":\"left-pad\",\"version\":\"1.0.0\",\"main\":\"index.js\"}")
@@ -101,7 +101,7 @@ fn phase2_bare_specifier_node_modules() {
 }
 
 #[test]
-fn phase2_tsconfig_paths_alias() {
+fn tsconfig_paths_alias() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("tsconfig.json")
         .write_str("{\"compilerOptions\":{\"baseUrl\":\".\",\"paths\":{\"@lib/*\":[\"src/*\"]}}}")
@@ -118,7 +118,7 @@ fn phase2_tsconfig_paths_alias() {
 }
 
 #[test]
-fn phase2_ts_js_extension_alias() {
+fn ts_js_extension_alias() {
     // TS 约定：`./foo.js` 指向 `./foo.ts` 源码
     let (_dir, entry) = mod_dir(
         &[
@@ -134,7 +134,7 @@ fn phase2_ts_js_extension_alias() {
 }
 
 #[test]
-fn phase2_dynamic_import() {
+fn dynamic_import() {
     let (_dir, entry) = mod_dir(
         &[
             ("lib.js", "export const x = 40 + 2;\n"),
@@ -149,7 +149,7 @@ fn phase2_dynamic_import() {
 }
 
 #[test]
-fn phase2_top_level_await_entry() {
+fn top_level_await_entry() {
     let (_dir, entry) = mod_dir(
         &[(
             "tla.js",
@@ -164,7 +164,7 @@ fn phase2_top_level_await_entry() {
 }
 
 #[test]
-fn phase2_data_url_import() {
+fn data_url_import() {
     let (_dir, entry) = mod_dir(
         &[(
             "data.js",
@@ -176,7 +176,7 @@ fn phase2_data_url_import() {
 }
 
 #[test]
-fn phase2_ts_runtime_error_location() {
+fn ts_runtime_error_location() {
     // TS 报错行号经 sourcemap 回映射到原文（转译行会漂移，断言原文行）
     let (_dir, entry) = mod_dir(
         &[(

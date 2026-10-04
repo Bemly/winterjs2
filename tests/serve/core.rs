@@ -5,7 +5,7 @@ use assert_fs::prelude::*;
 use super::helpers::*;
 
 #[test]
-fn phase6_serve_static_file() {
+fn serve_static_file() {
     // 正常：`/` 落到 index.html（content-type + etag），子路径按 mime，缺失 404。
     let dir = serve_fixture();
     let srv = spawn_serve(dir.path());
@@ -32,7 +32,7 @@ fn phase6_serve_static_file() {
 }
 
 #[test]
-fn phase6_serve_ts_mime_as_javascript() {
+fn serve_ts_mime_as_javascript() {
     // 正常：`.ts` 等 TS 家族按 JS MIME（Vite 对等），否则浏览器拒载模块；
     // 边界：不存在的 `.ts` 路径仍 404（重写只动成功响应）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -58,7 +58,7 @@ fn phase6_serve_ts_mime_as_javascript() {
 }
 
 #[test]
-fn phase6_serve_range() {
+fn serve_range() {
     // 正常：Range → 206 + Content-Range + 切片 body。
     let dir = serve_fixture();
     let srv = spawn_serve(dir.path());
@@ -74,7 +74,7 @@ fn phase6_serve_range() {
 }
 
 #[test]
-fn phase6_serve_bad_dir_errors() {
+fn serve_bad_dir_errors() {
     // 报错：不存在的目录 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs2()
@@ -89,7 +89,7 @@ fn phase6_serve_bad_dir_errors() {
 }
 
 #[test]
-fn phase6_serve_traversal_blocked() {
+fn serve_traversal_blocked() {
     // 边界：`/../` 越界读不到 root 之外的文件（非 200 且不泄露内容）。
     let dir = serve_fixture();
     let secret_name = format!("wjs-outside-secret-{}.txt", std::process::id());
@@ -104,7 +104,7 @@ fn phase6_serve_traversal_blocked() {
 }
 
 #[test]
-fn phase6_serve_gzip() {
+fn serve_gzip() {
     // 正常：大文件 + Accept-Encoding: gzip → content-encoding: gzip，解压一致。
     // （小 body 被轮子默认 predicate 跳过，见 §4.19，故用 5KB。）
     let dir = assert_fs::TempDir::new().unwrap();
@@ -130,7 +130,7 @@ fn phase6_serve_gzip() {
 }
 
 #[test]
-fn phase6_serve_cors() {
+fn serve_cors() {
     // 正常：带 Origin 请求 → access-control-allow-origin: *。
     let dir = serve_fixture();
     let srv = spawn_serve(dir.path());
@@ -145,7 +145,7 @@ fn phase6_serve_cors() {
 }
 
 #[test]
-fn phase6_serve_request_trace() {
+fn serve_request_trace() {
     // 正常：WINTERJS2_LOG=winterjs2=debug 下 stderr 有逐请求 method/uri/status 行。
     use std::io::Read;
     let dir = serve_fixture();
@@ -187,7 +187,7 @@ fn phase6_serve_request_trace() {
 }
 
 #[test]
-fn phase6_serve_metrics() {
+fn serve_metrics() {
     // 正常：打 2 个请求后 /metrics 含三指标，且计数行精确递增。
     let dir = serve_fixture();
     let srv = spawn_serve(dir.path());
@@ -225,7 +225,7 @@ fn phase6_serve_metrics() {
 }
 
 #[test]
-fn phase6_serve_rate_limit() {
+fn serve_rate_limit() {
     // 边界：`--limit-rps 1` 下连打两请求，第二个 429 + Retry-After。
     // （burst=1，第一发必过、第二发必限，时序确定；/metrics 本身也耗配额故不用它断言。）
     let dir = serve_fixture();
@@ -239,7 +239,7 @@ fn phase6_serve_rate_limit() {
 }
 
 #[test]
-fn phase6_serve_tls() {
+fn serve_tls() {
     // 正常：自签 PEM 起 https，真握手后静态 + /metrics 皆 200。
     let dir = serve_fixture();
     let (cert, key, trust) = make_self_signed(dir.path());
@@ -261,7 +261,7 @@ fn phase6_serve_tls() {
 }
 
 #[test]
-fn phase6_serve_tls_half_args() {
+fn serve_tls_half_args() {
     // 报错：只给 --cert 不给 --key，exit=1 且指路（不静默降级明文）。
     let dir = serve_fixture();
     let (cert, _, _) = make_self_signed(dir.path());
@@ -278,7 +278,7 @@ fn phase6_serve_tls_half_args() {
 }
 
 #[test]
-fn phase6_serve_tls_bad_pem() {
+fn serve_tls_bad_pem() {
     // 报错：坏 PEM exit=1 且可读（cert/key 双给但内容非法）。
     let dir = serve_fixture();
     let cert = dir.path().join("c.pem");

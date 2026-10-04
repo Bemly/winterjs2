@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9e_crypto_hash_hmac() {
+fn crypto_hash_hmac() {
     // 真 Node 取证向量（HMAC-SHA256/MD5/SHA3-256 + BLAKE2b/SHA3-512，逐字节对）
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -46,7 +46,7 @@ console.log("ns", typeof c.createHash === "function", c.webcrypto === globalThis
 }
 
 #[test]
-fn phase9e_crypto_random() {
+fn crypto_random() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -90,7 +90,7 @@ console.log("tse", timingSafeEqual(Buffer.from([1, 2]), Buffer.from([1, 2])) ===
 }
 
 #[test]
-fn phase9e_crypto_errors_boundary() {
+fn crypto_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -137,7 +137,7 @@ console.log("big", createHash("sha256").update(big).digest("hex") === createHash
 }
 
 #[test]
-fn phase9e_crypto_kdf() {
+fn crypto_kdf() {
     // 真 Node 取证向量（pbkdf2/scrypt/hkdf/argon2，逐字节对）
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -185,7 +185,7 @@ console.log("ad", argon2Sync("argon2id", { message: "secret", nonce: "somesalt12
 }
 
 #[test]
-fn phase9h_crypto_xof_ripemd() {
+fn crypto_xof_ripemd() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("p.mjs");
     file.write_str(

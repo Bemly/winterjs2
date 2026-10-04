@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase4_node_os_basic() {
+fn node_os_basic() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const os = await import("node:os"); console.log([os.platform(), os.arch()].join(",")); console.log(os.EOL.length, os.hostname().length > 0, os.tmpdir().length > 0, os.totalmem() > 0, os.freemem() >= 0, os.cpus().length > 0, typeof os.cpus()[0].model, Object.keys(os.networkInterfaces()).length > 0, os.userInfo().username.length >= 0, os.uptime() >= 0, os.loadavg().length, os.release().length >= 0);"#]));
     let mut lines = out.lines();

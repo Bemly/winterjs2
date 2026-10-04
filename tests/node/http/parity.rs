@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn http_parity_round1() {
+fn http_agent_server_baseline_parity() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

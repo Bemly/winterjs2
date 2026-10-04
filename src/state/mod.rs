@@ -938,8 +938,8 @@ mod tests {
     use serial_test::serial;
 
     /// 端口计数状态机（`counted = open && refed && listening`）需 rooted 会话，
-    /// 单测起不来引擎——由黑盒全链覆盖（`phase9f_worker_channel_roundtrip` 的
-    /// close/unref/`phase9f_worker_thread_info_boundary` 的 th-unref 行）。
+    /// 单测起不来引擎——由黑盒全链覆盖（`worker_channel_roundtrip` 的
+    /// close/unref/`worker_thread_info_boundary` 的 th-unref 行）。
 
     /// worker 句柄计数：运行中 +1，unref 摘，退出结算防双减。
     #[test]

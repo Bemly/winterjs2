@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_async_hooks_als_and_async_resource() {
+fn async_hooks_als_and_async_resource() {
     // test-async-local-storage* 子集（同步链路）+ AsyncResource runInAsyncScope
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("a.mjs");
@@ -56,7 +56,7 @@ console.log("hook", typeof hook.disable);
 }
 
 #[test]
-fn phase9a_async_hooks_stub_and_validation_boundary() {
+fn async_hooks_stub_and_validation_boundary() {
     // stub 口径边界：createHook 非法回调 → ERR_ASYNC_CALLBACK；ALS 非法 callback → TypeError
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("b.mjs");

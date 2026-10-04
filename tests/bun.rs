@@ -7,7 +7,7 @@ use common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase7_sqlite_memory_roundtrip() {
+fn sqlite_memory_roundtrip() {
     // 正常：建表/参数绑定（positional + named）/get/all/values/as/缓存/事务/回滚/iterate/finalize/close。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_sqlite_file(
@@ -62,7 +62,7 @@ console.log(typeof SqliteError);
 }
 
 #[test]
-fn phase7_sqlite_file_persist_and_errors() {
+fn sqlite_file_persist_and_errors() {
     // 正常：文件库写盘→关→重开读回（blob 原样）+ filename。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_sqlite_file(
@@ -118,7 +118,7 @@ console.log("done");
 }
 
 #[test]
-fn phase7_sqlite_unknown_spec() {
+fn sqlite_unknown_spec() {
     // 边界：未知 bun: 内建整跑失败，报错含可用列表（与裸导入报错同路径）；
     // 可用项 `bun:sqlite` 动态导入正常。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -155,7 +155,7 @@ fn phase7_sqlite_unknown_spec() {
 
 #[cfg(unix)]
 #[test]
-fn phase7_ffi_dylib() {
+fn ffi_dylib() {
     // 正常：整数/混合类别/void+指针写回（零拷贝语义）/u8/f32 返回/CString/toBuffer。
     let dir = assert_fs::TempDir::new().unwrap();
     let libname = build_ffi_dylib(&dir);
@@ -214,7 +214,7 @@ console.log(typeof lib.symbols.ffi_add);
 
 #[cfg(unix)]
 #[test]
-fn phase7_ffi_errors() {
+fn ffi_errors() {
     // 报错三件：坏路径/缺符号/arity 不匹配/f32 参数/未知类型/null CString。
     let dir = assert_fs::TempDir::new().unwrap();
     let libname = build_ffi_dylib(&dir);

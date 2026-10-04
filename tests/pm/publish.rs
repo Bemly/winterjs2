@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase5_publish_dry_run_ok() {
+fn publish_dry_run_ok() {
     // 正常：`publish --dry-run` 打印名@版/registry/files，不碰网络。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("package.json")
@@ -31,7 +31,7 @@ fn phase5_publish_dry_run_ok() {
 }
 
 #[test]
-fn phase5_publish_manifest_errors() {
+fn publish_manifest_errors() {
     // 报错：缺名 / 坏 license，皆 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("package.json")

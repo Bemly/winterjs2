@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9m_console_module_surface() {
+fn console_module_surface() {
     // 正常：具名表全 + Console 写自定义流（log/count/timeEnd/assert-false）+
     // default 形状；边界：无流构造回落全局；默认导出可调用（真机口径）。
     let dir = assert_fs::TempDir::new().unwrap();

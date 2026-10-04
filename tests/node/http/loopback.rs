@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9d_http_loopback() {
+fn http_loopback() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -96,7 +96,7 @@ setTimeout(() => console.log("end-ok"), 300);
 }
 
 #[test]
-fn phase9d_http_client_errors() {
+fn http_client_errors() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

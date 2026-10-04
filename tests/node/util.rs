@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_util_format_inspect_inherits() {
+fn util_format_inspect_inherits() {
     // test-util-format.js / test-util-inspect.js 命名子集
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("u.mjs");
@@ -47,7 +47,7 @@ console.log("promise-inp", util.inspect(Promise.resolve()));
 }
 
 #[test]
-fn phase9a_util_promisify_callbackify_deep_equal() {
+fn util_promisify_callbackify_deep_equal() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("p.mjs");
     file.write_str(
@@ -116,7 +116,7 @@ assert.strictEqual(typeof promisify.custom, "symbol");
 }
 
 #[test]
-fn phase9j_util_parse_env() {
+fn util_parse_env() {
     // 真机差分钉住（node 26.8.2 四组探针全同）：引号/注释/export/重复/排序/多行。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("pe.mjs");

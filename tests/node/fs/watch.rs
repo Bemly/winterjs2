@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase4_fs_watch_fires_and_closes() {
+fn fs_watch_fires_and_closes() {
     // 写文件触发 rename 事件；close 后进程即退（persistent 续命验证）。
     let dir = assert_fs::TempDir::new().unwrap();
     let watchdir = dir.child("watched");
@@ -326,7 +326,7 @@ setTimeout(() => { console.log("rapid-done"); process.exit(0); }, 6000);
 }
 
 #[test]
-fn phase9c_fs_watchfile_poll() {
+fn fs_watchfile_poll() {
     // 正常：同路径单例（w===w2，监听累积，listenerCount 2）；stop 关共享句柄
     //（后续 append 不再派发，真机 w2.stop 口径）；unwatchFile 指定摘除后归零即停。
     // 报错：listener 非函数即 ERR_INVALID_ARG_TYPE TypeError。

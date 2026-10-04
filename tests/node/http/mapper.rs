@@ -8,7 +8,7 @@ use assert_fs::prelude::*;
 /// （无壳时宿主上报 assert SOURCE 包装位置，调用点不可见）。
 /// 帧号即物理行（2026-09-25 起 CJS 包装头编在第 0 行）；±2 行节选窗口兜底。
 #[test]
-fn phase_mapper_locates_async_callsite() {
+fn mapper_locates_async_callsite() {
     let dir = assert_fs::TempDir::new().unwrap();
     // 物理行钉住：r#" 首换行使 1 行为空，assert 在物理第 6 行（2026-09-25 起帧号即物理行）。
     let suite = dir.child("suite-async-fail.js");
@@ -45,7 +45,7 @@ setTimeout(() => {
 
 /// 边界件：套件通过 → mapper 零标签、输出透传。
 #[test]
-fn phase_mapper_passthrough_on_success() {
+fn mapper_passthrough_on_success() {
     let dir = assert_fs::TempDir::new().unwrap();
     let suite = dir.child("suite-pass.js");
     suite.write_str("console.log('suite-ok-line');\n").unwrap();
@@ -58,11 +58,11 @@ fn phase_mapper_passthrough_on_success() {
 
 /// §4.202-① 验收工具（定位器非闸门，红绿不进门）：
 /// `WJS_MAP_SUITE=test-http-raw-headers.js cargo test --test node \
-///   phase_mapper_locate_suite -- --ignored --nocapture`
+///   mapper_locate_suite -- --ignored --nocapture`
 /// 套件名按 /tmp/wjs-node-test/test/parallel 解析，也可给绝对路径。
 #[test]
 #[ignore]
-fn phase_mapper_locate_suite() {
+fn mapper_locate_suite() {
     let Some(p) = std::env::var("WJS_MAP_SUITE").ok() else {
         eprintln!("WJS_MAP_SUITE 未设：套件文件名（vendor parallel 树）或绝对路径");
         return;

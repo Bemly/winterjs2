@@ -4,7 +4,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9f_worker_channel_roundtrip() {
+fn worker_channel_roundtrip() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -56,7 +56,7 @@ q.port1.close(); q.port2.close();
 }
 
 #[test]
-fn phase9f_worker_thread_info_boundary() {
+fn worker_thread_info_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -100,7 +100,7 @@ console.log("th-unref", true);
 }
 
 #[test]
-fn phase9f_worker_eval_and_data() {
+fn worker_eval_and_data() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -140,7 +140,7 @@ console.log("wk-ref", w.unref() === w, w.ref() === w);
 }
 
 #[test]
-fn phase9f_worker_twoway_terminate() {
+fn worker_twoway_terminate() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -171,7 +171,7 @@ w.on("error", (e) => console.log("wx-err", e.message));
 }
 
 #[test]
-fn phase9f_worker_errors_boundary() {
+fn worker_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("wfile.js").write_str("import { parentPort } from \"node:worker_threads\";\nparentPort.postMessage(\"file-ok\");\n").unwrap();
     let out = run_fs_file(
@@ -224,7 +224,7 @@ x.on("error", (e) => console.log("we-xerr", e.message));
 }
 
 #[test]
-fn phase9i_worker_transfer_buffer_types() {
+fn worker_transfer_buffer_types() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -292,7 +292,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn phase9i_worker_transfer_port_migration() {
+fn worker_transfer_port_migration() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -344,7 +344,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn phase9i_worker_transfer_cross_thread_and_broadcast() {
+fn worker_transfer_cross_thread_and_broadcast() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -407,7 +407,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn phase9m_worker_stdio_surface() {
+fn worker_stdio_surface() {
     // Worker 标出流：无选项 null；stdout:true 即有 pipe/unpipe + end/close
     // 语义（无数据流，退出即 end）。
     let dir = assert_fs::TempDir::new().unwrap();

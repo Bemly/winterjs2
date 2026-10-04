@@ -507,7 +507,7 @@ fn explicit_base(base_s: &str) -> Result<Url, String> {
 /// UNSAFE-BOUNDARY: `__wjs2_require_from(base, id)` → `createRequire` 底座，
 /// 显式 base 复用 `require_value`（调用方定位/JSON/CJS/ESM 口径与全局 `require`
 /// 完全一致）；前置：两参皆字符串（非串即 TypeError，不读值）；
-/// 覆盖：`tests/node.rs::phase9j_module_create_require`。
+/// 覆盖：`tests/node.rs::module_create_require`。
 pub unsafe extern "C" fn require_from(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -546,7 +546,7 @@ pub unsafe extern "C" fn require_from(
 
 /// UNSAFE-BOUNDARY: `__wjs2_require_resolve_from(base, id)` → 解析后 URL 串
 /// （`createRequire().resolve` 用；同显式 base 规则）；
-/// 前置同上；覆盖：`tests/node.rs::phase9j_module_create_require`。
+/// 前置同上；覆盖：`tests/node.rs::module_create_require`。
 pub unsafe extern "C" fn require_resolve_from(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -594,7 +594,7 @@ pub unsafe extern "C" fn require_resolve_from(
 /// module 由调用方传入、require 以 filename 为显式 base（prelude
 /// `__wjs2_make_base_require`）、不进 cjs 注册表（缓存语义由调用方
 /// require.cache 承载）。前置：module 对象、code 串、filename 为绝对路径或
-/// file: URL 串；覆盖：`tests/node.rs::phase9k_module_extensions_hook`。
+/// file: URL 串；覆盖：`tests/node.rs::module_extensions_hook`。
 pub unsafe extern "C" fn cjs_compile(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -717,7 +717,7 @@ pub unsafe extern "C" fn cjs_compile(
 
 /// UNSAFE-BOUNDARY: `__wjs2_builtin_modules()` → JSON 数组（`node:module` 的
 /// `builtinModules`/`isBuiltin` 用；裸名 + `node:` 双形，与 `available()` 同源，
-/// 天然不漂移）；前置：无参；覆盖：`tests/node.rs::phase9j_module_surface`。
+/// 天然不漂移）；前置：无参；覆盖：`tests/node.rs::module_surface`。
 pub unsafe extern "C" fn builtin_modules_json(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -831,7 +831,7 @@ fn cjs_export_names_runtime(
 /// `require_value` 全口径：注册表命中则同值、CJS 循环见半成品；垫片求值期
 /// 同步执行 CJS 体——编译期发现已跑过则缓存复用）。
 /// 前置：单参为 file: URL 串（非法即抛错，不回落）；
-/// 覆盖：`tests/node.rs::phase9j_cjs_interop_default`。
+/// 覆盖：`tests/node.rs::cjs_interop_default`。
 pub unsafe extern "C" fn require_cjs_by_url(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,

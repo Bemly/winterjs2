@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_querystring_roundtrip() {
+fn querystring_roundtrip() {
     // test-querystring.js 命名子集
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("q.mjs");

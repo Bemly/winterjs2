@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9f_vm_context_spawns_and_isolates() {
+fn vm_context_spawns_and_isolates() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -56,7 +56,7 @@ console.log("v-mm", mm === "ERR_CONTEXT_NOT_INITIALIZED");
 }
 
 #[test]
-fn phase9f_vm_errors_boundary() {
+fn vm_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -105,7 +105,7 @@ console.log("w-cache", cached.runInNewContext() === 9, cached.cachedDataProduced
 }
 
 #[test]
-fn phase9i_vm_source_module_chain() {
+fn vm_source_module_chain() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -163,7 +163,7 @@ console.log("m9i-tla", t.status === "evaluated", t.namespace.v === 41);
 }
 
 #[test]
-fn phase9i_vm_module_boundary() {
+fn vm_module_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -227,7 +227,7 @@ console.log("m9iB-synest", se.status === "errored");
 }
 
 #[test]
-fn phase9m_vm_dont_contextify() {
+fn vm_dont_contextify() {
     // Node 24+ DONT_CONTEXTIFY（真机 26.8.2 对拍）：新建独立 context 并返回其
     // global 本体——≠主 globalThis、isContext、runInContext("this")===返回值、
     // 写入不穿透主域、新域带 SAB/Atomics（jsdom 29 以此直装 DOM 全局）。

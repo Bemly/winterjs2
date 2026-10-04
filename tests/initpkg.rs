@@ -5,7 +5,7 @@ mod common;
 use common::*;
 
 #[test]
-fn phase7_init_closed_loop() {
+fn init_closed_loop() {
     // 正常：init 三件 + 内容含名 + 紧接着 `test` 即绿（闭环）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
@@ -35,7 +35,7 @@ fn phase7_init_closed_loop() {
 }
 
 #[test]
-fn phase7_init_bad_name() {
+fn init_bad_name() {
     // 报错：非法名 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs2()
@@ -50,7 +50,7 @@ fn phase7_init_bad_name() {
 }
 
 #[test]
-fn phase7_init_rebuild_keeps_existing() {
+fn init_rebuild_keeps_existing() {
     // 重建：已存在文件不碰（exit=0），缺失的补齐。
     let dir = assert_fs::TempDir::new().unwrap();
     assert!(
@@ -81,7 +81,7 @@ fn phase7_init_rebuild_keeps_existing() {
 }
 
 #[test]
-fn phase7_init_needs_yes_without_tty() {
+fn init_needs_yes_without_tty() {
     // 边界：非 TTY 缺 --yes 即报可读错（不挂起等输入）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs2()
@@ -99,7 +99,7 @@ fn phase7_init_needs_yes_without_tty() {
 }
 
 #[test]
-fn phase9_init_adopts_existing_project() {
+fn init_adopts_existing_project() {
     // vue-project 案：已有 package.json 的项目只补缺失、不碰现有一字节。
     let dir = assert_fs::TempDir::new().unwrap();
     let pkg = r#"{"name":"vue-project","version":"0.0.0","private":true,"type":"module","scripts":{"dev":"vite"}}"#;
@@ -131,7 +131,7 @@ fn phase9_init_adopts_existing_project() {
 }
 
 #[test]
-fn phase9_init_short_flag_and_force() {
+fn init_short_flag_and_force() {
     // -I 简写可用；--force 逐个覆盖并报 overwrote。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = stdout_of(
@@ -256,7 +256,7 @@ fn init_cmd(dir: &assert_fs::TempDir, reg: &str, cache: &assert_fs::TempDir) -> 
 }
 
 #[test]
-fn phase9_init_installs_manifest_deps() {
+fn init_installs_manifest_deps() {
     // deps + devDeps 都装（npm 默认口径）+ .bin 链接 + lockfile 记指纹。
     let port = serve_pkg_registry(&["init-dep-a", "init-dep-b"], &[]);
     let reg = format!("http://127.0.0.1:{port}");
@@ -283,7 +283,7 @@ fn phase9_init_installs_manifest_deps() {
 }
 
 #[test]
-fn phase9_init_manifest_up_to_date_is_idempotent() {
+fn init_manifest_up_to_date_is_idempotent() {
     // 二跑：指纹没变 + node_modules 在 → `dependencies up to date`，零网络
     //（serve 0 请求：二跑真发了请求必然 connection refused → exit≠0）。
     let port = serve_pkg_registry(&["init-dep-a"], &[]);
@@ -307,7 +307,7 @@ fn phase9_init_manifest_up_to_date_is_idempotent() {
 }
 
 #[test]
-fn phase9_init_manifest_edit_reinstalls_incrementally() {
+fn init_manifest_edit_reinstalls_incrementally() {
     // 清单编辑（加 dep）→ 指纹变 → 重装（新包装上、旧包保留、lockfile 合并不丢）。
     let port = serve_pkg_registry(&["init-dep-a", "init-dep-c"], &[]);
     let reg = format!("http://127.0.0.1:{port}");
@@ -337,7 +337,7 @@ fn phase9_init_manifest_edit_reinstalls_incrementally() {
 }
 
 #[test]
-fn phase9_init_optional_deps_tolerate_failure() {
+fn init_optional_deps_tolerate_failure() {
     // optionalDependencies：命中照装（optional 记账）；404 容忍跳过，exit=0。
     let port = serve_pkg_registry(&["init-dep-a"], &["init-opt-missing"]);
     let reg = format!("http://127.0.0.1:{port}");
@@ -362,7 +362,7 @@ fn phase9_init_optional_deps_tolerate_failure() {
 }
 
 #[test]
-fn phase9_init_no_deps_and_bad_manifest() {
+fn init_no_deps_and_bad_manifest() {
     // 无依赖段：不建 node_modules、零安装输出；坏 JSON：可读错 exit=1。
     let dir = assert_fs::TempDir::new().unwrap();
     std::fs::write(

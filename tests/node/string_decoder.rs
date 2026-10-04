@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_string_decoder_encodings() {
+fn string_decoder_encodings() {
     // test-string-decoder.js 命名子集：截断续读/end flush/全编码
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("s.mjs");

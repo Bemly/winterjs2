@@ -5,7 +5,7 @@ use assert_fs::prelude::*;
 use super::helpers::*;
 
 #[test]
-fn phase5_git_dry_run_local() {
+fn git_dry_run_local() {
     // 正常：`git+file://` dry-run 解析出 commit（40 hex），不落地。
     let repo = make_git_repo("git-pkg", true);
     let url = format!("file://{}", repo.path().display());
@@ -30,7 +30,7 @@ fn phase5_git_dry_run_local() {
 }
 
 #[test]
-fn phase5_git_unknown_rev_errors() {
+fn git_unknown_rev_errors() {
     // 报错：未知 rev，exit=1 且可读。
     let repo = make_git_repo("git-pkg", false);
     let url = format!("file://{}", repo.path().display());
@@ -56,7 +56,7 @@ fn phase5_git_unknown_rev_errors() {
 }
 
 #[test]
-fn phase5_git_bare_spec_reads_name() {
+fn git_bare_spec_reads_name() {
     // 边界：裸 `git+…` 无显式名，从源 package.json 读名。
     let repo = make_git_repo("bare-pkg", false);
     let url = format!("file://{}", repo.path().display());
@@ -79,7 +79,7 @@ fn phase5_git_bare_spec_reads_name() {
 }
 
 #[test]
-fn phase5_git_end_to_end_local() {
+fn git_end_to_end_local() {
     // 真装闭环：本地 git 装完 `require` 可跑 + lockfile 记 `git+…#commit`。
     let repo = make_git_repo("git-e2e", false);
     let url = format!("file://{}", repo.path().display());

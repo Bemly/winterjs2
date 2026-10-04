@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9e_inspector_session() {
+fn inspector_session() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

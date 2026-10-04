@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_tty_thin_surface() {
+fn tty_thin_surface() {
     // test-tty* 命名子集。10c-1 起构造器真机口径：fd 非 TTY 即 ERR_TTY_INIT_FAILED
     //（hermetic 管道下 0/1/2 全非 TTY，构造必抛；真 TTY 路径经 pty 手工验）。
     let dir = assert_fs::TempDir::new().unwrap();

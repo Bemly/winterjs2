@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9e_perf_hooks_surface() {
+fn perf_hooks_surface() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

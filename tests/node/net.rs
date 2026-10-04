@@ -4,7 +4,7 @@ use crate::common::*;
 use crate::helpers::*;
 
 #[test]
-fn phase9d_net_echo_loopback() {
+fn net_echo_loopback() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -74,7 +74,7 @@ setTimeout(() => console.log("end-ok"), 200);
 }
 
 #[test]
-fn phase9d_net_server_errors() {
+fn net_server_errors() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -107,7 +107,7 @@ setTimeout(() => console.log("end-ok"), 200);
 // ── Phase 9d-2：node:dns（hermetic，仅 localhost/回环）──────────────────────
 
 #[test]
-fn phase9d_net_http_stream_stubs() {
+fn net_http_stream_stubs() {
     // ws/vite 等库直调的流最小面：pause/resume/setTimeout/cork/uncork
     // no-op 链式返回自身，read 恒 null；net.isIP 三态。缺桩曾报
     // `stream.resume is not a function`（M5 dev 实测）。

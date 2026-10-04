@@ -13,7 +13,7 @@ fn eval_ok(code: &str) -> String {
 }
 
 #[test]
-fn wcover_b1_assert_faces() {
+fn wcover_assert_faces() {
     let stdout = eval_ok(
         r#"WinterJS2.assert.ok(true); WinterJS2.assert.equal(1, "1"); WinterJS2.assert.strictEqual(1, 1); WinterJS2.assert.deepEqual({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] }); WinterJS2.assert.throws(() => { throw new Error("x"); }); await WinterJS2.assert.rejects(async () => { throw new Error("x"); }); WinterJS2.assert.match("foobar", /oob/); console.log("assert-faces-ok");"#,
     );
@@ -21,7 +21,7 @@ fn wcover_b1_assert_faces() {
 }
 
 #[test]
-fn wcover_b1_util_puny_faces() {
+fn wcover_util_puny_faces() {
     let stdout = eval_ok(
         r#"console.log("fmt", WinterJS2.util.format("%s=%d %j", "a", 1, { x: 1 })); console.log("insp", WinterJS2.util.inspect({ a: 1 }).includes("a: 1")); console.log("puny", WinterJS2.punycode.toASCII("münchen.de"), WinterJS2.punycode.toUnicode("xn--mnchen-3ya.de"), WinterJS2.punycode.encode("bücher"), WinterJS2.punycode.decode("bcher-kva")); console.log("ucs2", JSON.stringify(WinterJS2.punycode.ucs2.decode("hi")));"#,
     );
@@ -32,7 +32,7 @@ fn wcover_b1_util_puny_faces() {
 }
 
 #[test]
-fn wcover_b1_errors_boundary() {
+fn wcover_assert_errors_boundary() {
     let stdout = eval_ok(
         r#"const t = (n, f) => { try { const r = f(); if (r && r.then) { r.then(() => console.log(n, "NO-THROW"), () => console.log(n, "THROW", "AssertionError")); } else console.log(n, "NO-THROW"); } catch (e) { console.log(n, "THROW", e.name); } }; t("ok", () => WinterJS2.assert.ok(false)); t("eq", () => WinterJS2.assert.strictEqual(1, "1")); t("deep", () => WinterJS2.assert.deepEqual({ a: 1 }, { a: 2 })); t("throws", () => WinterJS2.assert.throws(() => {})); t("notthrows", () => WinterJS2.assert.doesNotThrow(() => { throw new Error("x"); })); t("match", () => WinterJS2.assert.match("foo", /z/)); t("nan", () => WinterJS2.assert.deepEqual(NaN, NaN));"#,
     );
@@ -44,7 +44,7 @@ fn wcover_b1_errors_boundary() {
 }
 
 #[test]
-fn wcover_b3_command_faces() {
+fn wcover_command_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("p.mjs")
         .write_str(
@@ -83,7 +83,7 @@ console.log("repl", typeof WinterJS2.repl.start === "function");
 }
 
 #[test]
-fn wcover_b4_conc_faces() {
+fn wcover_conc_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("echo.mjs")
         .write_str(
@@ -125,7 +125,7 @@ console.log("test", typeof WinterJS2.test.test === "function");
 }
 
 #[test]
-fn wcover_b5_sys_faces() {
+fn wcover_sys_faces() {
     let stdout = eval_ok(
         r#"console.log("os", typeof WinterJS2.os.platform() === "string" && typeof WinterJS2.os.arch() === "string"); console.log("path", WinterJS2.path.join("a", "b") === ("a" + WinterJS2.path.sep + "b")); const db = WinterJS2.db.open(":memory:"); db.exec("CREATE TABLE t(a)"); console.log("db", JSON.stringify(db.run("INSERT INTO t VALUES (7)", []))); console.log("q", JSON.stringify(db.query("SELECT * FROM t", []))); db.close(); console.log("inspect", WinterJS2.inspect.evaluate("1+1") === 2); console.log("tty", typeof WinterJS2.tty.isTTY() === "boolean");"#,
     );
@@ -138,7 +138,7 @@ fn wcover_b5_sys_faces() {
 }
 
 #[test]
-fn wcover_b6_misc_faces() {
+fn wcover_misc_faces() {
     let stdout = eval_ok(
         r#"const rs = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("hi")); c.close(); } }); let out = ""; const ws = new WritableStream({ write(c) { out += new TextDecoder().decode(c); } }); await WinterJS2.stream.pipeline(rs, ws); console.log("pipe", out); const ch = WinterJS2.diagnostics.channel("wcover"); let seen = null; ch.subscribe((m) => { seen = m; }); ch.publish({ a: 1 }); console.log("diag", JSON.stringify(seen)); const d = WinterJS2.domain.create(); let ran = false; d.run(() => { ran = true; }); console.log("domain", ran); console.log("trace", typeof WinterJS2.trace.getEnabledCategories() === "string"); const als = new WinterJS2.AsyncLocalStorage(); console.log("als", als.run("v", () => als.getStore())); console.log("crypto", typeof WinterJS2.crypto.subtle === "object");"#,
     );
@@ -151,7 +151,7 @@ fn wcover_b6_misc_faces() {
 }
 
 #[test]
-fn wcover_b6_serve_face() {
+fn wcover_serve_face() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("p.mjs")
         .write_str(
@@ -177,7 +177,7 @@ await s.shutdown();
 }
 
 #[test]
-fn wcover_b2_tcp_udp_dns_faces() {
+fn wcover_tcp_udp_dns_faces() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("p.mjs")
         .write_str(
@@ -227,7 +227,7 @@ v.close();
 }
 
 #[test]
-fn wcover_b2_errors_boundary() {
+fn wcover_net_errors_boundary() {
     let stdout = eval_ok(
         r#"const t = async (n, f) => { try { await f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, "THROW", e.constructor.name); } }; await t("host", () => WinterJS2.tcp.connect("", 80)); await t("port", () => WinterJS2.tcp.connect("127.0.0.1", "x")); await t("refused", () => WinterJS2.tcp.connect("127.0.0.1", 1)); await t("dns", () => WinterJS2.dns.lookup("")); await t("udp", () => WinterJS2.udp.bind(-1));"#,
     );

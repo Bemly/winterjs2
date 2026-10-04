@@ -6,7 +6,7 @@ mod common;
 use common::*;
 
 #[test]
-fn phase1_microtask_order_before_timer() {
+fn microtask_order_before_timer() {
     // 规范顺序：同步 → 微任务（FIFO）→ 宏任务
     let out = stdout_of(&mut winterjs2().args(["--eval",
         "console.log('1'); setTimeout(()=>console.log('4'),0); Promise.resolve().then(()=>console.log('3')); queueMicrotask(()=>console.log('2'))"]));
@@ -14,7 +14,7 @@ fn phase1_microtask_order_before_timer() {
 }
 
 #[test]
-fn phase1_promise_chain_three_hops() {
+fn promise_chain_three_hops() {
     let out = stdout_of(&mut winterjs2().args([
         "--eval",
         "Promise.resolve(1).then(v=>v+1).then(v=>v+1).then(v=>console.log('chain:',v))",
@@ -23,7 +23,7 @@ fn phase1_promise_chain_three_hops() {
 }
 
 #[test]
-fn phase1_top_level_await_acceptance() {
+fn top_level_await_acceptance() {
     // docs/plan.md Phase 1 验收样例
     assert_eq!(
         stdout_of(
@@ -34,14 +34,14 @@ fn phase1_top_level_await_acceptance() {
 }
 
 #[test]
-fn phase1_interval_until_cleared() {
+fn interval_until_cleared() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         "let n=0; const id=setInterval(()=>{n++; console.log('tick',n); if(n>=3) clearInterval(id)},5)"]));
     assert_eq!(out, "tick 1\ntick 2\ntick 3\n", "interval: {out}");
 }
 
 #[test]
-fn phase1_nested_microtasks() {
+fn nested_microtasks() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         "async function f(){ for(let i=0;i<3;i++){ await Promise.resolve(); console.log('micro',i);} } f()"]));
     assert_eq!(
@@ -51,7 +51,7 @@ fn phase1_nested_microtasks() {
 }
 
 #[test]
-fn phase1_structured_clone_json_values() {
+fn structured_clone_json_values() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         "const a={x:1,y:[1,2,{z:'s'}]}; const b=structuredClone(a); console.log(JSON.stringify(b), b===a)"]));
     assert_eq!(
@@ -64,7 +64,7 @@ fn phase1_structured_clone_json_values() {
 }
 
 #[test]
-fn phase1_unhandled_rejection_is_fatal() {
+fn unhandled_rejection_is_fatal() {
     let out = winterjs2()
         .args(["--eval", "Promise.reject(new Error('nope'))"])
         .output()
@@ -79,7 +79,7 @@ fn phase1_unhandled_rejection_is_fatal() {
 }
 
 #[test]
-fn phase1_console_count_and_time() {
+fn console_count_and_time() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         "console.count('a'); console.count('a'); console.time('t'); console.timeLog('t'); console.timeEnd('t')"]));
     assert!(out.contains("a: 1") && out.contains("a: 2"), "count: {out}");
@@ -92,7 +92,7 @@ fn phase1_console_count_and_time() {
 // ── Phase 2 切片 a：ESM loader ────────────────────────────────────────────
 
 #[test]
-fn phase3_url_components() {
+fn url_components() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const u = new URL("https://user:pass@example.com:8080/p?q=1#h"); console.log([u.href, u.protocol, u.host, u.hostname, u.port, u.pathname, u.search, u.hash, u.origin].join("|"))"#]));
     assert_eq!(
@@ -104,14 +104,14 @@ fn phase3_url_components() {
 }
 
 #[test]
-fn phase3_url_relative_and_can_parse() {
+fn url_relative_and_can_parse() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"console.log(new URL("/p", "https://h.org/x").href, URL.canParse(':::'), URL.canParse('https://a.b'))"#]));
     assert_eq!(out, "https://h.org/p false true\n", "url base: {out}");
 }
 
 #[test]
-fn phase3_url_invalid_throws() {
+fn url_invalid_throws() {
     let out = winterjs2()
         .args(["--eval", "new URL(':::')"])
         .output()
@@ -122,7 +122,7 @@ fn phase3_url_invalid_throws() {
 }
 
 #[test]
-fn phase3_usp_live_view() {
+fn usp_live_view() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const u = new URL("https://ex.com/?b=2"); const sp = u.searchParams; sp.append("c", "3"); console.log(u.search, sp === u.searchParams); u.search = "?x=9"; console.log(sp.toString())"#]));
     assert_eq!(
@@ -135,7 +135,7 @@ x=9
 }
 
 #[test]
-fn phase3_usp_ops() {
+fn usp_ops() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const s = new URLSearchParams("z=1&a=2&a=3"); s.sort(); console.log(s.toString(), s.get("a"), s.getAll("a").length, s.size)"#]));
     assert_eq!(
@@ -147,7 +147,7 @@ fn phase3_usp_ops() {
 }
 
 #[test]
-fn phase3_text_encoder_decoder() {
+fn text_encoder_decoder() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const e = new TextEncoder(); console.log(e.encoding, e.encode("hi").length, JSON.stringify(new TextEncoder().encodeInto("hello", new Uint8Array(3)))); console.log(new TextDecoder().decode(new Uint8Array([104, 105])), new TextDecoder("utf-16le").decode(new Uint8Array([104, 0, 105, 0])));"#]));
     assert_eq!(
@@ -157,7 +157,7 @@ fn phase3_text_encoder_decoder() {
 }
 
 #[test]
-fn phase3_text_decoder_fatal() {
+fn text_decoder_fatal() {
     let out = winterjs2()
         .args([
             "--eval",
@@ -178,7 +178,7 @@ fn phase3_text_decoder_fatal() {
 }
 
 #[test]
-fn phase3_base64_roundtrip() {
+fn base64_roundtrip() {
     let out =
         stdout_of(&mut winterjs2().args(["--eval", "console.log(btoa('hello'), atob('aGVsbG8='))"]));
     assert_eq!(
@@ -192,7 +192,7 @@ fn phase3_base64_roundtrip() {
 }
 
 #[test]
-fn phase1_gc_pressure_keeps_rooted_targets() {
+fn gc_pressure_keeps_rooted_targets() {
     // §4.39 回归：回调内的 nursery GC 不得收集 RootedState 的 Heap 目标。
     // 修前：2 万小对象分配触发 minor GC，读到 Vec 搬运后悬垂的 store-buffer 边，
     // 进程 SIGSEGV/SIGBUS（exit=138/139），t2 永不打印。
@@ -203,7 +203,7 @@ fn phase1_gc_pressure_keeps_rooted_targets() {
 }
 
 #[test]
-fn phase9m_global_dom_exception_file_message_channel_sab() {
+fn global_dom_exception_file_message_channel_sab() {
     // jsdom/vitest 生态全局面（真机 26.8.2 对拍）：DOMException（legacy code
     // getter + 常量族）/File（Blob 子类）/MessageChannel·MessagePort 与
     // worker_threads 同一性/SharedArrayBuffer + Atomics。

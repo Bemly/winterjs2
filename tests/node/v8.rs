@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9j_v8_readline_surface() {
+fn v8_readline_surface() {
     // v8：startupSnapshot 守卫（vite try 内调用）；readline：10c-2 起全面实现，
     // 旧宽松口径（question 抛未实现/非法入参带码）已退役，此处按新语义断言。
     let dir = assert_fs::TempDir::new().unwrap();

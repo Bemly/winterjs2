@@ -5,7 +5,7 @@ use assert_fs::prelude::*;
 use super::helpers::*;
 
 #[test]
-fn phase5_install_dry_run_stub_registry() {
+fn install_dry_run_stub_registry() {
     // 单包精确解 + 传递解（app→lib^2 取最大 2.1.0）；只打印不落地。
     let port = serve_registry();
     let reg = format!("http://127.0.0.1:{port}");
@@ -34,7 +34,7 @@ fn phase5_install_dry_run_stub_registry() {
 }
 
 #[test]
-fn phase5_install_errors() {
+fn install_errors() {
     // 空包列表（clap 拦：--add 至少 1 值）/ 未知包 / 无满足版本，皆非零且可读。
     let out = winterjs2().args(["--add", "--dry-run"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
@@ -61,7 +61,7 @@ fn phase5_install_errors() {
 }
 
 #[test]
-fn phase5_install_end_to_end_stub() {
+fn install_end_to_end_stub() {
     // 造包→装包→require 可跑→lockfile：真装闭环（tarball 经同一 stub 下发）。
     use base64::Engine as _;
     use sha2::Digest as _;
@@ -163,7 +163,7 @@ fn phase5_install_end_to_end_stub() {
 }
 
 #[test]
-fn phase5_install_dir_first_tarball_stub() {
+fn install_dir_first_tarball_stub() {
     // 目录首条目 tarball（@types/chai 系：`chai/` 目录条目打头，非 `package/`
     // 布局；修前解包报 `failed to create <staging>`，见 AGENTS §4.69）。
     // 现场打 gz（首条目为显式目录），stub 下发→真装→require 可跑。
@@ -282,7 +282,7 @@ fn phase5_install_dir_first_tarball_stub() {
 }
 
 #[test]
-fn phase5_stale_staging_recovered() {
+fn stale_staging_recovered() {
     // kill -9 模拟：孤儿 `.staging-*` + 半写 tmp 残留，下次安装自愈且不 corrupt。
     use base64::Engine as _;
     use sha2::Digest as _;

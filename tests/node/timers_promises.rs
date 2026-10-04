@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9b_timers_promises_surface() {
+fn timers_promises_surface() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,

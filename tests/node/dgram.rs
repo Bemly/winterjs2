@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9d_dgram_loopback() {
+fn dgram_loopback() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

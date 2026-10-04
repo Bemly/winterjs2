@@ -5,7 +5,7 @@ use assert_fs::prelude::*;
 use super::helpers::*;
 
 #[test]
-fn phase5_registry_flag_overrides_npmrc() {
+fn registry_flag_overrides_npmrc() {
     // 边界：`--registry` flag 覆盖坏掉的 `.npmrc`（优先级 flag > npmrc）。
     let port = serve_registry();
     let reg = format!("http://127.0.0.1:{port}");
@@ -33,7 +33,7 @@ fn phase5_registry_flag_overrides_npmrc() {
 }
 
 #[test]
-fn phase5_npm_config_registry_env_overrides_npmrc() {
+fn npm_config_registry_env_overrides_npmrc() {
     // 边界：`NPM_CONFIG_REGISTRY` env 覆盖坏掉的 `.npmrc`（优先级 env > npmrc）。
     let port = serve_registry();
     let reg = format!("http://127.0.0.1:{port}");
@@ -60,7 +60,7 @@ fn phase5_npm_config_registry_env_overrides_npmrc() {
 }
 
 #[test]
-fn phase5_login_token_writes_npmrc() {
+fn login_token_writes_npmrc() {
     // 正常：`login --token` 把 token 行写进 `$HOME/.npmrc`（其他行保留）。
     let home = assert_fs::TempDir::new().unwrap();
     home.child(".npmrc")
@@ -98,7 +98,7 @@ fn phase5_login_token_writes_npmrc() {
 }
 
 #[test]
-fn phase5_login_oauth_prints_url() {
+fn login_oauth_prints_url() {
     // 边界：`login --oauth` 打印授权 URL（headless 下浏览器打不开也不失败）。
     let home = assert_fs::TempDir::new().unwrap();
     let dir = assert_fs::TempDir::new().unwrap();

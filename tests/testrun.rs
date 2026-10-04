@@ -7,7 +7,7 @@ use common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase7_test_mixed_files() {
+fn test_mixed_files() {
     // 正常：子测试 TAP 行透出 + runner 行 + 汇总，有挂则 exit=1。
     let dir = test_fixture();
     let out = winterjs2()
@@ -31,7 +31,7 @@ fn phase7_test_mixed_files() {
 }
 
 #[test]
-fn phase7_test_all_pass() {
+fn test_all_pass() {
     // 正常：全过则 exit=0 + `ok -` 行；两个文件同进程连跑（§4.24 引擎单例回归，
     // 修前第二个文件起全部 `failed to init JS engine`）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -49,7 +49,7 @@ fn phase7_test_all_pass() {
 }
 
 #[test]
-fn phase7_test_filter() {
+fn test_filter() {
     // 边界：--filter 只跑命中文件（此处零命中 → exit 0 提示行）。
     let dir = test_fixture();
     let out = stdout_of(
@@ -62,7 +62,7 @@ fn phase7_test_filter() {
 }
 
 #[test]
-fn phase7_test_bad_path() {
+fn test_bad_path() {
     // 报错：不存在的路径 exit=1 且可读。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = winterjs2()
@@ -77,7 +77,7 @@ fn phase7_test_bad_path() {
 }
 
 #[test]
-fn phase7_test_watch_reruns_on_change() {
+fn test_watch_reruns_on_change() {
     // e5：初始跑一轮 → 改文件防抖重跑（含新输出）→ SIGINT 优雅退出 exit=0。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("a.test.js")

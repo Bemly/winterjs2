@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase4_node_path_basic() {
+fn node_path_basic() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,

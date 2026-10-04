@@ -41,7 +41,7 @@ console.log("buffer-ok");
 }
 
 #[test]
-fn phase9b_buffer_module_surface() {
+fn buffer_module_surface() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -113,7 +113,7 @@ try { Buffer.alloc(1).copy("no"); } catch (e) { console.log("e6", e.constructor.
 }
 
 #[test]
-fn phase9b_buffer_int_rw() {
+fn buffer_int_rw() {
     // 定长整数/浮点读写系（M5 dev 实测 `writeUInt16BE is not a function` 后补齐，
     // sourcemap 等链路直调；DataView 直通，越界/值域即 RangeError）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -163,7 +163,7 @@ console.log("z", z.writeUInt16BE(1), z.readUInt16BE(0));
 }
 
 #[test]
-fn phase9b_blob_global_surface() {
+fn blob_global_surface() {
     // 9b-1 补的全局 Blob（Web spec 语义，text/arrayBuffer/bytes/slice/stream）
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(

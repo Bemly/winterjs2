@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_diagnostics_channel_surface() {
+fn diagnostics_channel_surface() {
     // test-diagnostics-channel.js 命名子集
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("d.mjs");

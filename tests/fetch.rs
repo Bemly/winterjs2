@@ -7,7 +7,7 @@ use common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase3_fetch_http_get() {
+fn fetch_http_get() {
     let port = serve_http(1, |_head, _body| {
         (200, vec![("x-echo", "yes".into())], b"hello-http".to_vec())
     });
@@ -21,7 +21,7 @@ fn phase3_fetch_http_get() {
 }
 
 #[test]
-fn phase3_fetch_http_post_echo() {
+fn fetch_http_post_echo() {
     let port = serve_http(1, |head, body| {
         let ct = head
             .lines()
@@ -43,7 +43,7 @@ fn phase3_fetch_http_post_echo() {
 }
 
 #[test]
-fn phase3_fetch_data_and_file() {
+fn fetch_data_and_file() {
     assert_eq!(
         stdout_of(&mut winterjs2().args(["--eval",
             r#"const r = await fetch("data:text/plain,hello-fetch"); console.log(r.status, r.ok, await r.text());"#])),
@@ -61,7 +61,7 @@ fn phase3_fetch_data_and_file() {
 }
 
 #[test]
-fn phase3_fetch_errors_are_rejections() {
+fn fetch_errors_are_rejections() {
     // 不支持的 scheme 与连不上的地址都以 rejection 呈现（catch 可接住）
     let out = stdout_of(&mut winterjs2().args([
         "--eval",
@@ -84,7 +84,7 @@ fn phase3_fetch_errors_are_rejections() {
 }
 
 #[test]
-fn phase3_headers_request_response_classes() {
+fn headers_request_response_classes() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const h = new Headers([["X-A", "1"], ["x-a", "2"]]); console.log(h.get("x-a"), [...h.keys()].join(",")); const r = new Response("hi", { status: 201 }); console.log(r.status, r.ok, await r.text()); const q = new Request("https://ex.com/a", { method: "post", body: "x" }); console.log(q.method, q.url, await q.text());"#]));
     assert_eq!(
@@ -98,7 +98,7 @@ POST https://ex.com/a x
 }
 
 #[test]
-fn phase3_abort_signal_pre_abort() {
+fn abort_signal_pre_abort() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const c = new AbortController(); c.abort(); console.log(await fetch("http://127.0.0.1:9/x", { signal: c.signal }).then(() => 'no', () => 'abort-ok'));"#]));
     assert_eq!(
@@ -110,21 +110,21 @@ fn phase3_abort_signal_pre_abort() {
 }
 
 #[test]
-fn phase3_streams_basic() {
+fn streams_basic() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.enqueue("b"); c.close(); } }); const out = []; for await (const x of rs) out.push(x); console.log(out.join(",")); const t = new TransformStream({ transform(c, ctl) { ctl.enqueue(String(c).toUpperCase()); } }); const w = t.writable.getWriter(); w.write("hi"); w.close(); const r = t.readable.getReader(); console.log((await r.read()).value, (await r.read()).done);"#]));
     assert_eq!(out, "a,b\nHI true\n", "streams: {out}");
 }
 
 #[test]
-fn phase3_streams_pipe_tee_body() {
+fn streams_pipe_tee_body() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const rs = new ReadableStream({ start(c) { c.enqueue("x"); c.close(); } }); const ts = new TransformStream({ transform(c, ctl) { ctl.enqueue(c + "!"); } }); const out = []; await rs.pipeThrough(ts).pipeTo(new WritableStream({ write(c) { out.push(c); } })); console.log(out.join(",")); const [a, b] = new ReadableStream({ start(c) { c.enqueue(1); c.close(); } }).tee(); console.log(await a.getReader().read().then((x) => x.value), await b.getReader().read().then((x) => x.value)); const r = new Response("stream-me"); console.log(r.body === r.body, (await r.body.getReader().read()).value.length);"#]));
     assert_eq!(out, "x!\n1 1\ntrue 9\n", "pipe: {out}");
 }
 
 #[test]
-fn phase3_fetch_in_flight_abort() {
+fn fetch_in_flight_abort() {
     // 5s 才回的服务，50ms abort：拒绝带 AbortError，进程不等 5s（超时即挂）。
     let port = serve_http(1, |_head, _body| {
         std::thread::sleep(std::time::Duration::from_secs(5));
@@ -140,7 +140,7 @@ fn phase3_fetch_in_flight_abort() {
 }
 
 #[test]
-fn phase3_fetch_abort_reason_and_late_abort_noop() {
+fn fetch_abort_reason_and_late_abort_noop() {
     // 自定义 reason 原样透出；已决议后 abort 不翻转结果。
     let port = serve_http(1, |_head, _body| {
         std::thread::sleep(std::time::Duration::from_secs(5));
@@ -159,7 +159,7 @@ fn phase3_fetch_abort_reason_and_late_abort_noop() {
 }
 
 #[test]
-fn phase3_fetch_body_streams_chunks() {
+fn fetch_body_streams_chunks() {
     // 首个 read 在第二个半包到达前即返回 "abc"（整包缓冲实现会给出 "abcdef"）。
     let port = serve_split();
     let code = format!(
@@ -172,7 +172,7 @@ fn phase3_fetch_body_streams_chunks() {
 }
 
 #[test]
-fn phase3_fetch_body_stream_text_and_cancel() {
+fn fetch_body_stream_text_and_cancel() {
     // text() 照常拼装流式 body；读一半 cancel 照常退出。
     let port = serve_split();
     let code = format!(
@@ -193,7 +193,7 @@ fn phase3_fetch_body_stream_text_and_cancel() {
 }
 
 #[test]
-fn phase3_fetch_body_mid_stream_abort() {
+fn fetch_body_mid_stream_abort() {
     // 流中 abort：已读 chunk 保留，后继 read 以 AbortError 拒绝（非静默 done）。
     let port = serve_split();
     let code = format!(

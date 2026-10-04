@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase4_require_cjs_builtin_relative_json() {
+fn require_cjs_builtin_relative_json() {
     // CJS 文件 + 内建 + JSON + 相对路径 + require.main（经 .cjs 入口）。
     let dir = assert_fs::TempDir::new().unwrap();
     let lib = dir.child("lib/util.cjs");
@@ -25,7 +25,7 @@ fn phase4_require_cjs_builtin_relative_json() {
 }
 
 #[test]
-fn phase4_require_cycle_partial_exports() {
+fn require_cycle_partial_exports() {
     // 循环引用见半成品（Node 语义）。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("b.cjs")
@@ -52,7 +52,7 @@ fn phase4_require_cycle_partial_exports() {
 }
 
 #[test]
-fn phase4_require_errors() {
+fn require_errors() {
     // 缺失模块 / ESM 拒绝 / resolve 直给。
     // R2-iter 按 4.65 翻转：`node:` 前缀非内建即 `No such built-in module`
     //（旧断言编码的是 "Cannot find module" 包裹形）。
@@ -79,7 +79,7 @@ fn phase4_require_errors() {
 }
 
 #[test]
-fn phase9k_module_extensions_hook() {
+fn module_extensions_hook() {
     // 正常：createRequire 实例的 extensions 钩子 + module._compile 内存求值
     // （vite loadConfigFromBundledFile 形态：内存码优先于磁盘，filename 走
     // realpath 口径）；exports 重赋值终态；cache 命中（Node 口径 cache 先于
@@ -148,10 +148,10 @@ console.log("ext-ok");
 }
 
 #[test]
-fn phase9j_cjs_interop_default() {
+fn cjs_interop_default() {
     // CJS 互操作（Node detect-module 口径）：import 命中 .cjs/无语法 .js 即 default；
     // require() 同一文件值同一；副作用 import 照跑；命名导入直取（M5 具名导出，
-    // 见 phase9j_cjs_interop_named；旧"缺导出"断言随功能上线退役）。
+    // 见 cjs_interop_named；旧"缺导出"断言随功能上线退役）。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("dep.cjs").write_str("module.exports = { v: 41 };\n").unwrap();
     dir.child("plain.js").write_str("module.exports = { w: 7 };\n").unwrap();
@@ -198,7 +198,7 @@ console.log("cjs-same", globalThis.require("./dep.cjs") === pkg);
 }
 
 #[test]
-fn phase9j_native_node_rejected() {
+fn native_node_rejected() {
     // napi（.node，plan-napi M0）：垃圾 .node → dlopen 可读错（9j 的"不支持"
     // 拒错随 napi 落地退役；非 Mach-O 文件进 dlopen 即可读失败）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -219,7 +219,7 @@ fn phase9j_native_node_rejected() {
 }
 
 #[test]
-fn phase9j_tla_dep_stays_esm() {
+fn tla_dep_stays_esm() {
     // 回归（CJS 互操作曾吞掉它）：TLA 专属 .js 被 import 时仍走 ESM，不进垫片。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("tla-dep.js")
@@ -239,7 +239,7 @@ fn phase9j_tla_dep_stays_esm() {
 }
 
 #[test]
-fn phase9j_cjs_interop_named() {
+fn cjs_interop_named() {
     // 正常：CJS 命名导出（exports 赋值 + module.exports 对象 + TS __exportStar
     // 形）经 import 具名直取，default 照旧是整包；
     // 报错：不存在的命名报 link 错误；边界：`exports.default` 不合成具名
@@ -309,7 +309,7 @@ console.log("kebab", kebab);
 }
 
 #[test]
-fn phase9m_require_exports_conditions() {
+fn require_exports_conditions() {
     // require 条件族（真机 26.8.2 对拍）：require 走 require 条件（双条件包
     // 命中 CJS 入口，非 ESM namespace）；imports-only 包 require 即解析失败
     // （真机同款 ERR_PACKAGE_PATH_NOT_EXPORTED，无 import 回落）。
@@ -363,7 +363,7 @@ catch (e) { console.log("onlyerr", String(e.message).includes("Cannot find modul
 }
 
 #[test]
-fn phase9m_require_resolve_caller_relative() {
+fn require_resolve_caller_relative() {
     // require.resolve 相对说明符按**调用方文件**定 base：直挂原生后
     // describe_scripted_caller 的最内层帧 = 调用方（prelude 闭包帧不再盖住；
     // jsdom api.js 实测同款）。

@@ -4,7 +4,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9e_crypto_keys_sign() {
+fn crypto_keys_sign() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -51,7 +51,7 @@ console.log("const", constants.RSA_PKCS1_PADDING === 1 && constants.RSA_PKCS1_OA
 }
 
 #[test]
-fn phase9e_crypto_enc_dh_ecdh() {
+fn crypto_enc_dh_ecdh() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -84,7 +84,7 @@ console.log("dhprime", x.getPrime().length === 256 && x.verifyError() === 0);
 }
 
 #[test]
-fn phase9e_crypto_asym_errors() {
+fn crypto_asym_errors() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -120,7 +120,7 @@ try { sign("nope", Buffer.from("m"), generateKeyPairSync("ed25519").privateKey);
 }
 
 #[test]
-fn phase9h_crypto_k256() {
+fn crypto_k256() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -185,7 +185,7 @@ console.log("k-pem", pem.startsWith("-----BEGIN PUBLIC KEY-----"));
 }
 
 #[test]
-fn phase9h_crypto_dsa_prime() {
+fn crypto_dsa_prime() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -332,7 +332,7 @@ console.log("cert", x.verify(x.publicKey), x.publicKey.asymmetricKeyType === "ed
 }
 
 #[test]
-fn p2_crypto_sign_verify_nonew() {
+fn crypto_sign_verify_nonew() {
     // P2 crypto三件簇：Sign/Verify 无 new 调用形（legacy 函数口径；正常 + 报错）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -358,7 +358,7 @@ catch (e) { console.log("sig-alg", e.code === "ERR_CRYPTO_INVALID_DIGEST"); }
 
 
 #[test]
-fn p2_crypto_keygen_no_options() {
+fn crypto_keygen_no_options() {
     // base16回归：async generateKeyPair 缺省 options 即 {}（真机实测直通；
     // 旧"async 不容 undefined"注释按 §4.65 翻转）。未知类型仍同步抛。
     let dir = assert_fs::TempDir::new().unwrap();

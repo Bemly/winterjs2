@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9i_mlkem() {
+fn mlkem() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -95,7 +95,7 @@ console.log("mk-pem-typed", privateKey.export({ format: "pem", type: "pkcs8" }).
 }
 
 #[test]
-fn phase9i_mldsa() {
+fn mldsa() {
     let dir = assert_fs::TempDir::new().unwrap();
     // 真机固件：node 26.8.2 签发（PKCS#8 种子 + "from-node-fixture" 的 hedged 签名）
     // 与 openssl 3.6 ML-DSA-65 自签证书（X509 verify ml-dsa 臂）。

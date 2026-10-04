@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_events_basic_emit_on_off() {
+fn events_basic_emit_on_off() {
     // test-events.js: emit 返回值/once/移除后不触发/eventNames
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("e.mjs");
@@ -42,7 +42,7 @@ console.log(ee.eventNames().map(String).join(","));
 }
 
 #[test]
-fn phase9a_events_unhandled_error_throws_original() {
+fn events_unhandled_error_throws_original() {
     // test-events.js: 无 error 监听时 emit('error', er) 重抛原 Error（非包裹）
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("u.mjs");
@@ -75,7 +75,7 @@ try { ee.emit("error", "str"); } catch (e) {
 }
 
 #[test]
-fn phase9a_events_error_monitor_capture_rejections() {
+fn events_error_monitor_capture_rejections() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("c.mjs");
     file.write_str(
@@ -116,7 +116,7 @@ console.log("handled", handled);
 }
 
 #[test]
-fn phase9a_events_max_listeners_warning_and_validation() {
+fn events_max_listeners_warning_and_validation() {
     // test-event-emitter-max-listeners.js: 泄漏警告 + warning 事件；参数校验消息逐字
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("m.mjs");
@@ -165,7 +165,7 @@ try { EE.setMaxListeners(-1); } catch (e) {
 }
 
 #[test]
-fn phase9a_events_once_and_on_iterator() {
+fn events_once_and_on_iterator() {
     // test-events-on.js + test-events-on-async-iterator.js 语义子集
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("i.mjs");
@@ -207,7 +207,7 @@ try {
 }
 
 #[test]
-fn phase9a_events_require_and_error_boundary() {
+fn events_require_and_error_boundary() {
     // require('node:events') CJS 面 + 非法 emitter 报可读错（边界三件之一）
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("r.cjs");

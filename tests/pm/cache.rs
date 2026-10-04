@@ -3,7 +3,7 @@
 use crate::common::*;
 
 #[test]
-fn phase5_cache_second_install_hits_cache() {
+fn cache_second_install_hits_cache() {
     // 二次安装全命中缓存：tarball 只下一次，第二次删 node_modules 重装仍成功，
     // 此时 stub 的 tarball 端点已翻为 404（若回源必败），证明走缓存。
     use base64::Engine as _;

@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_util_types_surface() {
+fn util_types_surface() {
     // test-util-types* 命名子集（isProxy 恒 false 为记档偏差，不点名）
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");

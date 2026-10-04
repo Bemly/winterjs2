@@ -3,7 +3,7 @@
 use crate::common::*;
 
 #[test]
-fn phase5_upgrade_dry_run_reports_version() {
+fn upgrade_dry_run_reports_version() {
     // 正常：`upgrade --dry-run` 打印当前版 + 渠道，不碰网络。
     let out = stdout_of(
         winterjs2()
@@ -15,7 +15,7 @@ fn phase5_upgrade_dry_run_reports_version() {
 }
 
 #[test]
-fn phase5_upgrade_no_channel_errors() {
+fn upgrade_no_channel_errors() {
     // 报错：无渠道真升，exit=1 且指路（不碰网络）。
     let out = winterjs2()
         .arg("--upgrade")
@@ -31,7 +31,7 @@ fn phase5_upgrade_no_channel_errors() {
 }
 
 #[test]
-fn phase5_upgrade_dry_run_shows_channel() {
+fn upgrade_dry_run_shows_channel() {
     // 边界：设了渠道时 dry-run 回显渠道，仍不碰网络。
     let out = stdout_of(
         winterjs2()

@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase4_node_process_argv_env() {
+fn node_process_argv_env() {
     // argv 透传 + env 读写删查（Proxy 活视图）。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("argv.mjs");
@@ -35,7 +35,7 @@ fn phase4_node_process_argv_env() {
 }
 
 #[test]
-fn phase4_process_exit_codes() {
+fn process_exit_codes() {
     // 正常/显式/默认/模块顶层/异步后设码，全走静默退出（无 stderr）。
     let dir = assert_fs::TempDir::new().unwrap();
     let run = |name: &str, src: &str| {
@@ -73,7 +73,7 @@ fn phase4_process_exit_codes() {
 }
 
 #[test]
-fn phase4_process_stdio_nexttick_cwd() {
+fn process_stdio_nexttick_cwd() {
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"process.stdout.write("out-direct"); const order = []; process.nextTick(() => order.push("tick")); Promise.resolve().then(() => order.push("promise")); await new Promise((r) => setTimeout(r, 20)); console.log("|" + order.join(","), process.cwd().length > 0, typeof process.uptime(), typeof process.hrtime.bigint(), process.memoryUsage().rss > 0, process.versions.winterjs2.length > 0);"#]));
     assert!(out.starts_with("out-direct|"), "stdio: {out}");
@@ -84,7 +84,7 @@ fn phase4_process_stdio_nexttick_cwd() {
 }
 
 #[test]
-fn phase4_node_errors() {
+fn node_errors() {
     // 未知内建真机文案（R2-iter 按 4.65 翻转：`No such built-in module: node:nope`，
     // 旧断言编码的是自带可用列表的自家文案）；exitCode 非整数 TypeError。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -115,7 +115,7 @@ fn phase4_node_errors() {
 }
 
 #[test]
-fn phase9j_global_alias() {
+fn global_alias() {
     // Node 口径：global 为全局自引用（vite bin 直引，-r dev 实测补齐）。
     let out = winterjs2()
         .args(["--eval", "console.log(global === globalThis, typeof global.setTimeout, global.process === process)"])
@@ -126,7 +126,7 @@ fn phase9j_global_alias() {
 }
 
 #[test]
-fn phase9m_process_stdio_faces() {
+fn process_stdio_faces() {
     // stdout/stderr 写回调 + maxListeners 记账 + listeners/eventNames +
     // execArgv + availableParallelism + 全局 performance（M5 vitest 牵引面）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -681,7 +681,7 @@ fn emit_warning_node_semantics() {
 }
 
 #[test]
-fn process_r9_misc_faces() {
+fn process_exit_binding_config_faces() {
     // P2-process R9-A: exitCode 校验 + binding/config/_rawDebug/setSourceMaps/
     // ref-unref/getBuiltin（node 原文口径）。
     // 正常：exitCode 合法串/清零；binding util 16 键恒等；config 冻结；
@@ -743,7 +743,7 @@ fn process_r9_misc_faces() {
 }
 
 #[test]
-fn process_r9b_faces() {
+fn process_warning_monitor_fatal_faces() {
     // P2-process R9-B：--disable-warning 过滤 + uncaughtExceptionMonitor 先行 +
     // _fatalException=undefined 即 exit 6（node 原文口径）。
     // 正常：monitor 与 uncaughtException 同 err 同 origin 依次触发。
@@ -789,7 +789,7 @@ fn process_r9b_faces() {
 }
 
 #[test]
-fn p2_process_exit_detached_receiver() {
+fn process_exit_detached_receiver() {
     // base16回归：process.exit 裸传当回调（cluster-net-listen 套件 listen(process.exit)，
     // this=server）——真机与 receiver 无关；mock reallyExit 仍生效（really-exit 口径）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -804,7 +804,7 @@ fn p2_process_exit_detached_receiver() {
 }
 
 #[test]
-fn p2_process_warning_throw_deprecation_async() {
+fn process_warning_throw_deprecation_async() {
     // base16回归：throwDeprecation 不走同步抛——nextTick 异步抛经 uncaughtException
     // 交付（真机实测；旧同步抛致套件 catch 误杀）。
     let out = stdout_of(&mut winterjs2().args(["--eval",

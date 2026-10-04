@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9m_subpath_timers_surface() {
+fn subpath_timers_surface() {
     // 正常：path/posix-win32 双命名空间 + 回调 timers（触发/取消/immediate/
     // promises 重导出）+ assert/strict + dns/promises；
     // 报错：未知子路径报可用列表；边界：Timeout unref 链式。

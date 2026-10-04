@@ -3,7 +3,7 @@
 use crate::common::*;
 
 #[test]
-fn phase5_lifecycle_runs_in_order() {
+fn lifecycle_runs_in_order() {
     // preinstall → install → postinstall 按序跑，cwd 即包目录。
     use base64::Engine as _;
     use sha2::Digest as _;
@@ -82,7 +82,7 @@ fn phase5_lifecycle_runs_in_order() {
 }
 
 #[test]
-fn phase5_lifecycle_failure_breaks_install() {
+fn lifecycle_failure_breaks_install() {
     // lifecycle 非零退出即安装失败（可读错误）。
     use base64::Engine as _;
     use sha2::Digest as _;

@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9j_module_create_require() {
+fn module_create_require() {
     // 正常：createRequire(file URL) 读 CJS/JSON/内建 + resolve；
     // Module.createRequire 同口径；builtinModules 双形/isBuiltin/sync 无操作。
     let dir = assert_fs::TempDir::new().unwrap();

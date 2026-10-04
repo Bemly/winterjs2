@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9d_https_loopback() {
+fn https_loopback() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (cert_path, key_path) = write_self_signed(&dir);
     let out = run_fs_file(

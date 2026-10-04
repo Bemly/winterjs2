@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase4_node_test_runner() {
+fn node_test_runner() {
     // 通过/失败/跳过计数 + 小结 + 失败 exitCode=1。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");

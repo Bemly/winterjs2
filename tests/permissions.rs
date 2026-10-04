@@ -7,7 +7,7 @@ use common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase8_permissions_fs() {
+fn permissions_fs() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("in/sub").create_dir_all().unwrap();
     dir.child("in/a.txt").write_str("hi").unwrap();
@@ -66,7 +66,7 @@ console.log(fs.readFileSync("out2.txt", "utf8"));
 }
 
 #[test]
-fn phase8_permissions_env_run() {
+fn permissions_env_run() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("e.mjs");
 
@@ -107,7 +107,7 @@ try { execSync("ls ."); } catch (e) { console.log("LS:", String(e.message).inclu
 
 #[cfg(unix)]
 #[test]
-fn phase8_permissions_sqlite_ffi() {
+fn permissions_sqlite_ffi() {
     let dir = assert_fs::TempDir::new().unwrap();
     let libname = build_ffi_dylib(&dir);
     let file = dir.child("p.mjs");

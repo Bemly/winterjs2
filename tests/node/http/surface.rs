@@ -480,7 +480,7 @@ console.log("strict-done");
 }
 
 #[test]
-fn http_header_face_batch5() {
+fn http_header_validation_faces() {
     // 头面 batch5（真机 26.8.2 逐项对拍）：数字头名 HTTP_TOKEN（"3840" 本身合法
     // token 故须 typeof 先判）+ 奇长 writeHead 数组 ARG_VALUE + 已发头再 write
     // 即 HEADERS_SENT + writeHead 覆写拼写 + 220 短语 unknown + 数组同键双行 +

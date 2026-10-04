@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9e_crypto_cipher_roundtrip() {
+fn crypto_cipher_roundtrip() {
     // 真 Node 取证向量（逐字节对；gcm/chacha tag 另断长度）
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -57,7 +57,7 @@ console.log("nounk", getCipherInfo("nope") === undefined);
 }
 
 #[test]
-fn phase9e_crypto_cipher_errors() {
+fn crypto_cipher_errors() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -244,7 +244,7 @@ try {
 }
 
 #[test]
-fn crypto_round1_parity() {
+fn crypto_hash_hmac_cipher_basics() {
     // 10f crypto首轮：call-without-new + DEP0179/DEP0181 + uuid 校验 + 摘要别名 +
     // outputLength 全套 + 流式鸭子面 + ECB + DH 数值形（正常/报错/边界三件）
     let dir = assert_fs::TempDir::new().unwrap();
@@ -382,7 +382,7 @@ setTimeout(() => console.log("dep-warn", warns.includes("DEP0179"), warns.includ
 }
 
 #[test]
-fn p2_crypto_cipherinfo_nid_options() {
+fn crypto_cipherinfo_nid_options() {
     // P2 crypto三件簇：getCipherInfo nid 形态 + options 校验/过滤 + ocb 元数据
     //（正常 + 报错 + 边界；node internal/crypto/cipher.js 口径）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -440,7 +440,7 @@ for (const len of [null, "", {}, [], true]) {
 }
 
 #[test]
-fn p2_crypto_cipher_setautopadding() {
+fn crypto_cipher_setautopadding() {
     // P2 crypto MISSING-EXCEPTION 轮：setAutoPadding 透传 + CbcEnc autopad +
     // OSSL 错误 reason/码形 + GCM tag 长校验 + generateKey/keypair 头检
     //（正常 + 报错 + 边界；node 真机 26.8.2 口径逐项实测）。

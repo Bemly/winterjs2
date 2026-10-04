@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase4_cp_exec_spawn_sync() {
+fn cp_exec_spawn_sync() {
     // 回显/管道输入/env/cwd + 非零抛错形状 + spawn 缺失命令。
     // （真机口径：execSync/spawnSync 缺省 Buffer；旧 .trim() 直调为伪语义，已翻转。）
     let dir = assert_fs::TempDir::new().unwrap();
@@ -36,7 +36,7 @@ try {
 }
 
 #[test]
-fn phase4_cp_timeout_and_shell() {
+fn cp_timeout_and_shell() {
     // 超时杀（真机缺省 SIGTERM；旧 SIGKILL 形为伪语义，已翻转）+ shell:false 直跑。
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawnSync, execSync } = await import("node:child_process"); const r = spawnSync("sleep", ["5"], { timeout: 200 }); console.log(r.signal, !!r.error); console.log(execSync("echo noshell", { shell: false }).toString().trim());"#]));
@@ -44,7 +44,7 @@ fn phase4_cp_timeout_and_shell() {
 }
 
 #[test]
-fn phase4_spawn_async_exit_close_kill() {
+fn spawn_async_exit_close_kill() {
     // exit+close 双调 + kill 中断（SIGTERM 形）。
     let out = stdout_of(&mut winterjs2().args(["--eval",
         r#"const { spawn } = await import("node:child_process"); const log = []; const c = spawn("echo", ["async-hi"], { stdio: "ignore" }); console.log("pid:", c.pid > 0, "killed:", c.killed); c.on("exit", (code) => log.push("exit:" + code)); c.on("close", () => { log.push("close"); console.log(log.join("|")); });"#]));
@@ -93,7 +93,7 @@ console.log("pipe-ok");
 // ── publish 真 PUT（stub registry 接 PUT；token 经 npmrc）──────────────────────
 
 #[test]
-fn phase9e_child_corners() {
+fn child_corners() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

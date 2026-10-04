@@ -81,7 +81,7 @@ setTimeout(() => console.log("end-ok"), 500);
 }
 
 #[test]
-fn phase9d_dns_localhost() {
+fn dns_localhost() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,

@@ -5,7 +5,7 @@ mod common;
 use common::*;
 
 #[test]
-fn phase8_sentry_optin_never_breaks_cli() {
+fn sentry_optin_never_breaks_cli() {
     // 上报是旁路：坏 DSN 告警后继续；不可达端点不影响 CLI 行为与退出码。
     let dir = assert_fs::TempDir::new().unwrap();
 

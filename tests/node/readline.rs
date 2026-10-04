@@ -203,7 +203,7 @@ setTimeout(() => console.log("end-ok"), 300);
 }
 
 #[test]
-fn p2_readline_iface_options_and_write() {
+fn readline_iface_options_and_write() {
     // P2-repl：new Interface(options) 归一 + write 入流排空/关后码 + 多行历史倒序去重。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

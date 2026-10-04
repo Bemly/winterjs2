@@ -152,7 +152,7 @@ fn write_other_signed(dir: &assert_fs::TempDir) {
 }
 
 #[test]
-fn phase9g_quic_secure_loopback() {
+fn quic_secure_loopback() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (_c, _k) = write_self_signed(&dir);
     let out = run_quic_file(
@@ -207,7 +207,7 @@ console.log("q-done", true);
 }
 
 #[test]
-fn phase9g_quic_errors_boundary() {
+fn quic_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (_c, _k) = write_self_signed(&dir);
     write_other_signed(&dir);
@@ -272,7 +272,7 @@ try {
 }
 
 #[test]
-fn phase9g_quic_stream_echo() {
+fn quic_stream_echo() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (_c, _k) = write_self_signed(&dir);
     let out = run_quic_file(
@@ -348,7 +348,7 @@ console.log("t-done", true);
 }
 
 #[test]
-fn phase9g_quic_stream_boundary() {
+fn quic_stream_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (_c, _k) = write_self_signed(&dir);
     let out = run_quic_file(
@@ -450,7 +450,7 @@ fn h3_server_config() -> (quinn::ServerConfig, CertificateDer<'static>) {
 
 /// H3 回环：握手 → 请求头 `GET /probe` → 响应头 200 + 自定头（全 hermetic，port 0）。
 #[tokio::test]
-async fn phase9i_h3_over_quinn_loopback() {
+async fn h3_over_quinn_loopback() {
     let (server_cfg, server_cert) = h3_server_config();
     let server = quinn::Endpoint::server(server_cfg, "127.0.0.1:0".parse::<SocketAddr>().unwrap())
         .expect("quinn server endpoint");
@@ -525,7 +525,7 @@ async fn phase9i_h3_over_quinn_loopback() {
 /// 9i-9：node:quic H3 面（本仓自定 API，真机无 node:quic 可对）——
 /// 服务端 request 事件 + respond；客户端 request() promise；POST 体回显。
 #[test]
-fn phase9i_quic_h3_headers() {
+fn quic_h3_headers() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (_c, _k) = write_self_signed(&dir);
     let out = run_quic_file(

@@ -1,7 +1,7 @@
 //! winterjs2 repl 黑盒测试(对齐 src/repl.rs)。
 
 #[test]
-fn phase7_repl_persistent_ctx() {
+fn repl_persistent_ctx() {
     // 正常：跨行持久上下文（`const` 次行可用）+ banner + exit 0。
     let (stdout, _, code) = repl_session("const x = 21\nx * 2\n.exit\n");
     assert_eq!(code, 0);
@@ -10,7 +10,7 @@ fn phase7_repl_persistent_ctx() {
 }
 
 #[test]
-fn phase7_repl_error_recovery() {
+fn repl_error_recovery() {
     // 正常：报错行打印后继续，会话不死。
     let (stdout, stderr, code) = repl_session("undefinedVar\n40 + 2\n.exit\n");
     assert_eq!(code, 0);
@@ -22,7 +22,7 @@ fn phase7_repl_error_recovery() {
 }
 
 #[test]
-fn phase7_repl_help_no_ansi() {
+fn repl_help_no_ansi() {
     // 正常 + 边界：`.help` 列命令；非 TTY 输出无 ANSI 转义。
     let (stdout, stderr, code) = repl_session(".help\n\n40+2\n.quit\n");
     assert_eq!(code, 0);
@@ -42,7 +42,7 @@ fn phase7_repl_help_no_ansi() {
 }
 
 #[test]
-fn phase7_repl_syntax_continues() {
+fn repl_syntax_continues() {
     // 边界：语法错误行（非 TTY 无续行）报错后继续。
     let (stdout, stderr, code) = repl_session("1 +\n40 + 2\n.exit\n");
     assert_eq!(code, 0);

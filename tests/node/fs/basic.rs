@@ -4,7 +4,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase4_fs_read_write_roundtrip() {
+fn fs_read_write_roundtrip() {
     // 文本/二进制/追加 + stat 字段 + exists。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -32,7 +32,7 @@ console.log(fs.existsSync("a.txt"), fs.existsSync("missing-xyz"), fs.existsSync(
 }
 
 #[test]
-fn phase4_fs_dirs_and_moves() {
+fn fs_dirs_and_moves() {
     // mkdir -p + readdir(+types) + rename + copy + rm -rf + realpath + mkdtemp.
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -68,7 +68,7 @@ console.log("force-ok");
 }
 
 #[test]
-fn phase4_fs_promises_and_errors() {
+fn fs_promises_and_errors() {
     // promises 对等 + ENOENT 三件（code/syscall/path）+ lstat 链接 + file: URL 路径。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -103,7 +103,7 @@ console.log(fs.readFileSync(new URL("file://" + process.cwd() + "/p.txt"), "utf8
 }
 
 #[test]
-fn phase9m_fs_statfs_surface() {
+fn fs_statfs_surface() {
     // 正常：sync/回调/promises 三面 + StatsFs 形状；报错：坏路径 ENOENT；
     // 边界：字段均为非负数。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -134,7 +134,7 @@ catch (e) { console.log("err", e.code); }
 }
 
 #[test]
-fn phase9m_read_file_no_encoding_returns_buffer() {
+fn read_file_no_encoding_returns_buffer() {
     // 无编码读返回 Buffer（Node 语义；真机口径）：isBuffer/String(buf)/
     // toString() = utf8 内容、JSON.parse(buf) 隐式转换取内容——裸 Uint8Array
     // 会 join 成 "byte,byte,…"（vite PostCSS 配置加载实测误判）。

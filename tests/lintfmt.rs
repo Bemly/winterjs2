@@ -8,7 +8,7 @@ use assert_fs::prelude::*;
 
 #[cfg(unix)]
 #[test]
-fn phase8_lintfmt_passthrough() {
+fn lintfmt_passthrough() {
     // 正常：参数原样转发（首参 flag 也在内）/stderr 直出/monorepo 向上查找/fmt --check。
     let dir = assert_fs::TempDir::new().unwrap();
     make_tool_repo(
@@ -35,7 +35,7 @@ fn phase8_lintfmt_passthrough() {
 
 #[cfg(unix)]
 #[test]
-fn phase8_lintfmt_exit_and_notfound() {
+fn lintfmt_exit_and_notfound() {
     // 退出码透传（非零静默映射 exit code）；本地+PATH 双落空给可读指引。
     let dir = assert_fs::TempDir::new().unwrap();
     make_tool_repo(&dir, "#!/bin/sh\nexit 3\n");

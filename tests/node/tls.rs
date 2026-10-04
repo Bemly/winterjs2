@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9d_tls_echo_loopback() {
+fn tls_echo_loopback() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (cert_path, key_path) = write_self_signed(&dir);
     let out = run_fs_file(
@@ -60,7 +60,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
-fn phase9d_tls_errors() {
+fn tls_errors() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (cert_path, key_path) = write_self_signed(&dir);
     let out = run_fs_file(

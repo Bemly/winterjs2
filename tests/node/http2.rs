@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9d_http2_cleartext() {
+fn http2_cleartext() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -59,7 +59,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
-fn phase9d_http2_secure() {
+fn http2_secure() {
     let dir = assert_fs::TempDir::new().unwrap();
     let (cert_path, key_path) = write_self_signed(&dir);
     let out = run_fs_file(
@@ -106,7 +106,7 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
-fn phase9d_http2_errors_boundary() {
+fn http2_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -316,7 +316,7 @@ server.listen(0, () => {
 }
 
 #[test]
-fn p2_http2_lookup_and_promisify_custom() {
+fn http2_lookup_and_promisify_custom() {
     // base16回归：connect 尊选自定义 lookup（错原样 error）+ promisify.custom
     //（node internal/http2/core.js 原文口径；正常 connect 面由 P1 trailer 测试覆盖）。
     let dir = assert_fs::TempDir::new().unwrap();

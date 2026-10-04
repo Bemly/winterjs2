@@ -3,7 +3,7 @@
 use crate::helpers::*;
 
 #[test]
-fn phase9d_zlib_sync_roundtrip() {
+fn zlib_sync_roundtrip() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -68,7 +68,7 @@ console.log("ns", typeof z.deflate === "function", typeof z.gunzipSync === "func
 }
 
 #[test]
-fn phase9d_zlib_async_callback() {
+fn zlib_async_callback() {
     // 回调链严格嵌套（§4.33：独立异步链交错即 flaky）
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -122,7 +122,7 @@ z.gzip(s, (e1, c1) => {
 }
 
 #[test]
-fn phase9d_zlib_errors_boundary() {
+fn zlib_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -396,7 +396,7 @@ catch (e) { console.log("dircontent", e.code); }
 }
 
 #[test]
-fn phase_g92_zlib_incremental_streams() {
+fn zlib_incremental_streams() {
     // G9-2 增量流面（真机 26.8.2 对拍）：write 即时压出、flush 档位即时出边界
     // （test-zlib-flush 套件向量）、finishFlush 容忍截断（truncated）、
     // rejectGarbageAfterEnd 双面（reject-garbage 套件）、bytesWritten 只计引擎

@@ -5,7 +5,7 @@ use assert_fs::prelude::*;
 use super::helpers::*;
 
 #[test]
-fn phase5_npmrc_registry_mirror() {
+fn npmrc_registry_mirror() {
     // 正常：项目 `.npmrc` 的 registry 生效（不传 --registry 也命中 stub）。
     let port = serve_registry();
     let reg = format!("http://127.0.0.1:{port}");
@@ -32,7 +32,7 @@ fn phase5_npmrc_registry_mirror() {
 }
 
 #[test]
-fn phase5_npmrc_bad_registry_errors() {
+fn npmrc_bad_registry_errors() {
     // 报错：`.npmrc` 指向连不上的 registry，exit=1 且可读（不碰外网，9 端口必拒）。
     let dir = assert_fs::TempDir::new().unwrap();
     let home = assert_fs::TempDir::new().unwrap();

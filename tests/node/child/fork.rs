@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9m_child_fork_ipc() {
+fn child_fork_ipc() {
     // 正常：fork 回显（双向消息 + argv + spawnfile/spawnargs + connected/
     // channel/stdin-null）→ disconnect（事件 + 后续 send false）→ exit 0；
     // 报错：无参 TypeError + 缺失文件 error 事件 + exit 非零；
@@ -79,7 +79,7 @@ setTimeout(() => console.log("once-off", n === 0, c.kill() === false), 2500);
 }
 
 #[test]
-fn phase9m_child_fork_errors() {
+fn child_fork_errors() {
     // 报错：无参 TypeError 带码；缺失文件 error 事件 + exit 非零 + kill 语义。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("p.mjs");

@@ -7,7 +7,7 @@ use common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase3_websocket_echo_and_close() {
+fn websocket_echo_and_close() {
     // 本机回显服务器（tokio，ephemeral 端口）：文本/二进制原样返回。
     // std listener 主线程建好后移交线程——backlog 接住先到的 SYN，无需轮询等待。
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -50,7 +50,7 @@ fn phase3_websocket_echo_and_close() {
 }
 
 #[test]
-fn phase3_websocket_bad_url_and_send_while_connecting() {
+fn websocket_bad_url_and_send_while_connecting() {
     // 非 ws scheme 直接抛；CONNECTING 时 send 抛（连不上的端口测 readyState 报错面）
     let out = winterjs2()
         .args(["--eval", r#"new WebSocket("http://x/")"#])
@@ -72,7 +72,7 @@ fn phase3_websocket_bad_url_and_send_while_connecting() {
 }
 
 #[test]
-fn phase3_websocket_wss_self_signed() {
+fn websocket_wss_self_signed() {
     // rcgen 自签 127.0.0.1 → tokio-rustls wss 回显服务；客户端经
     // WINTERJS2_TEST_CA_PEMFILE 接缝信任（生产默认链不变，见 src/builtins/ws.rs）。
     use base64::Engine as _;

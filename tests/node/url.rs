@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9j_url_file_convert() {
+fn url_file_convert() {
     // 真机逐项对过（node 26.8.2）：往返/编解码/三码三文案。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("u.mjs");

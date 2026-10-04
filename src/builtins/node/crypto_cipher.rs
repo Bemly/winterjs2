@@ -453,7 +453,7 @@ pub unsafe extern "C" fn cipher_final(
 /// `__wjs2_cipher_set_autopad(idStr, flagNum)` → undefined（原位改 flag，不消费句柄）。
 /// UNSAFE-BOUNDARY：前置条件 = 引擎回调提供的 raw cx 有效 + `Frame::from_raw(vp, argc)`
 /// 的调用约定成立（与本文件其余 cipher 系 natives 同）；覆盖测试
-/// `tests/node/crypto/cipher.rs::p2_crypto_cipher_setautopadding`（含非法 id 的
+/// `tests/node/crypto/cipher.rs::crypto_cipher_setautopadding`（含非法 id 的
 /// panic 路径用例：`ERR_CRYPTO_INVALID_STATE`）。
 pub unsafe extern "C" fn cipher_set_autopad(
     cx_raw: *mut mozjs::jsapi::JSContext,

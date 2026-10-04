@@ -106,7 +106,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn p2_repl_legacy_positional() {
+fn repl_legacy_positional() {
     // P2-repl：legacy 位置形 start(prompt, stream, eval) + writer.options 面。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -141,7 +141,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn p2_repl_methods_define_help_editor_complete() {
+fn repl_methods_define_help_editor_complete() {
     // P2-repl 方法面：defineCommand 函数形 + help 版式 + editor 收尾 + complete 空回。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -190,7 +190,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn p2_repl_subset_complete() {
+fn repl_subset_complete() {
     // P2-repl R3：子集补全（成员/拒答面；正常 + 报错边界）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
@@ -226,7 +226,7 @@ setTimeout(() => {
 }
 
 #[test]
-fn p2_repl_cli_complete_bridge() {
+fn repl_cli_complete_bridge() {
     // 本体拥有补全核心（prelude/repl_complete）：`__wjs2_cli_complete` 与
     // `__wjs2_repl_default_complete` 开箱即有，不依赖 `node:repl` 加载；
     // `node:repl` 仅薄包反向复用（注入 vm 求值器），公开面保持 node 同形
@@ -277,7 +277,7 @@ console.log("value-sig", v[0].some((p) => p[0] === "Object.prototype" && p[1] ==
 }
 
 #[test]
-fn p2_repl_options_surface() {
+fn repl_options_surface() {
     // P2-repl R4：options 面（访问器/旗/校验/废弃表；standalone 另案）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

@@ -87,7 +87,7 @@ NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_hello_loopback() {
+fn napi_hello_loopback() {
     // 正常：require → hello()/add()/version 三面 + 二次 require 同对象（幂等）。
     let dir = assert_fs::TempDir::new().unwrap();
     let node = build_napi_dylib(&dir, "hello", HELLO_C);
@@ -154,7 +154,7 @@ NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_dlsym_selfcheck() {
+fn napi_dlsym_selfcheck() {
     let dir = assert_fs::TempDir::new().unwrap();
     let node = build_napi_dylib(&dir, "dlsym", DLSYM_C);
     let app = dir.child("app.js");
@@ -183,7 +183,7 @@ console.log("dlsym", m.check());
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_permission_sandbox() {
+fn napi_permission_sandbox() {
     // 沙箱开启（--allow-read）未授 --allow-ffi → PermissionError 可读可 catch；
     // 加 --allow-ffi 即放行（用户拍板：复用 --allow-ffi 类别）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -236,7 +236,7 @@ try {{
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_add_error_path() {
+fn napi_add_error_path() {
     // 报错：add 非数实参 → addon throw_error → JS 侧可 catch（trampoline
     // pending-exception 传播面）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -275,7 +275,7 @@ try {{
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_m1_values_matrix() {
+fn napi_values_matrix() {
     // 正常：M1 值系统全矩阵（roundtrip/typeof/strict_equals/instanceof/is_error/
     // coerce/pending-exception）——fixture 内部按位断言，1 = 全过。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -314,7 +314,7 @@ console.log("coerce", v.coerce(), "pend", v.pendingException());
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_m1_props_matrix() {
+fn napi_props_matrix() {
     // 正常：named/generic-key 属性族 + define_properties（value/method/data/
     // attrs/不可枚举缺席）+ prototype + array_length。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -347,7 +347,7 @@ console.log("defs", p.defineProperties(), "proto", p.prototypeAndArrayLen());
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_m2_class_matrix() {
+fn napi_class_matrix() {
     // 正常：define_class/new_instance/wrap-unwrap-remove_wrap/external（typeof
     // + 回读）/new.target/instanceof/访问器/static 成员/escapable scope/
     // node_api_* syntax error——fixture 内部按位断言，1 = 全过。
@@ -399,7 +399,7 @@ try {{
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_m2_finalize_chain() {
+fn napi_finalize_chain() {
     // 正常：finalize 释放链（dhat 等价的计数器口径）——external + wrap 实例
     // malloc/free 成对计数。§4.77/§4.78 语义：宿主槽位不截断 + finalizer 延迟
     // 收敛（GC sweep 内只入队）——中途 free 不再追上，`m.drain(cb)` 排一个
@@ -441,7 +441,7 @@ m.drain((c) => console.log("drain", c[1] >= Math.floor(a[0] / 2), c[3] >= Math.f
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_m3_promise_ref_buffer_matrix() {
+fn napi_promise_ref_buffer_matrix() {
     // 正常：M3 值面矩阵（promise/deferred 回环 + refs 计数 + typedarray/
     // dataview 指针一致性 + BigInt64 + Buffer 读写/external）——fixture 内部
     // 按位断言，1 = 全过。
@@ -489,7 +489,7 @@ console.log("buf", m.checkBuf(buf), buf.toString(), buf.length);
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_m3_async_work_tsfn() {
+fn napi_async_work_tsfn() {
     // 正常（M3 验收线）：真 OS 线程回调进 JS——async_work 线程 execute →
     // complete resolve deferred（await 取值）；TSFN 线程 3 条消息 →
     // call_js_cb 逐条回 JS → release → thread_finalize 落定 "done"；
@@ -533,7 +533,7 @@ console.log("end");
 
 #[test]
 #[cfg(unix)]
-fn phase_napi_m3_tsfngc_roots_callback() {
+fn napi_tsfngc_roots_callback() {
     // 回归（M5 dev 真变更 139 根因，AGENTS §4.68）：TSFN 的 JS 回调只被
     // env.tsfns 记录持有，必须进 GC 图；线程延迟 600ms 投递，JS 侧先造
     // nursery 压力（8 轮 × 20 万小对象 ≈ 80MB，大对象直进 tenured 触发不了
@@ -579,7 +579,7 @@ const m = require({node:?});
 #[test]
 #[cfg(unix)]
 #[ignore = "real network: installs rolldown via own pm (plan-napi M4 acceptance)"]
-fn phase_napi_m4_rolldown_bundle_real_network() {
+fn napi_rolldown_bundle_real_network() {
     let dir = assert_fs::TempDir::new().unwrap();
     let wjs = std::env::var("CARGO_BIN_EXE_winterjs2")
         .unwrap_or_else(|_| "target/debug/winterjs2".to_string());
@@ -668,7 +668,7 @@ await bundle.close();
 
 #[test]
 #[ignore = "real network: installs vite via own pm (plan-napi M5 build acceptance)"]
-fn phase_napi_m5_vite_build_real_network() {
+fn napi_vite_build_real_network() {
     // 真网络：pm 装 vite（连带 rolldown/@rolldown/binding）→ vite build JS API
     // 全链（resolveConfig → vite.config.js 经 require.extensions/_compile 加载
     // → build → dist 落盘）→ 产物 --run 可执行。napi 面：cac 的 EventTarget
@@ -761,7 +761,7 @@ console.log("BUILD-OK");
 
 #[test]
 #[ignore = "real network: installs vite via own pm (plan-napi M5 dev acceptance, polling backend)"]
-fn phase_napi_m5_vite_dev_polling_real_network() {
+fn napi_vite_dev_polling_real_network() {
     // 真网络：pm 装 vite → dev server 全链（listen → transform 取 main/lib 入
     // 模块图 → WS 握手 connected → watchFile 轮询侦测 append → full-reload
     // 经 WS 推送 → 干净 close）。napi 面：rolldown transform + fsevents 未用
@@ -856,7 +856,7 @@ fn build_official_dylib(dir: &assert_fs::TempDir, sub: &str, c_file: &str) -> st
 
 #[cfg(unix)]
 #[test]
-fn phase_napi_m6_official_js_native_api_spot_check() {
+fn napi_official_js_native_api_spot_check() {
     let dir = assert_fs::TempDir::new().unwrap();
     let m2 = build_official_dylib(&dir, "2_function_arguments", "2_function_arguments.c");
     let m3 = build_official_dylib(&dir, "3_callbacks", "3_callbacks.c");

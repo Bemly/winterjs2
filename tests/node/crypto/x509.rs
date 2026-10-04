@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9e_crypto_x509() {
+fn crypto_x509() {
     let dir = assert_fs::TempDir::new().unwrap();
     let pem = "-----BEGIN CERTIFICATE-----\nMIIDizCCAnOgAwIBAgIUXHVjPqV6YzyPBqRQYPc0ZcZRzkswDQYJKoZIhvcNAQEL\nBQAwNjELMAkGA1UEBhMCVVMxDTALBgNVBAoMBEFjbWUxGDAWBgNVBAMMD3d3dy5l\neGFtcGxlLmNvbTAeFw0yNjA5MTIwNzAzMTZaFw0yNjA5MTQwNzAzMTZaMDYxCzAJ\nBgNVBAYTAlVTMQ0wCwYDVQQKDARBY21lMRgwFgYDVQQDDA93d3cuZXhhbXBsZS5j\nb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQChD22N6LlqRJlVEyGj\nE+zohSE50NYazdABnbAcECBTT9d0NAsLPfASUbVWzDoyDDiMGGbApwORUiACMwZq\nNI7KQ1OeEe6wDkVUWXb+07bNV2pUZzDZXnZJzgkZMjy7kNT6uu+36n4KdApSt9jO\nwG89qdYQ/5wIMo8LCA0vV1Px2jiYvgXQTACy4BXa6QbzZR2iUFlGA4wYfzv7dEk1\nY5Bz4vwo/5PfxdrtUkirg/kdxJqqBypV+ptW8YZRPZLwTh05dAOHx2Mh/vx1QKi+\nnvj7PQUihHogt64+i0Q6hqQNX2U/FI05dvUonRAnHl+o0YJCVhOOBNPqB5ZBNXEc\n9kAVAgMBAAGjgZAwgY0wHQYDVR0OBBYEFFl6516N9nn1EPzjIobzQcYtEV0wMB8G\nA1UdIwQYMBaAFFl6516N9nn1EPzjIobzQcYtEV0wMA8GA1UdEwEB/wQFMAMBAf8w\nLQYDVR0RBCYwJIIPd3d3LmV4YW1wbGUuY29tggtleGFtcGxlLmNvbYcEfwAAATAL\nBgNVHQ8EBAMCBaAwDQYJKoZIhvcNAQELBQADggEBAAd7FdDiGjuGBBtw5GTn+zD6\n+qTq2YoJIZzkKJ/TaPpPk67jyEVpKghI+aJ6o7ZBDiAytOGPCZsEmX7j+26oj1c6\nsukEQn3jF9h9eKw+ih/FUsFUsU7JGuywO7lbk9GbHxKtfF1na0tYDSpQnN9WldXz\n5/btna3Nzj+53wdkO0BkkXefVZfFu0dIH7o6hvxhW40RLfhkwW0DWSJ9vgHYta0d\nfDlfTxiy6M+f1YxM49MDmzL37FopkuFj0xmbRXUdIjHTKq+rIZYuMW9x510uVD4y\ndh6vOBNEHn8gVd1JIJLjrBvY55ecfA/UieRe8TCJ380CqZ9bYHJoIm1JZiaGSdg=\n-----END CERTIFICATE-----\n";
     dir.child("c.pem").write_str(pem).unwrap();
@@ -47,7 +47,7 @@ try { new Certificate(); } catch (e) { console.log("legacy-cert", e.code === "ER
 }
 
 #[test]
-fn phase9i_x509_verify() {
+fn x509_verify() {
     let dir = assert_fs::TempDir::new().unwrap();
     let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     dir.child("c.pem").write_str(&key.cert.pem()).unwrap();
@@ -148,7 +148,7 @@ t("xv-priv", () => x.verify(generateKeyPairSync("ec", { namedCurve: "P-256" }).p
 }
 
 #[test]
-fn phase9i_x509_issued_privkey() {
+fn x509_issued_privkey() {
     let dir = assert_fs::TempDir::new().unwrap();
     // openssl 3.6 链固件：CA（SKI/AKID/keyCertSign 齐）+ leaf + 同名不同钥 CA。
     dir.child("chain-leaf.pem").write_str(include_str!("../../fixtures/chain-leaf.pem")).unwrap();
@@ -217,7 +217,7 @@ console.log("xi-pq-priv", pqcert.checkPrivateKey(pqpair.privateKey) === false, p
 }
 
 #[test]
-fn phase9i_x509_pss() {
+fn x509_pss() {
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("pss.pem").write_str(include_str!("../../fixtures/pss.pem")).unwrap();
     dir.child("chain-leaf.pem").write_str(include_str!("../../fixtures/chain-leaf.pem")).unwrap();

@@ -4,7 +4,7 @@ use crate::common::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_trace_events_categories() {
+fn trace_events_categories() {
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("t.mjs");
     file.write_str(

@@ -126,7 +126,7 @@ pub fn get_prop_string(
 
 /// UNSAFE-BOUNDARY: 读对象属性值（含 undefined 值也 Some；API 失败 None，pending 由调用方处理）。
 /// 前置：cx 在 realm 内；obj 为有效对象。
-/// 覆盖：`phase4_require_cjs`、`phase4_require_json`（经 require 取 exports/default）。
+/// 覆盖：`require_cjs`、`require_json`（经 require 取 exports/default）。
 pub fn get_prop_value(cx: &mut JSContext, obj: *mut JSObject, name: &CStr) -> Option<JSVal> {
     rooted!(&in(cx) let mut v = mozjs::jsval::UndefinedValue());
     // SAFETY: cx 为有效 wrapper；标记位置指针直拷；raw 调用不触发 GC
@@ -159,7 +159,7 @@ pub fn set_prop_value(cx: &mut JSContext, obj: *mut JSObject, name: &CStr, val: 
 
 /// UNSAFE-BOUNDARY: `JSON.parse(text)`（失败 None，pending 由调用方处理）。
 /// 前置：cx 在 realm 内；global 为有效全局。
-/// 覆盖：`phase4_require_json`（经 require 读 `.json`）。
+/// 覆盖：`require_json`（经 require 读 `.json`）。
 pub fn parse_json(cx: &mut JSContext, global: *mut JSObject, text: &str) -> Option<JSVal> {
     rooted!(&in(cx) let mut json_v = mozjs::jsval::UndefinedValue());
     // SAFETY: global 为有效 rooted 对象（调用方 rooted）；raw 调用不触发 GC
@@ -425,8 +425,8 @@ pub fn tla_pack_take(cx: &mut JSContext, obj: *mut JSObject) -> Option<(bool, JS
 
 /// UNSAFE-BOUNDARY: 调单参函数 `fun(arg)`（this=global；返回 rval；失败 None）。
 /// 前置：cx 在 realm 内；fun 为可调用；调用后 pending exception 由调用方处理。
-/// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_errors_are_rejections`、
-/// `phase3_websocket_echo_and_close`（经 fetch/ws dispatch）。
+/// 覆盖：`fetch_http_get`、`fetch_errors_are_rejections`、
+/// `websocket_echo_and_close`（经 fetch/ws dispatch）。
 pub fn call_one(
     cx: &mut JSContext,
     global: *mut JSObject,
@@ -453,7 +453,7 @@ pub fn call_one(
 /// UNSAFE-BOUNDARY: 调双参函数 `fun(a, b)`（timer fire 经 `__wjs2_call(cb, args)`
 /// 展开实参；native 内禁 `Rooted<ValueArray>`，§4.9）。
 /// 前置：cx 在 realm 内；fun 为可调用；调用后 pending exception 由调用方处理。
-/// 覆盖：`phase3_fetch_http_get`、`phase3_fetch_data_and_file`（经 fetch deliver）、
+/// 覆盖：`fetch_http_get`、`fetch_data_and_file`（经 fetch deliver）、
 /// `tests/builtins.rs::immediate_and_timeout_class`（经 timer fire）。
 pub fn call_two(
     cx: &mut JSContext,
@@ -486,7 +486,7 @@ pub fn call_two(
 /// UNSAFE-BOUNDARY: 调三参函数 `fun(a, b, c)`（this=global；napi_call 的
 /// prelude helper `__wjs2_napi_call(recv, fn, args)` 用）。
 /// 前置：cx 在 realm 内；调用后 pending exception 由调用方处理。
-/// 覆盖：`tests/napi.rs::phase_napi_m1_values`（经 napi_call_function）。
+/// 覆盖：`tests/napi.rs::napi_values_matrix`（经 napi_call_function）。
 pub fn call_three(
     cx: &mut JSContext,
     global: *mut JSObject,
@@ -518,9 +518,9 @@ pub fn call_three(
 
 /// UNSAFE-BOUNDARY: 由字节建 Uint8Array。
 /// 前置：cx 在 realm 内；bytes 存活到调用返回。
-/// 覆盖：`phase3_text_encoder_decoder`、`phase3_subtle_digest_vectors`、
-/// `phase3_aes_gcm_roundtrip`、`phase3_fetch_data_and_file`、
-/// `phase3_websocket_echo_and_close`（二进制消息）。
+/// 覆盖：`text_encoder_decoder`、`subtle_digest_vectors`、
+/// `aes_gcm_roundtrip`、`fetch_data_and_file`、
+/// `websocket_echo_and_close`（二进制消息）。
 pub fn uint8_array(cx: &mut JSContext, bytes: &[u8]) -> Option<*mut JSObject> {
     rooted!(&in(cx) let mut obj: *mut JSObject = std::ptr::null_mut());
     // SAFETY: realm 内创建；obj 为 rooted 出参；bytes 存活到调用返回
@@ -536,8 +536,8 @@ pub fn uint8_array(cx: &mut JSContext, bytes: &[u8]) -> Option<*mut JSObject> {
 
 /// UNSAFE-BOUNDARY: Uint8Array 实参 → 字节拷贝（safe 读，无裸指针）。
 /// 非 Uint8 视图/共享内存/detached 一律 TypeError（切片行为见各调用方文档）。
-/// 覆盖：`phase3_text_decoder_fatal`、`phase3_crypto_random`（配额/类型错）、
-/// `phase3_aes_gcm_roundtrip`、`phase3_hmac_sign_verify`、`phase3_fetch_http_post_echo`。
+/// 覆盖：`text_decoder_fatal`、`crypto_random`（配额/类型错）、
+/// `aes_gcm_roundtrip`、`hmac_sign_verify`、`fetch_http_post_echo`。
 pub fn view_bytes(cx: &mut JSContext, v: JSVal, what: &str) -> Option<Vec<u8>> {
     if !v.is_object() {
         report_error(cx, &format!("TypeError: {what} requires a Uint8Array"));
@@ -636,7 +636,7 @@ pub fn same_value(cx: &mut JSContext, a: JSVal, b: JSVal) -> Option<bool> {
 
 /// UNSAFE-BOUNDARY: 在对象上定义可枚举属性（值可跨 compartment，引擎自动包 CCW）。
 /// 前置：cx 在 obj 所属 realm 内；obj 为有效对象；name 无 NUL。
-/// 覆盖：`phase9f_vm_context_spawns_and_isolates`、`phase9f_vm_sandbox_sync`
+/// 覆盖：`vm_context_spawns_and_isolates`、`vm_sandbox_sync`
 /// （经 vm sync-in/out）。
 pub fn define_prop(cx: &mut JSContext, obj: *mut JSObject, name: &CStr, val: JSVal) -> bool {
     rooted!(&in(cx) let v = val);

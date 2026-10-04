@@ -5,7 +5,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn phase9a_punycode_rfc3492() {
+fn punycode_rfc3492() {
     // test-punycode.js 命名子集（RFC 3492 向量 + 域名 + ucs2）
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("p.mjs");

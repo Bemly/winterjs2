@@ -4,7 +4,7 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
-fn crypto_round2_parity() {
+fn crypto_dh_rsa_keyobject_basics() {
     // 10f crypto二轮：DH 组/KeyObject 品牌/RSA 位长/pkcs1/加密 PEM/混合 OAEP
     //（正常/报错/边界三件；慢操作一律小参数）
     let dir = assert_fs::TempDir::new().unwrap();
@@ -235,7 +235,7 @@ log("x448-done");
 }
 
 #[test]
-fn crypto_round4_parity() {
+fn crypto_keyexport_jwk_matrix() {
     // 10f crypto四轮：key-objects 剩余阻塞簇——非对称导出 type/format 门矩阵、
     // EC raw 导入导出往返、EC sec1 导出、asymmetricKeyDetails（EC/OKP/DSA）、
     // OKP/EC JWK 校验矩阵、DSA JWK 面（无）。每项真机 26.8.2 对拍

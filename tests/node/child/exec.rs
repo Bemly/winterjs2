@@ -226,7 +226,7 @@ if (process.argv[2] === "child") {
 }
 
 #[test]
-fn child_g5_validators_and_readable() {
+fn child_nul_validation_and_paused_read() {
     // G5-3：\0 横向校验（file/args/env/cwd/shell/command 全面 code 名）+
     // `-p` 自举（promisified 套件）+ stdio ipc 门（单裸/双 ipc）+
     // paused read（flush-stdio 套件 readable+read 循环）。
@@ -262,7 +262,7 @@ console.log("readable", Buffer.concat(bufs).toString().trim() === "123");"#]));
 }
 
 #[test]
-fn child_g5_surface_batch2() {
+fn child_disconnect_identity_fork_validation() {
     // G5-4：removeAllListeners/二次 disconnect 抛错/uid-gid EPERM/pipe 透传/
     // fork send 参数校验（message 缺席/非法型/options 非对象/句柄拒收）。
     let dir = assert_fs::TempDir::new().unwrap();

@@ -4757,3 +4757,15 @@
 - 复现：base15/base16 results.log `TIMEOUT∩DIFF` 交集脚本。
 - 推广铁律：**全域基线对比先算"形态翻转矩阵"再算涨跌**——DIFF→TIMEOUT 不是回归，
   是修好的副作用；真回归只看绿→红。
+
+### 4.271 测试函数名禁阶段前缀（2026-10-05）
+
+- 症状：`tests/` 209 个 `fn phase10*/phase11*`——函数名编码计划切片
+ （10a–10g/11），不说明行为；`cargo test` 输出满屏轮次号；新测试跟风加前缀。
+- 根因：以计划编号当命名空间；轮次是过程元信息，不是行为归属。
+- 修法：测试函数名一律域行为命名（`phase10f_buffer_parity_fixes`→
+ `buffer_parity_fixes`，纯剥 `phaseXXy_` 前缀，零碰撞已验）；轮次只留注释与
+  journal；`src/` 内 `覆盖测试` 指针对同步改名（UNSAFE-BOUNDARY 追溯不断）。
+- 复现：`rg -n 'fn phase(10|11)' tests/ src/` 归零。
+- 推广铁律：**标识符禁阶段命名**——变量/函数/文件名按域行为命名，
+  P0/P1/phase10/phase11/W1 等计划号禁进标识符（注释与 journal 除外）。

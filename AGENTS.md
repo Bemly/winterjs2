@@ -13,8 +13,8 @@
   （用户已常设授权，今后无需再问；push 前确认工作区干净、无多余提交混入）。
 2. **先查证据再下结论**：读文件、跑构建、跑 `./target/debug/winterjs2` 实测；
    与文档矛盾以实测为准并更新文档。
-3. **踩坑必记**：新坑追加到 `docs/pitfalls.md` 末尾（编号续排 `4.N`：症状 → 根因 →
-   修法 → 复现 → 推广铁律）；只有**新的通用铁律**才在本文件 §4 摘要补一行。
+3. **踩坑必记**：新坑编号续排 `4.N`（症状 → 根因 →
+   修法 → 复现 → 推广铁律），主索引追一行 + 正文追到末卷末尾；只有**新的通用铁律**才在本文件 §4 摘要补一行。
 4. **依赖随缘更新**：除 `mozjs` 必须精确钉死外（§2），其余 caret 不锁上限，
    `cargo update` 随便跑；跑坏就地修并回写 `docs/dependencies.md`。
 5. **新工具先找轮子**：想手写新工具/模块/功能时，先去 crates.io 找依赖，
@@ -88,7 +88,7 @@ cargo build
 ./target/debug/winterjs2 --eval 'await (await fetch("data:text/plain,x")).text()'         # → x
 ```
 
-## 4. 铁律摘要（全文见 `docs/pitfalls.md`，编号即 `§4.N`）
+## 4. 铁律摘要（全文见 `docs/pitfalls.md` 索引 + `pitfalls-01..06.md` 正文，编号即 `§4.N`）
 
 **GC / 引擎边界**
 - `evaluate_script` 返回后、逐任务微任务执行前，调 JSAPI 先进 `AutoRealm`（4.1/4.116）。

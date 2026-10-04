@@ -24,7 +24,8 @@
 pub const SOURCE: &str = r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Port of node lib/readline.js (see module docs for deviations).
-import { EventEmitter } from 'node:events';
+import { EventEmitter, on as __eventsOn } from 'node:events';
+import { kFirstEventParam } from 'node:internal/events/symbols';
 import errors from 'node:internal/errors';
 
 const {
@@ -218,10 +219,18 @@ class Interface extends EventEmitter {
     this._savedLine = '';
     this._questionCb = null;
     this._lineBuf = '';
-    this._iterWaiters = [];
+    this._lineIter = undefined;
     this._onData = (b) => this._onInputData(b);
     this._onKey = (s, k) => this._ttyWrite(s, k);
-    this._onEnd = () => this.close();
+    // node 口径（onend）：EOF 先把残留行直接发 'line'（不走 question/history），再关。
+    this._onEnd = () => {
+      if (!this.terminal && this._lineBuf.length > 0) {
+        const tail = this._lineBuf;
+        this._lineBuf = '';
+        this.emit('line', tail);
+      }
+      this.close();
+    };
     if (this.terminal) {
       emitKeypressEvents(input, this);
       input.on('keypress', this._onKey);
@@ -275,16 +284,6 @@ class Interface extends EventEmitter {
       cb(line);
     } else {
       this.emit('line', line);
-      this._feedIter(line);
-    }
-  }
-  _feedIter(line) {
-    if (this._iterWaiters.length > 0) {
-      const w = this._iterWaiters.shift();
-      w(line);
-    } else {
-      if (this._iterBuf === undefined) this._iterBuf = [];
-      this._iterBuf.push(line);
     }
   }
   // ── 终端编辑 ──
@@ -467,29 +466,21 @@ class Interface extends EventEmitter {
     try { this.input.removeListener('data', this._onData); } catch { /* ignore */ }
     try { this.input.removeListener('keypress', this._onKey); } catch { /* ignore */ }
     try { this.input.removeListener('end', this._onEnd); } catch { /* ignore */ }
-    for (const w of this._iterWaiters.splice(0)) w(null);
     this.emit('close');
     return undefined;
   }
   [Symbol.asyncIterator]() {
-    return {
-      next: () => {
-        if (this._iterBuf !== undefined && this._iterBuf.length > 0) {
-          return Promise.resolve({ value: this._iterBuf.shift(), done: false });
-        }
-        if (this.closed) return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve) => {
-          this._iterWaiters.push((line) => {
-            if (line === null) resolve({ value: undefined, done: true });
-            else resolve({ value: line, done: false });
-          });
-        });
-      },
-      return: () => {
-        this.close();
-        return Promise.resolve({ value: undefined, done: true });
-      },
-    };
+    // node 口径（internal/readline/interface.js）：缓存 EventEmitter.on(this,
+    // 'line', {close:['close'], highWaterMark:1024, 第一参直传})——watermarkData
+    // 符号属性 + 背压 pause/resume 随附，不自造迭代器。
+    if (this._lineIter === undefined) {
+      this._lineIter = __eventsOn(this, 'line', {
+        close: ['close'],
+        highWaterMark: 1024,
+        [kFirstEventParam]: true,
+      });
+    }
+    return this._lineIter;
   }
 }
 

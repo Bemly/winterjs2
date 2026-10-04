@@ -560,3 +560,93 @@ setTimeout(() => console.log("ticks", n === 1), 50);
     assert!(ok && out.trim() == "\"\u{FEFF}abc\"", "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn stream_web_interop_symbols() {
+    // stream/web 内部互操作符号（end-of-stream/addAbortSignal 经此接线）。
+    // 正常：finished 回调/无错流；报错：errored 流 finished 带错；边界：abort
+    // 信号、close 后再 error 转 errored、tee 分支错误透传、CompressionStream
+    // 坏块双侧带码拒绝、adapter ArrayBuffer 转 Uint8Array。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { ReadableStream, WritableStream, TransformStream, CompressionStream } from "node:stream/web";
+import { finished } from "node:stream";
+import { addAbortSignal } from "node:stream";
+import assert from "node:assert";
+// 正常：finished 成功回调（读空排空后结算）
+{
+  const rs = new ReadableStream({ start(c) { c.enqueue("a"); c.close(); } });
+  finished(rs, (err) => console.log("f-ok", err === undefined));
+  // node 口径：有队关闭无人读则永不结算（读空才触发）——此处消费后成功。
+  rs.getReader().read().then(() => {});
+}
+// 报错：errored 流 finished 带错
+{
+  const rs = new ReadableStream({ start(c) { c.error(new Error("boom")); } });
+  finished(rs, (err) => console.log("f-err", err && err.message));
+}
+// 边界：close 后再 error 转 errored（node 26 口径，非 no-op）
+{
+  const rs = new ReadableStream({ start(c) { c.enqueue("x"); c.close(); c.error(new Error("late")); } });
+  const k = Symbol.for("nodejs.webstream.isClosedPromise");
+  rs[k].promise.then(() => console.log("late-ok"), (e) => console.log("late-err", e.message));
+}
+// 边界：abort 信号经 controller.error 落流
+{
+  const rs = new ReadableStream({ start(c) {} });
+  const ac = new AbortController();
+  addAbortSignal(ac.signal, rs);
+  finished(rs, (err) => console.log("abort-f", err && err.name));
+  ac.abort();
+}
+// 边界：tee 源出错分支即错（无人读亦然）
+{
+  const rs = new ReadableStream({ start(c) { c.error(new Error("src-e")); } });
+  const [a, b] = rs.tee();
+  finished(a, (err) => console.log("tee-a", err && err.message));
+  finished(b, (err) => console.log("tee-b", err && err.message));
+}
+// 边界：tee 读值不丢（settle 不提前关有货分支）
+{
+  const rs = new ReadableStream({ start(c) { c.enqueue(1); c.close(); } });
+  const [a, b] = rs.tee();
+  Promise.all([a.getReader().read(), b.getReader().read()]).then(([x, y]) =>
+    console.log("tee-v", x.value, y.value));
+}
+// 边界：CompressionStream 坏块读写双侧带码
+{
+  const cs = new CompressionStream("deflate");
+  const w = cs.writable.getWriter();
+  const r = cs.readable.getReader();
+  const wp = w.write(undefined).then(() => "W-OK", (e) => `W-${e.name}-${e.code}`);
+  const rp = r.read().then(() => "R-OK", (e) => `R-${e.name}-${e.code}`);
+  Promise.all([wp, rp]).then(([x, y]) => console.log("cs-bad", x, y));
+}
+// 正常：adapter ArrayBuffer 转 Uint8Array 进 node Writable
+{
+  const { Writable } = await import("node:stream");
+  const seen = [];
+  const w = new Writable({ write(c, e, cb) { seen.push(c.constructor.name); cb(); } });
+  const { Writable: { toWeb } } = await import("node:stream");
+  const writer = toWeb(w).getWriter();
+  await writer.write(new ArrayBuffer(4));
+  console.log("ad-ab", seen.join(","));
+}
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("f-ok true"), "out: {out}");
+    assert!(out.contains("f-err boom"), "out: {out}");
+    assert!(out.contains("late-err late"), "out: {out}");
+    assert!(out.contains("abort-f AbortError"), "out: {out}");
+    assert!(out.contains("tee-a src-e"), "out: {out}");
+    assert!(out.contains("tee-b src-e"), "out: {out}");
+    assert!(out.contains("tee-v 1 1"), "out: {out}");
+    assert!(out.contains("cs-bad W-TypeError-ERR_INVALID_ARG_TYPE R-TypeError-ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("ad-ab Buffer"), "out: {out}");
+    dir.close().unwrap();
+}

@@ -80,7 +80,13 @@ function newWritableStreamFromStreamWritable(streamWritable, options = {}) {
   return new WritableStream({
     async start(controller) {},
     async write(chunk) {
-      // chunk 为 Uint8Array / string
+      // node 口径（adapters.js）：非 objectMode 下 ArrayBuffer/SharedArrayBuffer
+      // 转 Uint8Array（裸 AB 进 node Writable 即 ARG_TYPE）。
+      if (!streamWritable.writableObjectMode &&
+          (chunk instanceof ArrayBuffer ||
+           (typeof SharedArrayBuffer !== 'undefined' && chunk instanceof SharedArrayBuffer))) {
+        chunk = new Uint8Array(chunk);
+      }
       await new Promise((resolve, reject) => {
         const cb = (err) => (err ? reject(err) : resolve());
         if (!streamWritable.write(chunk, cb)) {

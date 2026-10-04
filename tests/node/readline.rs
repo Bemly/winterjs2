@@ -245,3 +245,58 @@ rl.close();
     assert!(!out.contains("FAIL"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn readline_async_iterator_faces() {
+    // 异步迭代器经 EventEmitter.on 接线（node internal/readline 口径）。
+    // 正常：for-await 逐行 + watermarkData 符号属性；报错：无；边界：
+    // EOF 残留行先发 line 再 close、无尾换行亦得行、背压暂停恢复。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+import readline from "node:readline";
+import { Readable } from "node:stream";
+// 正常：for-await + watermarkData
+{
+  const readable = new Readable({ read() {} });
+  readable.push("line 1\nline 2\n");
+  readable.push(null);
+  const rli = readline.createInterface({ input: readable, crlfDelay: Infinity });
+  const it = rli[Symbol.asyncIterator]();
+  const wm = it[Symbol.for("nodejs.watermarkData")];
+  console.log("wm", typeof wm, wm.high, wm.low);
+  const got = [];
+  for await (const l of rli) got.push(l);
+  console.log("iter", JSON.stringify(got));
+}
+// 边界：无尾换行残留行
+{
+  fs.writeFileSync("t.txt", "alpha\nbeta-noeol");
+  const rli = readline.createInterface({ input: fs.createReadStream("t.txt"), crlfDelay: Infinity });
+  const got = [];
+  for await (const l of rli) got.push(l);
+  console.log("noeol", JSON.stringify(got));
+}
+// 边界：空文件零行即关
+{
+  fs.writeFileSync("e.txt", "");
+  const rli = readline.createInterface({ input: fs.createReadStream("e.txt"), crlfDelay: Infinity });
+  const got = [];
+  for await (const l of rli) got.push(l);
+  console.log("empty", JSON.stringify(got));
+}
+"#,
+    );
+    for line in [
+        "wm object 1024 1",
+        "iter [\"line 1\",\"line 2\"]",
+        "noeol [\"alpha\",\"beta-noeol\"]",
+        "empty []",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

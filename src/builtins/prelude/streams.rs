@@ -70,7 +70,9 @@ function __wjs2_rsByteToQueue(st) {
   }
 }
 function __wjs2_rsPull(st) {
-  if (!st.reader || st.closed || st.error !== undefined || st.pulling) return;
+  // 早退仍需 pump：关闭/出错后不再拉数据，但排队的取值/close 等待仍要结算
+  // （read 消费掉末块后只调 pull，不 pump 即 closeWaiter 永挂）。
+  if (!st.reader || st.closed || st.error !== undefined || st.pulling) { __wjs2_rsPump(st); return; }
   // pull 触发面（防微任务空转饿死事件循环，见 §4.27 追补）：
   // 只在新需求到达（read 推入等待）或有进展且需求还在（pump 尾）时调；
   // 无 pull 方法的源 + 挂起的读，eager 重拉即无限微任务链。
@@ -87,9 +89,9 @@ function __wjs2_rsPull(st) {
 }
 function __wjs2_rsPump(st) {
   __wjs2_rsByobFill(st);
-  // default reader 读字节流：仅当有读等待（wantValue）才整块搬运；
-  // closed 等待不搬，否则会饿死后来的 BYOB 读
-  if (st.isBytes && st.pending.some((p) => p.wantValue)) __wjs2_rsByteToQueue(st);
+  // default reader 读字节流：仅当有读等待才整块搬运；
+  // close 等待另队（closeWaiters），此处只看取值等待。
+  if (st.isBytes && st.pending.length) __wjs2_rsByteToQueue(st);
   while (st.pending.length && (st.queue.length || st.closed || st.error !== undefined)) {
     const { resolve, reject } = st.pending.shift();
     if (st.error !== undefined) { reject(st.error); continue; }
@@ -98,15 +100,28 @@ function __wjs2_rsPump(st) {
       resolve({ value: v, done: false });
     } else { resolve({ value: undefined, done: true }); }
   }
+  // close 等待：关闭且排空即 resolve，出错即 reject；绝不消费队列 chunk
+  // （与取值等待分队：混队 FIFO 会让 .closed/eos 吞掉一个数据块；
+  // kIsClosedPromise 同样排空感知——有队关闭无人读则永不结算，node 实测）。
+  if (st.error !== undefined) {
+    for (const w of st.closeWaiters.splice(0)) w.reject(st.error);
+    for (const w of st.drainWaiters.splice(0)) w.reject(st.error);
+  } else if (st.closed && !st.queue.length && !(st.isBytes && st.byteLen)) {
+    for (const w of st.closeWaiters.splice(0)) w.resolve(undefined);
+    for (const w of st.drainWaiters.splice(0)) w.resolve(undefined);
+  }
   // pump 尾再拉：仅当需求还在且本轮有进展（enqueue/close/error 置 pullProgress）；
   // 干 pull（无进展）不再重拉——新需求到达时 read() 会拉。
   if (!st.closed && st.error === undefined && !st.pulling) {
-    const demand = st.byobReads.length > 0 || st.pending.some((p) => p.wantValue);
+    const demand = st.byobReads.length > 0 || st.pending.length > 0;
     if (demand && st.pullProgress) { st.pullProgress = false; __wjs2_rsPull(st); }
   }
 }
 function __wjs2_rsError(st, e) {
-  if (st.closed || st.error !== undefined) return;
+  // node 口径：close 后再 error 仍转 errored（abort-controller 套件点名），
+  // 仅重复 error 才 no-op；出错清队列（读端后续读一律 reject）。
+  if (st.error !== undefined) return;
+  st.closed = true;
   st.error = e;
   st.queue.length = 0;
   st.byteQ.length = 0; st.byteLen = 0;
@@ -161,7 +176,7 @@ globalThis.ReadableStream = class ReadableStream {
     const utype = underlyingSource ? underlyingSource.type : undefined;
     if (utype !== undefined && utype !== "bytes") throw new TypeError("ReadableStream type must be 'bytes'");
     const st = {
-      queue: [], pending: [], closed: false, error: undefined,
+      queue: [], pending: [], closeWaiters: [], drainWaiters: [], closed: false, error: undefined,
       reader: null, pulling: false, pullProgress: false, hwm: Number.isNaN(hwm) ? 1 : hwm,
       source: underlyingSource, controller: null,
       isBytes: utype === "bytes", byteQ: [], byteLen: 0, byobReads: [], byobReq: null,
@@ -196,7 +211,7 @@ globalThis.ReadableStream = class ReadableStream {
           return new Promise((resolve, reject) => {
             if (st.error !== undefined) reject(st.error);
             else if (st.closed && !st.byteLen) resolve(undefined);
-            else st.pending.push({ resolve: () => resolve(undefined), reject, wantValue: false });
+            else st.drainWaiters.push({ resolve: () => resolve(undefined), reject });
           });
         },
         read(view) {
@@ -231,7 +246,7 @@ globalThis.ReadableStream = class ReadableStream {
         return new Promise((resolve, reject) => {
           if (st.error !== undefined) reject(st.error);
           else if (st.closed && !st.queue.length) resolve(undefined);
-          else st.pending.push({ resolve: () => resolve(undefined), reject, wantValue: false });
+          else st.drainWaiters.push({ resolve: () => resolve(undefined), reject });
         });
       },
       read() {
@@ -245,7 +260,7 @@ globalThis.ReadableStream = class ReadableStream {
             return;
           }
           if (st.closed) { resolve({ value: undefined, done: true }); return; }
-          st.pending.push({ resolve, reject, wantValue: true });
+          st.pending.push({ resolve, reject });
           __wjs2_rsPull(st);
         });
       },
@@ -287,31 +302,47 @@ globalThis.ReadableStream = class ReadableStream {
     if (st.reader) { const e = new TypeError("stream is locked"); e.code = "ERR_INVALID_STATE"; throw e; }
     // 简化 tee：顺序读源，两分支各收一份（引用共享；无背压，见文档）。
     const q1 = [], q2 = [];
-    const mkBranch = (q) => new ReadableStream({
-      pull(c) {
-        if (q.length) { c.enqueue(q.shift()); return; }
-        if (done) { c.close(); return; }
-        if (failed !== undefined) { c.error(failed); return; }
-        waiters.push(() => {
-          if (q.length) { try { c.enqueue(q.shift()); } catch {} return; }
-          if (done) { try { c.close(); } catch {} return; }
-          if (failed !== undefined) { try { c.error(failed); } catch {} }
-        });
-      },
-      cancel() {},
-    });
+    const mkBranch = (q) => {
+      const b = new ReadableStream({
+        pull(c) {
+          if (q.length) { c.enqueue(q.shift()); return; }
+          if (done) { c.close(); return; }
+          if (failed !== undefined) { c.error(failed); return; }
+          waiters.push(() => {
+            if (q.length) { try { c.enqueue(q.shift()); } catch {} return; }
+            if (done) { try { c.close(); } catch {} return; }
+            if (failed !== undefined) { try { c.error(failed); } catch {} }
+          });
+        },
+        cancel() {},
+      });
+      return b;
+    };
     let done = false, failed;
     const waiters = [];
     const wake = () => { for (const w of waiters.splice(0)) w(); };
     const r1 = mkBranch(q1), r2 = mkBranch(q2);
     const src = this.getReader();
     st.reader = null;
+    // 源出错/收尾即主动结算分支（finished 只观测不读，无此即永挂；
+    // 有未投递块的分支留待 pull 消费，不提前关——判 tee 数组非分支内队）。
+    const settleBranches = () => {
+      const pairs = [[r1, q1], [r2, q2]];
+      for (const [b, q] of pairs) {
+        const bst = __wjs2_rsState.get(b);
+        if (failed !== undefined) { __wjs2_rsError(bst, failed); continue; }
+        if (done && !q.length && !bst.queue.length && !bst.closed && bst.error === undefined) {
+          bst.closed = true;
+        }
+      }
+      for (const b of [r1, r2]) __wjs2_rsPump(__wjs2_rsState.get(b));
+    };
     const loop = () => src.read().then(({ value, done: d }) => {
-      if (d) { done = true; wake(); return; }
+      if (d) { done = true; wake(); settleBranches(); return; }
       q1.push(value); q2.push(value);
       wake();
       loop();
-    }, (e) => { failed = e; wake(); });
+    }, (e) => { failed = e; wake(); settleBranches(); });
     loop();
     return [r1, r2];
   }
@@ -371,7 +402,8 @@ globalThis.WritableStream = class WritableStream {
       get desiredSize() { return st.hwm - st.queue.length; },
       get ready() { return Promise.resolve(); },
       write(chunk) {
-        if (chunk === undefined) return Promise.reject(new TypeError("chunk must not be undefined"));
+        // 空值不拦截：转交 sink 校验（CompressionStream 需带码拒绝，
+        // 原生 WS 按 spec 收 undefined；旧守卫无码一律拒是错的）。
         if (st.errored) return Promise.reject(st.error);
         if (st.closed) return Promise.reject(new TypeError("stream is closed"));
         return new Promise((resolve, reject) => {
@@ -546,13 +578,14 @@ function __wjs2_makeCSClass(name, kinds, reject) {
       let closed = false; // readable 已 close/error
       let freed = false;
       let done = false;   // 引擎已 StreamEnd（后续写入即尾垃圾）
+      let failErr = null; // 首错（close-after-fail 拒此错，corrupt 套件点名）
       const free = () => { if (!freed) { freed = true; __wjs2_zlib_stream_free(id); } };
-      const fail = (err) => { if (!closed) { closed = true; ctrl.error(err); } };
+      const fail = (err) => { if (!closed) { closed = true; failErr = err; ctrl.error(err); } };
       const feed = (u8, flag) => {
         const r = JSON.parse(__wjs2_zlib_stream_feed(id, u8 ?? null, flag));
         if (r.code !== undefined) {
-          const err = r.code === "ERR_TRAILING_JUNK_AFTER_STREAM_END"
-            ? new TypeError(r.msg) : new Error(r.msg);
+          // node 口径：数据错一律 TypeError（空文案）+ 引擎码（corrupt 套件点名双侧同错）。
+          const err = new TypeError();
           err.code = r.code;
           fail(err);
           return false;
@@ -567,14 +600,35 @@ function __wjs2_makeCSClass(name, kinds, reject) {
         cancel() { closed = true; free(); },
       });
       const toU8 = (chunk) => {
+        // node 口径（bad-chunks 套件矩阵）：string 编码收；ArrayBuffer/普通视图收；
+        // SharedArrayBuffer（含其背视图）拒 ERR_INVALID_ARG_TYPE；null 拒
+        // ERR_STREAM_NULL_VALUES；其余拒 ERR_INVALID_ARG_TYPE。读写双侧同错
+        // （sink 抛 → write 拒绝 + fail 落 readable）。
+        const bad = (code) => {
+          const e = new TypeError("The provided value is not of type '(ArrayBuffer or ArrayBufferView)'");
+          e.code = code;
+          throw e;
+        };
+        if (typeof chunk === 'string') return new TextEncoder().encode(chunk);
         if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
-        if (ArrayBuffer.isView(chunk)) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-        throw new TypeError(`Failed to construct '${name}': The provided value is not of type '(ArrayBuffer or ArrayBufferView)'`);
+        if (typeof SharedArrayBuffer !== 'undefined' && chunk instanceof SharedArrayBuffer) {
+          bad('ERR_INVALID_ARG_TYPE');
+        }
+        if (ArrayBuffer.isView(chunk)) {
+          if (typeof SharedArrayBuffer !== 'undefined' && chunk.buffer instanceof SharedArrayBuffer) {
+            bad('ERR_INVALID_ARG_TYPE');
+          }
+          return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        }
+        if (chunk === null) bad('ERR_STREAM_NULL_VALUES');
+        bad('ERR_INVALID_ARG_TYPE');
       };
       const writable = new WritableStream({
         write(chunk) {
           if (closed || freed) return;
-          const u8 = toU8(chunk);
+          // 坏块：fail 落 readable + 抛出拒 write（双侧同错，bad-chunks 套件点名）。
+          let u8;
+          try { u8 = toU8(chunk); } catch (e) { fail(e); throw e; }
           if (done) {
             // done 后写入 = 尾垃圾（type-error 套件 [valid, empty] case；
             // 错误落 readable 而非 write 拒绝——pipeTo 语义下后者走 cancel）
@@ -586,7 +640,8 @@ function __wjs2_makeCSClass(name, kinds, reject) {
           feed(u8, 0);
         },
         close() {
-          if (closed || freed) return;
+          // fail 后再 close 拒首错（corrupt 套件点名 close 拒绝；正常关走下）。
+          if (closed || freed) { if (failErr) return Promise.reject(failErr); return; }
           const ok = feed(null, __wjs2_csFinishFlag(kind));
           if (ok) { closed = true; ctrl.close(); }
           free();
@@ -603,4 +658,53 @@ function __wjs2_makeCSClass(name, kinds, reject) {
 }
 globalThis.CompressionStream = __wjs2_makeCSClass("CompressionStream", __CS_KINDS, false);
 globalThis.DecompressionStream = __wjs2_makeCSClass("DecompressionStream", __DS_KINDS, true);
+// node 内部流互操作（internal/streams/end-of-stream eosWeb）：实例需
+// `Symbol.for('nodejs.webstream.isClosedPromise')`（{promise} 形）。
+// node 语义：延迟物化、结算随流关闭/出错；此处以 closeWaiters 直供
+// （泵在排空关闭/出错时结算）。注意 node 26 已无流级 `.closed`，不补
+// （reader/writer 级 .closed 照旧），保持同形。
+{
+  const kIsClosedPromise = Symbol.for('nodejs.webstream.isClosedPromise');
+  Object.defineProperty(globalThis.ReadableStream.prototype, kIsClosedPromise, {
+    get() {
+      const st = __wjs2_rsState.get(this);
+      return { promise: new Promise((resolve, reject) => {
+        if (st.error !== undefined) reject(st.error);
+        else if (st.closed && !st.queue.length && !st.byteLen) resolve(undefined);
+        else { st.closeWaiters.push({ resolve: () => resolve(undefined), reject }); __wjs2_rsPump(st); }
+      }) };
+    },
+    configurable: true,
+  });
+  Object.defineProperty(globalThis.WritableStream.prototype, kIsClosedPromise, {
+    get() {
+      const st = __wjs2_wsState.get(this);
+      return { promise: new Promise((resolve, reject) => {
+        if (st.errored) reject(st.error);
+        else if (st.closed) resolve(undefined);
+        else { st.closeWaiters = st.closeWaiters || []; st.closeWaiters.push({ resolve, reject }); }
+      }) };
+    },
+    configurable: true,
+  });
+  // addAbortSignal 互操作：controller.error 直达（读端经控制器 error，
+  // 写端经控制器 error；字节流控制器无 error 法即 no-op，真机同款）。
+  const kControllerErrorFunction = Symbol.for('nodejs.webstream.controllerErrorFunction');
+  Object.defineProperty(globalThis.ReadableStream.prototype, kControllerErrorFunction, {
+    value(error) {
+      const st = __wjs2_rsState.get(this);
+      // node 同款：仅 default 控制器直达 error，字节流保持 no-op。
+      if (st.isBytes) return;
+      const c = st.controller;
+      if (c && typeof c.error === 'function') c.error(error);
+    },
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(globalThis.WritableStream.prototype, kControllerErrorFunction, {
+    value(error) { __wjs2_wsError(this, error); },
+    configurable: true,
+    writable: true,
+  });
+}
 "#;

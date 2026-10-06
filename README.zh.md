@@ -120,4 +120,4 @@ bash scripts/check-lines.sh        # 全部 .rs / 内嵌 JS ≤ 1000 行
 
 ## 许可
 
-NPL-1.1（见 [LICENSE](./LICENSE)）。vendored 第三方 JS 保留其 MIT 头。
+MPL-2.0（见 [LICENSE](./LICENSE)）。vendored 第三方 JS 保留其 MIT 头。

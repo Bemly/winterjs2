@@ -123,4 +123,4 @@ Working conventions: [AGENTS.md](./AGENTS.md) · progress: [`docs/plan3.md`](./d
 
 ## License
 
-NPL-1.1 (see [LICENSE](./LICENSE)). Vendored third-party JS keeps its MIT headers.
+MPL-2.0 (see [LICENSE](./LICENSE)). Vendored third-party JS keeps its MIT headers.

@@ -3,7 +3,7 @@ name = "winterjs2"
 version = "26.10.3"   # CalVer YY.MM.发版日（26.10.3 = 2026-10-03），见 AGENTS.md §1
 edition = "2024"
 description = "A Bun-like JS runtime on Mozilla SpiderMonkey (via servo/mozjs)"
-license = "NPL-1.1"
+license = "MPL-2.0"
 
 # rustc 的 check-cfg 尚不认识 ohos（src/alloc.rs 移动端门控用）与 tokio_unstable
 #（tokio-console 实验埋点门控，经 RUSTFLAGS 传入）：此处声明为预期值，

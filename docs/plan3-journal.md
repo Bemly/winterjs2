@@ -1435,3 +1435,49 @@ G1/G2/G3/G9 已收官。）
 - KeyObject.from(CryptoKey) 经 prelude 内部槽桥接（secret；绕过可伪造 getter）。
 - 转绿：getRandomValues/methods-not-async/hidden-slots；node crypto 黑盒 26/26、
   Rust crypto 单测 15/15。
+
+## 2026-10-20 worker W1 轮（MessagePort 语义，16 件转绿）
+
+- 范围：base18 worker DIFF 50 件中的 MessagePort 语义簇。转绿（逐件单跑复验）：
+  message-port/close/constructor/transfer-target/transfer-closed/
+  transfer-duplicate/transfer-self/untransferable/arraybuffer/drain/
+  infinite-message-loop/message-port-transferring/receive-message/
+  terminate-transfer-list/transfer-terminate/message-channel/event/
+  mark-as-uncloneable/workerdata-messageport/terminate-unrefed（19 件）。
+- 改动（commit 245352d，已 push；构建 0 警告、冒烟 5/5、黑盒 worker 14/14）：
+  - 构造门：MessagePort/MessageChannel 函数化（class 无 new 抛带不上 code），
+    内部令牌 `__kPortInternal`；原型只留 node 同款 8 名（内部管线全迁实例闭包/模块函数）。
+  - close(cb)：cb 经 once('close') 随事件触发，非函数忽略，事件恒异步；
+    teardown 崩溃根因——Rust 侧 uncount 必须与发射同 microtask（先 uncount
+    会让循环排空进 teardown，悬空发射 SEGV；139 定位：等长改名对照 + 二分）。
+  - transfer 归一：裸 array/可迭代/选项 `{transfer}` 三形 + 两套 exact 文案；
+    视图/SAB/杂项条目一律 'Found invalid value in transferList.'（真机逐字，
+    原视图转移系误实现）；重复 AB/端口各有专用文案；生成器单次消费（判定与
+    组装共享清单）。
+  - ports 透传：信封 `p` 清单序 nonce，收端先承接后 walk（同 nonce 多槽共享）；
+    同步收信无 ports 上下文，残留槽 withdraw。
+  - 自杀式投递（transfer 纠缠对端）：warning + 通道丢失 + 发送端失活；
+    判定须在转移前（转移后源端 neutered 误判 detached）。
+  - 对端关闭透出本端 'close'（PortClose 派发 + `peer-close` 经 `__ev`）；
+    `__peerClosed` 压倒一切（此后 close() 完全静默，mixed 探针）；
+    worker 死传导：WExit  swept 可达死链（转发器收件箱 closed + 传递闭包）
+    并透 close（channel 块 3 根因）。
+  - 跨会话 ID 碰撞：`Route::Local` 加互惠校验（`q.peer == p.id`），否则跨线程
+    回包误投本地同 id 端口（message-channel 回环根因）。
+  - hasRef 真机化（fresh false，message 监听挂载即 ref，覆盖 unref 后再挂载）；
+    inspect `MessagePort { active, refed }`（init-hook 逐字）。
+  - markAsUncloneable 影响全局 structuredClone（AB/视图/SAB 豁免）；
+    Blob/File 字节 roundtrip（prelude `__wjs2_blobBytes` 内部导出）。
+  - process 'worker' 事件（Worker 实例，异步）；terminate() 即 ref；
+    worker eval/file 完成值不回显（channel `[object Object]` 根因）；
+    TextDecoder SAB 快照拷贝解码。
+  - Rust natives 新增 `port_is_peer`/`port_is_active`（`port_query` 共用核）。
+- 坑（追入 pitfalls-06，编号续排 4.280 起，略）。
+- 记档另案（本轮界外）：WASM Module/SAB 真共享（引擎墙）/
+  JSTransferable+internal kTransfer（internal 面）/js_stream binding（infra）/
+  async_hooks init（infra）/postMessageToThread（新 API 专项）/
+  message-before-close TIMEOUT（事件循环深水）/inspect 完整 EventTarget 形。
+- 环境备注：本机无 /opt/homebrew（AGENTS §3 路径失效），构建改用 Xcode
+  toolchain libclang（`LIBCLANG_PATH=/Applications/Xcode.app/.../usr/lib`）；
+  无 cargo-nextest（改 cargo test 单 target）；自建 `~/wjs-data/probe/runone.sh`
+  做 PID 精确限时（`pkill -f` 会误杀自家 shell）。

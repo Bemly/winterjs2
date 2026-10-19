@@ -186,35 +186,6 @@ fn settle_tla(
     }
 }
 
-/// 消费当前 pending exception 并按 D4 渲染（TTY miette / 非 TTY node 形，
-/// 经 repl_out CRLF 化）。REPL 错误与 TLA rejected 共用。返回是否渲染了。
-fn render_repl_error(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, line: &str) -> bool {
-    let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-    rooted!(&in(&mut realm) let mut exc = UndefinedValue());
-    // SAFETY: realm 内读取 pending exception（消费异常值）
-    match { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) } {
-        Some(info) => {
-            let kind = exc_name(&mut realm, exc.get());
-            let err = crate::error::Error::script_with_kind(
-                "repl.js",
-                line,
-                info.line.max(1),
-                info.col,
-                info.message,
-                kind,
-            );
-            let color =
-                crate::error::render_color().unwrap_or(crate::settings::ColorChoice::Auto);
-            repl_out(&err.render_string(color), true);
-            true
-        }
-        None => {
-            repl_out("uncaught JS exception (no stack info)", true);
-            false
-        }
-    }
-}
-
 /// REPL 单行求值：经典脚本求值 + 完成值打印。
 /// top-level await（R6，node lib/repl.js defaultEval 同构语义）：原码编译失败
 /// 且行含 `await` 时试 async-IIFE 包装重试（`await` 在 async 函数内则原码本就
@@ -238,15 +209,14 @@ async fn repl_eval(
             return ReplStep::Exited(code);
         }
         // TLA 试错：先消费原错（info/exc 在手），包装可编译即改走挂起。
-        let mut info = None;
-        let mut kind: Option<String> = None;
-        {
+        let (info, kind): (Option<_>, Option<String>) = {
             let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
             rooted!(&in(&mut realm) let mut exc = UndefinedValue());
             // SAFETY: realm 内读取 pending exception（消费异常值）
-            info = { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) };
-            kind = exc_name(&mut realm, exc.get());
-        }
+            let info = { let i = error_info_from_exception_stack(&mut realm, exc.handle_mut()); crate::jsapi_glue::fill_message(&mut realm, i, exc.get()) };
+            let kind = exc_name(&mut realm, exc.get());
+            (info, kind)
+        };
         let is_syntax = kind.as_deref() == Some("SyntaxError");
         if is_syntax && line.contains("await") {
             // 包装文本经底座桥（prelude/repl_complete：末表达式 return 化 +

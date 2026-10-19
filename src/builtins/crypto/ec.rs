@@ -35,7 +35,7 @@ pub unsafe extern "C" fn ec_generate(
             report_error(&mut cx, "OperationError: cannot get random values");
             return false;
         }
-        if (mask_top) {
+        if mask_top {
             raw[0] &= 0x01;
         }
         let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {

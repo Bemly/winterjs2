@@ -37,6 +37,7 @@ pub mod streams;
 pub mod symbols;
 pub mod test_mock;
 pub mod timers;
+pub mod tls_common;
 pub mod types;
 pub mod url;
 pub mod util;
@@ -62,6 +63,8 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/assert", assert::SOURCE),
     ("node:internal/options", options::SOURCE),
     ("node:internal/timers", timers::SOURCE),
+    // tls 域：套件直引 `internal/tls/common`（translatePeerCertificate）。
+    ("node:internal/tls/common", tls_common::SOURCE),
     ("node:internal/snapshot", snapshot::SOURCE),
     ("node:internal/blob", blob::SOURCE),
     ("node:internal/process/task_queues", process_task_queues::SOURCE),

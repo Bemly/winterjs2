@@ -49,6 +49,23 @@ class X509Certificate {
       der = pem.der;
     } else {
       der = __cryptBytes(pemOrDer, "cert");
+      // Buffer/TypedArray 亦可携 PEM 文本（getCACertificates 回包即此形；
+      // node 按 PEM 解，真机逐项实测）。垃圾字节（非 PEM 非 DER）走
+      // no-start-line（真机口径），不进 native 报无码错。
+      if (der.length >= 27) {
+        const head = String.fromCharCode(...der.subarray(0, 27));
+        if (head.includes("-----BEGIN ")) {
+          const pem = __pemDecode(Buffer.from(der).toString("latin1"));
+          if (pem && pem.label === "CERTIFICATE") der = pem.der;
+        }
+      }
+      if (der.length === 0 || (der[0] !== 0x30 && !String.fromCharCode(...der.subarray(0, Math.min(27, der.length))).includes("-----BEGIN "))) {
+        const e = new Error("error:0480006C:PEM routines::no start line");
+        e.library = "PEM routines";
+        e.reason = "no start line";
+        e.code = "ERR_OSSL_PEM_NO_START_LINE";
+        throw e;
+      }
     }
     this.__der = Buffer.from(der);
     this.__info = JSON.parse(__cryptCall(() => __wjs2_x509_parse(der)));

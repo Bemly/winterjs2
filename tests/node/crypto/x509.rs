@@ -47,6 +47,40 @@ try { new Certificate(); } catch (e) { console.log("legacy-cert", e.code === "ER
 }
 
 #[test]
+fn x509_pem_in_buffer_and_tls_common() {
+    // X509Certificate 接 Buffer 装 PEM（getCACertificates 回包形；真机解 PEM），
+    // internal/tls/common translatePeerCertificate 纯形（translate 套件）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    dir.child("c.pem").write_str(&key.cert.pem()).unwrap();
+    let out = run_fs_file(
+        &dir,
+        "q.mjs",
+        r#"
+import { X509Certificate } from "node:crypto";
+import { translatePeerCertificate } from "node:internal/tls/common";
+import fs from "node:fs";
+const bufPem = fs.readFileSync("c.pem");
+const a = new X509Certificate(bufPem);
+const b = new X509Certificate(bufPem.toString("utf8"));
+console.log("buf-pem", a.serialNumber === b.serialNumber, a.subject === b.subject);
+console.log("raw-der", Buffer.isBuffer(a.raw));
+try { new X509Certificate(Buffer.from("nope")); } catch (e) { console.log("bad-buf", e.code); }
+console.log("tcp-null", translatePeerCertificate(null) === null, translatePeerCertificate(0) === null);
+console.log("tcp-one", translatePeerCertificate(1) === 1);
+console.log("tcp-info", JSON.stringify(translatePeerCertificate({ infoAccess: "A:1\nB:2" })));
+"#,
+    );
+    assert!(out.contains("buf-pem true true"), "out: {out}");
+    assert!(out.contains("raw-der true"), "out: {out}");
+    assert!(out.contains("bad-buf ERR_OSSL_PEM_NO_START_LINE"), "out: {out}");
+    assert!(out.contains("tcp-null true true"), "out: {out}");
+    assert!(out.contains("tcp-one true"), "out: {out}");
+    assert!(out.contains("\"A\":[\"1\"]"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn x509_verify() {
     let dir = assert_fs::TempDir::new().unwrap();
     let key = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();

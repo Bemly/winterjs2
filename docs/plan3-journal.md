@@ -1481,3 +1481,28 @@ G1/G2/G3/G9 已收官。）
   toolchain libclang（`LIBCLANG_PATH=/Applications/Xcode.app/.../usr/lib`）；
   无 cargo-nextest（改 cargo test 单 target）；自建 `~/wjs-data/probe/runone.sh`
   做 PID 精确限时（`pkill -f` 会误杀自家 shell）。
+
+## 2026-10-20 https H1 轮（createServer 双派发 + 响应 HWM，15 件转绿）
+
+- 根因（hwm 系 15 件同形 `ERR_HTTP_HEADERS_SENT`）：`node:https` 的
+  `createServer(options, cb)` 经 `new Server(options, cb)`（构造器已挂
+  listener）后再 `server.on("request", cb)`——每请求双派发，第二次
+  writeHead 必炸。http 侧 `createServer` 直建 base 无此问题（https 独有）。
+  修法：createServer 只 `return new Server(options, cb)`。
+- 转绿（逐件单跑复验）：byteswritten/drain/session-eviction/
+  expect-continue-reuse-race/insecure-parse-per-stream/
+  max-header-size-per-stream/max-headers-count/request-arguments/
+  selfsigned-no-keycertsign/server-close-all/server-options-incoming-message/
+  server-options-server-response/socket-options/truncate（14 件）+ hwm
+  （响应 readableHWM 与请求选项同源，`__resHWM`，http 侧高水位套件零回归）。
+- 余：TLS verify/SNI 簇（8 件，随 P2-tls；webpki 严格 vs OpenSSL 宽松系）/
+  pfx-loadPKCS12 未实现（bound 候选，随 ALPNCallback/DHE）/
+  unix-socket（socketPath 误走 443）/set-timeout-server+resume TIMEOUT/
+  abort-controller/servername/session-injection-reuse/sockets-leak/
+  checkServerIdentity/autoselectfamily/connect-address-family/
+  keep-alive-drop-requests/server-close-idle/connections-checking-leak/
+  simple/strict/host-headers（散件，H2 轮）。
+- R16b 定级（base18 171 红：TIMEOUT 52/push 17/diagnostics 9/compat-shell 12/
+  tls 7/frame 6/other-core 68）：A 否决（hyper 底座+C 壳已 98/256，重写不成）；
+  B 拟 bound（push 17/ALTSVC-ORIGIN/帧错映射/diagnostics 9/tls 7，用户可推翻）；
+  C 续啃（compat 壳+other-core 壳可达面约 40，C2/C3 轮）。

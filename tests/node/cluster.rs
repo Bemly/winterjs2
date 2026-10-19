@@ -87,11 +87,64 @@ console.log("end-ok");
     assert!(out.contains("policy-bad ERR_INVALID_ARG_VALUE"), "out: {out}");
     assert!(out.contains("settings0 {}"), "out: {out}");
     assert!(out.contains("settings1 x.js a true"), "out: {out}");
-    assert!(out.contains("settings2 {}"), "out: {out}");
+    // setupMaster({}) 合并保留（node 累积口径，非清空）。
+    assert!(out.contains("\"exec\":\"x.js\""), "out: {out}");
+    assert!(out.contains("\"silent\":true"), "out: {out}");
     assert!(out.contains("setup-bad ERR_INVALID_ARG_TYPE"), "out: {out}");
     assert!(out.contains("worker-undef true function"), "out: {out}");
     assert!(out.contains("fork-env-ok number"), "out: {out}");
     assert!(out.contains("fork-env-exit"), "out: {out}");
     assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn cluster_listening_message_error_faces() {
+    // P0 listening 中继 + P2 双路消息 + error 转发 + disconnect 链式/exit 必达。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "r.mjs",
+        r#"
+import cluster from "node:cluster";
+import net from "node:net";
+if (cluster.isPrimary) {
+  const w = cluster.fork();
+  w.on("listening", (addr) => {
+    console.log("p-listening", addr.port > 0, w.id);
+    w.send("ping");
+  });
+  w.on("message", (m) => {
+    console.log("p-message", m);
+    console.log("dis-ret", w.disconnect() === w);
+  });
+  // 无柄 worker 退出后 exit 必达（主进程被线程续命，unref 已移除）。
+  w.on("exit", (c) => console.log("p-exit", c));
+} else {
+  const srv = net.createServer((s) => s.end("x"));
+  srv.listen(0, "127.0.0.1", () => {
+    console.log("w-listening", srv.address().port > 0);
+    cluster.worker.once("error", (e) => console.log("w-error", e));
+    process.emit("error", "boom");
+    let n = 0;
+    const done = () => {
+      if (++n === 2) {
+        console.log("w-both");
+        process.send("back");
+      }
+    };
+    process.on("message", done);
+    cluster.worker.on("message", done);
+  });
+}
+"#,
+    );
+    assert!(out.contains("w-listening true"), "out: {out}");
+    assert!(out.contains("w-error boom"), "out: {out}");
+    assert!(out.contains("w-both"), "out: {out}");
+    assert!(out.contains("p-listening true 1"), "out: {out}");
+    assert!(out.contains("p-message back"), "out: {out}");
+    assert!(out.contains("dis-ret true"), "out: {out}");
+    assert!(out.contains("p-exit 0"), "out: {out}");
     dir.close().unwrap();
 }

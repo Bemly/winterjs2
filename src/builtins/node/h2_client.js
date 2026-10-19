@@ -56,6 +56,9 @@ class ClientHttp2Stream extends Duplex {
           method: this.sentHeaders[":method"], path: this.sentHeaders[":path"],
           scheme: this.sentHeaders[":scheme"], authority: this.sentHeaders[":authority"],
           waitTrailers: this.__waitTrailers,
+          // node request() 缺省：无 body 意图的方法（GET/HEAD/DELETE）END_STREAM
+          // 随头出线（endafterheaders 套件）；POST 等分开发。native 不再按体空猜。
+          endStream: !!this.__endStream,
           headers: Object.entries(this.sentHeaders)
             .filter(([k]) => !k.startsWith(":"))
             .map(([k, v]) => [
@@ -105,7 +108,8 @@ class ClientHttp2Stream extends Duplex {
   }
   __onResponse(headers, flags) {
     this.__responseReceived = true;
-    if (flags & 1) this.endAfterHeaders = true;
+    // endAfterHeaders 是请求侧标志（HEADERS 帧是否带 END_STREAM），
+    // 不由应答 flags 改写（endafterheaders 套件：GET 分开 end 即 false）。
     this.emit("response", headers, flags);
   }
   __onData(u8) { this.push(Buffer.from(u8)); }
@@ -276,7 +280,7 @@ class ClientHttp2Session extends EventEmitter {
     }
     return this[kSocket];
   }
-  get alpnProtocol() { return this.__secure ? "h2" : false; }
+  get alpnProtocol() { return this.__secure ? "h2" : "h2c"; }
   get localSettings() { return this.__settings; }
   get remoteSettings() { return this.__remoteSettings; }
   get pendingSettingsAck() { return this.__pendingSettingsAck; }
@@ -289,6 +293,9 @@ class ClientHttp2Session extends EventEmitter {
     }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
+    // kTimeout 形状与服务端会话一致（compat-socket 套件同口径）。
+    if (this[kTimeout] === undefined || this[kTimeout] === null) this[kTimeout] = { _idleTimeout: 0 };
+    this[kTimeout]._idleTimeout = ms;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);
     if (ms > 0 && !this.closed && !this.destroyed) {
       this.__timeoutTimer = setTimeout(() => {
@@ -394,8 +401,11 @@ class ClientHttp2Session extends EventEmitter {
   }
   setNextStreamID(id) {
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
-    if (typeof id !== "number" || !Number.isInteger(id) || id < 0 || id > 2147483647) {
-      throw __code("ERR_OUT_OF_RANGE", "id", id);
+    // node core.js 口径：非数 ARG_TYPE；整数 (0, 2^32]，文案逐字
+    //（setNextStreamID-errors 套件点名 `> 0 and <= 4294967295`）。
+    if (typeof id !== "number") throw __code("ERR_INVALID_ARG_TYPE", "id", "number", id);
+    if (!Number.isInteger(id) || id <= 0 || id > 4294967295) {
+      throw new codes.ERR_OUT_OF_RANGE("id", "> 0 and <= 4294967295", id);
     }
     this.__seq = id;
     return this;
@@ -562,12 +572,28 @@ class ClientHttp2Session extends EventEmitter {
       if (h[":authority"] === undefined && h.host === undefined) h[":authority"] = this.__authority;
       if (h[":scheme"] === undefined) h[":scheme"] = this.__secure ? "https" : "http";
       if (h[":path"] === undefined) h[":path"] = "/";
+      // host-only 请求：用户未给 :authority，nghttp2 线上即省略；
+      // h2 底座强制要求 authority 只能线上传、服务端再剥（serverrequest-host 套件）。
+      if (h[":authority"] === undefined && h.host !== undefined) h["x-wjs-no-authority"] = "1";
     } else {
       if (h[":authority"] === undefined) throw __code("ERR_HTTP2_CONNECT_AUTHORITY");
       if (h[":scheme"] !== undefined) throw __code("ERR_HTTP2_CONNECT_SCHEME");
       if (h[":path"] !== undefined) throw __code("ERR_HTTP2_CONNECT_PATH");
     }
     __mapToHeadersCheck(h);
+    // nghttp2 口径：:path 含 CTL/空格即 PROTOCOL_ERROR（unescaped-path 套件；
+    // hyper 建包错文案不对齐，此处先验，流级 error + close）。
+    if (typeof h[":path"] === "string" && /[\x00-\x20\x7f]/.test(h[":path"])) {
+      const sid = this.__seq;
+      this.__seq += 2;
+      const bst = new ClientHttp2Stream(this, sid, h, options);
+      process.nextTick(() => {
+        if (bst.destroyed) return;
+        bst.emit("error", __h2Err("ERR_HTTP2_STREAM_ERROR", "Stream closed with error code NGHTTP2_PROTOCOL_ERROR"));
+        bst.destroy();
+      });
+      return bst;
+    }
     const pseudoKeys = Object.keys(h).filter((k) => k.startsWith(":"));
     const canonical = [":method", ":scheme", ":authority", ":path"];
     const differs = pseudoKeys.length !== canonical.length ||
@@ -597,12 +623,15 @@ class ClientHttp2Session extends EventEmitter {
       }
     }
     if (!st.__deferred) {
-      if (this.connecting && !this.closed) this.__pendingOpens.push(st);
-      else st.__openNow(null);
       // node isPayloadMeaningless：GET/HEAD/DELETE 缺省 endStream=true → 可写侧即尽，
       // 收完应答流即 'close'（修前可写侧悬着，req 'close' 永不到）。
+      // 意图记流上，open 时带给 native 定 HEADERS 是否带 END_STREAM
+      //（endafterheaders 套件：GET 随头 fin，POST 分开）——先记再开。
       const m = String(st.sentHeaders[":method"]);
       const endStream = options?.endStream ?? (m === "GET" || m === "HEAD" || m === "DELETE");
+      st.__endStream = endStream;
+      if (this.connecting && !this.closed) this.__pendingOpens.push(st);
+      else st.__openNow(null);
       if (endStream) st.end();
     }
     return st;

@@ -27,7 +27,7 @@ struct TlsClientOpts {
     servername: Option<String>,
 }
 
-/// 开流请求 JSON：`{method, path, scheme, authority, waitTrailers, headers: [[k,v]]}`。
+/// 开流请求 JSON：`{method, path, scheme, authority, waitTrailers, endStream, headers: [[k,v]]}`。
 #[derive(Debug, serde::Deserialize)]
 struct OpenReq {
     method: String,
@@ -39,6 +39,10 @@ struct OpenReq {
     authority: String,
     #[serde(rename = "waitTrailers", default)]
     wait_trailers: bool,
+    // JS 缺省意图（GET/HEAD/DELETE 无 body 即随头 fin；POST 分开；
+    // endafterheaders 套件）。native 不再按体空猜。
+    #[serde(rename = "endStream", default)]
+    end_stream: bool,
     // 值可为 string 或 array（set-cookie 等多值头；数组展开为多条线，
     // node 客户端同口径）。此前 String 收不了 sequence 即
     // "bad open params: invalid type: sequence"（cookies/multiheaders 套件）。
@@ -178,13 +182,12 @@ async fn drive_session<S>(
                         for (k, v) in parsed_headers {
                             builder = builder.header(k.as_str(), v.as_str());
                         }
-                        // 请求体经 ChanBody：空体 done=true → is_end_stream → END_STREAM
-                        // 随头出线（GET 系即时开流）；非体先 Data 后 End；
-                        // waitTrailers 悬置 EndPending 等 trailer 命令再闭流。
+                        // 请求体经 ChanBody：END_STREAM 随头与否听 JS 意图
+                        //（endafterheaders 套件：GET 缺省随头 fin，POST 分开），
+                        // 不再按体空猜——同 tick 的 req.end() 不得抢跑。
+                        // 有体即先 Data 后 End；waitTrailers 悬置 EndPending。
                         let (utx, urx) = tokio::sync::mpsc::unbounded_channel::<BodyMsg>();
-                        // done=true 仅空体无 trailer（END_STREAM 随头）；有体即 false，
-                        // 否则 poll_frame 首轮即 None，Data 永不到线。
-                        let mut done = true;
+                        let mut done = req.end_stream && body.is_empty() && !req.wait_trailers;
                         if !body.is_empty() {
                             let _ = utx.send(BodyMsg::Data(bytes::Bytes::from(body)));
                             done = false;
@@ -196,6 +199,10 @@ async fn drive_session<S>(
                         } else if req.wait_trailers {
                             let _ = utx.send(BodyMsg::EndPending);
                             done = false;
+                        } else if !req.end_stream {
+                            // 空体但意不在随头 fin：显式 End 消息走 Data 后，
+                            // 迫 hyper 分开发（END_STREAM 不随头）。
+                            let _ = utx.send(BodyMsg::End(None));
                         }
                         if req.wait_trailers {
                             uploads.lock().await.insert(stream_id, utx);

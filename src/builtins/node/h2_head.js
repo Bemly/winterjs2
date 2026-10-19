@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { Readable, Writable, Duplex } from "node:stream";
 import { codes } from "node:internal/errors";
 import { kSocket } from "node:internal/http2/util";
+import { kTimeout } from "node:internal/timers";
 import { addAbortListener } from "node:internal/events/abort_listener";
 import * as net from "node:net";
 import fs from "node:fs";
@@ -37,9 +38,10 @@ function __h2Err(code, msg, name = "Error") {
 const __codes = {
   ERR_HTTP2_STATUS_INVALID: (s) => __h2Err("ERR_HTTP2_STATUS_INVALID", `Invalid status code: ${s}`, "RangeError"),
   ERR_HTTP2_INFO_STATUS_NOT_ALLOWED: () => __h2Err("ERR_HTTP2_INFO_STATUS_NOT_ALLOWED", "Informational status codes cannot be used", "RangeError"),
-  ERR_HTTP2_INVALID_INFO_STATUS: (s) => __h2Err("ERR_HTTP2_INVALID_INFO_STATUS", `Invalid informational status code: ${s}`),
+  ERR_HTTP2_INVALID_INFO_STATUS: (s) => __h2Err("ERR_HTTP2_INVALID_INFO_STATUS", `Invalid informational status code: ${s}`, "RangeError"),
+  ERR_HTTP2_STATUS_101: () => __h2Err("ERR_HTTP2_STATUS_101", "HTTP status code 101 (Switching Protocols) is forbidden in HTTP/2"),
   ERR_HTTP2_INVALID_PSEUDOHEADER: (s) => __h2Err("ERR_HTTP2_INVALID_PSEUDOHEADER", `"${s}" is an invalid pseudoheader or is used incorrectly`, "TypeError"),
-  ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED: () => __h2Err("ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED", "Cannot set HTTP/2 pseudo headers after regular headers", "TypeError"),
+  ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED: () => __h2Err("ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED", "Cannot set HTTP/2 pseudo-headers", "TypeError"),
   ERR_HTTP2_HEADER_SINGLE_VALUE: (s) => __h2Err("ERR_HTTP2_HEADER_SINGLE_VALUE", `Header field "${s}" must only have a single value`, "TypeError"),
   ERR_HTTP2_TRAILERS_CANNOT_BE_SENT: () => __h2Err("ERR_HTTP2_TRAILERS_CANNOT_BE_SENT", "Trailers cannot be sent at this stage."),
   ERR_HTTP2_TRAILERS_ALREADY_SENT: () => __h2Err("ERR_HTTP2_TRAILERS_ALREADY_SENT", "Trailers has already been sent."),
@@ -80,7 +82,7 @@ const __codes = {
   ERR_HTTP2_CONNECT_AUTHORITY: () => __h2Err("ERR_HTTP2_CONNECT_AUTHORITY", ":authority header is required for CONNECT requests"),
   ERR_HTTP2_CONNECT_PATH: () => __h2Err("ERR_HTTP2_CONNECT_PATH", "The :path header is forbidden for CONNECT requests"),
   ERR_HTTP2_CONNECT_SCHEME: () => __h2Err("ERR_HTTP2_CONNECT_SCHEME", "The :scheme header is forbidden for CONNECT requests"),
-  ERR_HTTP2_HEADERS_AFTER_RESPOND: () => __h2Err("ERR_HTTP2_HEADERS_AFTER_RESPOND", "Cannot specify additional headers after response has initiated"),
+  ERR_HTTP2_HEADERS_AFTER_RESPOND: () => __h2Err("ERR_HTTP2_HEADERS_AFTER_RESPOND", "Cannot specify additional headers after response initiated"),
   ERR_HTTP2_INVALID_HEADER_VALUE: (v, n) => __h2Err("ERR_HTTP2_INVALID_HEADER_VALUE", `Invalid header value: "${v}" for header "${n}"`),
   ERR_HTTP2_NO_SOCKET_MANIPULATION: () => __h2Err("ERR_HTTP2_NO_SOCKET_MANIPULATION", "HTTP/2 sockets should not be directly manipulated (e.g. read and written)"),
   ERR_HTTP2_STREAM_SELF_DEPENDENCY: () => __h2Err("ERR_HTTP2_STREAM_SELF_DEPENDENCY", "A stream cannot depend on itself"),
@@ -105,7 +107,10 @@ function __h2RequestPriorityDeprecate() {
 // node Http2Stream.close(code, callback) 门：code 须 uint32 整数、callback 须函数（有则）。
 function __validateStreamClose(code, cb) {
   if (typeof code !== "number") throw __code("ERR_INVALID_ARG_TYPE", "code", "number", code);
-  if (!Number.isInteger(code) || code < 0 || code > 4294967295) {
+  // node 口径分两档：非整数 `an integer`，越界整数 `>= 0 && <= 4294967295`
+  //（invalidargtypes 套件 1.01/-1 双断言）。
+  if (!Number.isInteger(code)) throw new codes.ERR_OUT_OF_RANGE("code", "an integer", code);
+  if (code < 0 || code > 4294967295) {
     throw new codes.ERR_OUT_OF_RANGE("code", ">= 0 && <= 4294967295", code);
   }
   if (cb !== undefined && typeof cb !== "function") throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", cb);
@@ -147,6 +152,14 @@ function __validateHeaderName(name) {
   if (!__TOKEN_RE.test(name)) {
     throw __code("ERR_INVALID_HTTP_TOKEN", name);
   }
+}
+// node compat.js 口径：validateString 后 trim().toLowerCase()（headers 套件
+// 点名 ` FOO-BAR\n\t` 与小写同键；get/has/remove/set/append/trailer 全走此口）。
+function __normName(name) {
+  if (typeof name !== "string") {
+    throw __code("ERR_INVALID_ARG_TYPE", "name", "string", name);
+  }
+  return name.trim().toLowerCase();
 }
 function __validateHeaderValue(name, value) {
   if (value === undefined || value === null) {
@@ -416,7 +429,7 @@ class Http2Session extends EventEmitter {
   get remoteSettings() { return this.__remoteSettings; }
   get pendingSettingsAck() { return this.__pendingSettingsAck; }
   get originSet() { return this.encrypted ? undefined : undefined; }
-  get alpnProtocol() { return this.encrypted ? "h2" : false; }
+  get alpnProtocol() { return this.encrypted ? "h2" : "h2c"; }
   get unrefed() { return false; }
   setTimeout(msecs, callback) {
     if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
@@ -425,6 +438,9 @@ class Http2Session extends EventEmitter {
     }
     if (typeof callback === "function") this.once("timeout", callback);
     const ms = Number(msecs) || 0;
+    // 套件直探 `session[kTimeout]._idleTimeout`（compat-socket 口径）。
+    if (this[kTimeout] === undefined || this[kTimeout] === null) this[kTimeout] = { _idleTimeout: 0 };
+    this[kTimeout]._idleTimeout = ms;
     if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);
     if (ms > 0 && !this.closed && !this.destroyed) {
       this.__timeoutTimer = setTimeout(() => {
@@ -531,8 +547,9 @@ class Http2Session extends EventEmitter {
   }
   setNextStreamID(id) {
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
-    if (typeof id !== "number" || !Number.isInteger(id) || id < 0 || id > 2147483647) {
-      throw __code("ERR_OUT_OF_RANGE", "id", id);
+    if (typeof id !== "number") throw __code("ERR_INVALID_ARG_TYPE", "id", "number", id);
+    if (!Number.isInteger(id) || id <= 0 || id > 4294967295) {
+      throw new codes.ERR_OUT_OF_RANGE("id", "> 0 and <= 4294967295", id);
     }
     this.__nextStreamID = id;
     return this;

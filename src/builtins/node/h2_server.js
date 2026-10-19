@@ -27,6 +27,11 @@ class Http2ServerStream extends Duplex {
     // 实例数据属性遮蔽 Duplex 原型只读 getter（socket.set 套件直写直读）
     Object.defineProperty(this, "readable", { value: true, writable: true, configurable: true });
     Object.defineProperty(this, "writable", { value: true, writable: true, configurable: true });
+    // node：end 后 readable=false、finish 后 writable=false、close 后双 false
+    //（compat-socket 套件点名；内部监听先挂，用户监听随后读到翻位值）。
+    this.on("end", () => { this.readable = false; });
+    this.on("finish", () => { this.writable = false; });
+    this.on("close", () => { this.readable = false; this.writable = false; });
     session.__registerStream(this);
   }
   get session() { return this.__session; }
@@ -281,15 +286,22 @@ class Http2ServerStream extends Duplex {
     return;
   }
   additionalHeaders(headers) {
+    // node core.js 门序：毁/关 → INVALID_STREAM；已应答 → HEADERS_AFTER_RESPOND；
+    // 再验对象；:status 定制（101 → STATUS_101，<100/>=200 → INVALID_INFO_STATUS）；
+    // 伪头校验；落 sentInfoHeaders。1xx 下发走 native interim（bound 未通，
+    // 另案；此处只记不发）。
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_STREAM");
-    if (!this.__headersSent) throw __code("ERR_HTTP2_HEADERS_SENT");
-    __validateH2Headers(headers);
+    if (this.__headersSent) throw __code("ERR_HTTP2_HEADERS_AFTER_RESPOND");
+    assertIsObject(headers, "headers");
     const status = headers[":status"];
-    if (status !== undefined) {
-      const s = +status;
-      if (!Number.isInteger(s) || s < 200 || s > 599) {
-        throw __code("ERR_HTTP2_STATUS_INVALID", status);
-      }
+    if (status !== undefined && status !== null) {
+      const s = status | 0;
+      if (s === 101) throw __code("ERR_HTTP2_STATUS_101");
+      if (s < 100 || s >= 200) throw __code("ERR_HTTP2_INVALID_INFO_STATUS", status);
+    }
+    // 伪头仅 :status（node assertValidPseudoHeaderResponse 口径）。
+    for (const k of Object.keys(headers)) {
+      if (k.startsWith(":") && k !== ":status") throw __code("ERR_HTTP2_INVALID_PSEUDOHEADER", k);
     }
     this.__sentInfoHeaders.push(headers);
     return this;
@@ -398,14 +410,16 @@ class Http2ServerStream extends Duplex {
     this.__maybeAutoClose();
     cb();
   }
-  // 双向尽（应答 End 已发 + 请求体已尽）→ 本地收尾（node 流全关后 socket 解绑）
+  // 双向尽（应答 End 已发 + 请求体已尽）→ 本地收尾（node 流全关后 socket 解绑）。
+  // close 单发：只置旗清表，派发交 Duplex autoDestroy（手动再派即 double，
+  // compat-socket 套件点名 1 次）。
   __maybeAutoClose() {
     if (this.__destroyed || this.__closed) return;
     if (!(this.__reqEnded && this.__trailersSent)) return;
     this.__closed = true;
     this.__destroyed = true;
     this.__session?.__unregisterStream(this);
-    queueMicrotask(() => this.emit("close"));
+    this.destroy();
   }
   _destroy(err, cb) {
     // 应答未完成即销毁 → RST 对端（node：无错 RST 干净收尾，客户端仅 'close'；
@@ -456,11 +470,20 @@ class Http2ServerRequest extends Readable {
     this.httpVersionMajor = 2;
     this.httpVersionMinor = 0;
     const method = String(info.method);
-    const authority = String(info.authority ?? "");
+    // host-only 请求：客户端以 x-wjs-no-authority 标记"用户未给 :authority"
+    //（h2 底座强制要求 authority 只能线上传；serverrequest-host 套件要求
+    // 服务端不可见合成的 :authority）。标记头本身同步剥离。
+    const __hpairs = JSON.parse(info.headers);
+    let __noAuth = false;
+    for (const [k] of __hpairs) {
+      if (k === "x-wjs-no-authority") { __noAuth = true; break; }
+    }
+    const authority = __noAuth ? "" : String(info.authority ?? "");
     let phoHint = null;
     const reg = [];
-    for (const [k, v] of JSON.parse(info.headers)) {
+    for (const [k, v] of __hpairs) {
       if (k === "x-wjs-pho") { phoHint = String(v).split(","); continue; }
+      if (k === "x-wjs-no-authority") continue;
       reg.push([k, v]);
     }
     const pseudo = [];
@@ -597,6 +620,17 @@ class Http2ServerResponse extends Writable {
       if (!this.__ended) this.__ended = true;
       queueMicrotask(() => this.emit("close"));
     });
+    // close 单发：Writable autoDestroy 与 stream 转发各派一次，
+    // 真机只认一次——emit 层幂等（compat-socket 套件点名 1 次）。
+    const __resEmit = this.emit.bind(this);
+    this.__closeEmitted = false;
+    this.emit = (ev, ...a) => {
+      if (ev === "close") {
+        if (this.__closeEmitted) return false;
+        this.__closeEmitted = true;
+      }
+      return __resEmit(ev, ...a);
+    };
     stream.__attach(req, this);
   }
   get stream() { return this.__stream; }
@@ -613,19 +647,19 @@ class Http2ServerResponse extends Writable {
   get _header() { return this.headersSent; }
   setHeader(name, value) {
     // node compat.js：名先 trim + 小写；伪头禁用（PSEUDOHEADER_NOT_ALLOWED）；再验 token/值。
-    if (typeof name !== "string") throw __code("ERR_INVALID_ARG_TYPE", "name", "string", name);
-    name = name.trim();
-    if (name.startsWith(":")) throw __code("ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED");
-    __validateHeaderName(name);
-    __validateHeaderValue(name, value);
-    const k = String(name).toLowerCase();
+    // 已发头即 HEADERS_SENT（set/append/remove 三处同门）。
+    if (this.headersSent) throw __code("ERR_HTTP2_HEADERS_SENT");
+    const k = __normName(name);
+    if (k.startsWith(":")) throw __code("ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED");
+    __validateHeaderName(k);
+    __validateHeaderValue(k, value);
     // node compat.js：h2 禁 connection 头——告警一次（进程级）并丢弃。
     if (k === "connection") { __h2ConnectionHeaderWarn(); return this; }
     this.__headers[k] = value;
     return this;
   }
   getHeader(name) {
-    const v = this.__headers[String(name).toLowerCase()];
+    const v = this.__headers[__normName(name)];
     return v === undefined ? undefined : __headerToWire(v);
   }
   getHeaders() {
@@ -634,12 +668,23 @@ class Http2ServerResponse extends Writable {
     return out;
   }
   getHeaderNames() { return Object.keys(this.__headers); }
-  hasHeader(name) { return this.__headers[String(name).toLowerCase()] !== undefined; }
-  removeHeader(name) { delete this.__headers[String(name).toLowerCase()]; return this; }
+  hasHeader(name) { return this.__headers[__normName(name)] !== undefined; }
+  removeHeader(name) {
+    if (this.headersSent) throw __code("ERR_HTTP2_HEADERS_SENT");
+    const k = __normName(name);
+    // node compat.js：删 date 即关 sendDate（send-date 套件点名）。
+    if (k === "date") {
+      this.sendDate = false;
+      return this;
+    }
+    delete this.__headers[k];
+    return this;
+  }
   appendHeader(name, value) {
-    __validateHeaderName(name);
-    __validateHeaderValue(name, value);
-    const k = String(name).toLowerCase();
+    if (this.headersSent) throw __code("ERR_HTTP2_HEADERS_SENT");
+    const k = __normName(name);
+    __validateHeaderName(k);
+    __validateHeaderValue(k, value);
     const cur = this.__headers[k];
     if (cur === undefined) this.__headers[k] = value;
     else if (Array.isArray(cur)) cur.push(value);
@@ -657,9 +702,10 @@ class Http2ServerResponse extends Writable {
   }
   get statusCode() { return this.__statusCode ?? 200; }
   setTrailer(name, value) {
-    __validateHeaderName(name);
-    __validateHeaderValue(name, value);
-    this.__trailers[String(name).toLowerCase()] = value;
+    const k = __normName(name);
+    __validateHeaderName(k);
+    __validateHeaderValue(k, value);
+    this.__trailers[k] = value;
     return this;
   }
   addTrailers(obj) {
@@ -680,7 +726,14 @@ class Http2ServerResponse extends Writable {
         // reason phrase：h2 不支持——与 statusMessage 同一进程级一次性告警（node compat.js）。
         __h2StatusMessageWarn();
       } else if (Array.isArray(r)) {
-        for (let i = 0; i + 1 < r.length; i += 2) this.setHeader(r[i], r[i + 1]);
+        // node compat.js 双形：首元数组即 tuple 形 [[k,v]…]（append 语义，
+        // 重复键并串），否则平铺 [k,v,k,v]（奇数长即 ERR_INVALID_ARG_VALUE）。
+        if (r.length > 0 && Array.isArray(r[0])) {
+          for (const e of r) this.appendHeader(e[0], e[1]);
+        } else {
+          if (r.length % 2 !== 0) throw __code("ERR_INVALID_ARG_VALUE", "headers", r);
+          for (let i = 0; i + 1 < r.length; i += 2) this.appendHeader(r[i], r[i + 1]);
+        }
       } else if (r !== null && typeof r === "object") {
         for (const [k, v] of Object.entries(r)) this.setHeader(k, v);
       }
@@ -771,8 +824,17 @@ class Http2ServerResponse extends Writable {
     if (this.destroyed) return;
     super.destroy();
   }
-  createPushResponse(cb) {
+  createPushResponse(headers, cb) {
+    // 形如 node（头 + 回调双参）：回调非函数即同步抛；流已关走 INVALID_STREAM；
+    // push 本体 hyper 无 server push——DISABLED（bound，另案）。
     if (typeof cb !== "function") throw __code("ERR_INVALID_ARG_TYPE", "callback", "Function", cb);
+    if (headers === null || typeof headers !== "object") {
+      throw __code("ERR_INVALID_ARG_TYPE", "headers", "object", headers);
+    }
+    if (this.__stream.__destroyed || this.__stream.destroyed || this.__stream.__closed) {
+      queueMicrotask(() => cb(__code("ERR_HTTP2_INVALID_STREAM")));
+      return undefined;
+    }
     queueMicrotask(() => cb(__code("ERR_HTTP2_PUSH_DISABLED")));
     return undefined;
   }

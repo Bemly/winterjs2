@@ -237,8 +237,21 @@ class Http2Server extends EventEmitter {
     if (cb) this.once("listening", cb);
     this.__port = Number(port);
     this.__closing = false;
-    this.__id = Number(__wjs2_h2_listen(Number(port), host === null ? "0.0.0.0" : host,
-      JSON.stringify(this.__tlsOpts ?? {}), this));
+    // 同步 bind 口径：native 回 "id:picked"，当 tick 即置 __listening
+    //（error-order 套件 listen(0) 后同步读 address().port）。
+    const __ret = String(__wjs2_h2_listen(Number(port), host === null ? "0.0.0.0" : host,
+      JSON.stringify(this.__tlsOpts ?? {}), this)).split(":");
+    this.__id = Number(__ret[0]);
+    const __picked = Number(__ret[1] ?? 0);
+    if (__picked !== 0) {
+      const __h = host === null ? "0.0.0.0" : host;
+      this.__listening = {
+        address: __h,
+        port: __picked,
+        family: __h.includes(":") ? "IPv6" : "IPv4",
+      };
+      this._connectionKey = `${__h.includes(":") ? 6 : 4}:${__h}:${this.__port}`;
+    }
     return this;
   }
   [Symbol.asyncDispose]() {

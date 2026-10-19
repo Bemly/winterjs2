@@ -66,19 +66,42 @@ pub unsafe extern "C" fn h2_listen(
         report_error(&mut cx, "OperationError: no async runtime for h2 listen");
         return false;
     };
+    // 同步 bind（node 口径：listen(0) 当 tick 即可 address().port；
+    // 仅 'listening' 事件递延）。失败走原异步错误通道（id:0 占位）。
+    let std_bound = std::net::TcpListener::bind((host.as_str(), port as u16));
+    let picked_port: u16 = match &std_bound {
+        Ok(l) => l.local_addr().map(|a| a.port()).unwrap_or(0),
+        Err(_) => 0,
+    };
     let mut cmd_rx = state::net_socket_add(id, target);
-    set_rval_str(&mut cx, &frame, &id.to_string());
+    set_rval_str(&mut cx, &frame, &format!("{id}:{picked_port}"));
     handle.spawn(async move {
-        let bound = tokio::net::TcpListener::bind((host.as_str(), port as u16)).await;
-        let Ok(listener) = bound else {
-            let e = bound.unwrap_err();
-            let code = crate::builtins::node::fs::io_code(&e);
-            let _ = ev_tx.send(NetEvent {
-                id,
-                kind: NetKind::ServerError { code: code.into(), msg: format!("{code}: {e}") },
-            });
-            let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
-            return;
+        let listener = match std_bound {
+            Ok(std_l) => {
+                // from_std 要求非阻塞（tokio 不接管 blocking fd）。
+                let _ = std_l.set_nonblocking(true);
+                match tokio::net::TcpListener::from_std(std_l) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let code = crate::builtins::node::fs::io_code(&e);
+                        let _ = ev_tx.send(NetEvent {
+                            id,
+                            kind: NetKind::ServerError { code: code.into(), msg: format!("{code}: {e}") },
+                        });
+                        let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                let code = crate::builtins::node::fs::io_code(&e);
+                let _ = ev_tx.send(NetEvent {
+                    id,
+                    kind: NetKind::ServerError { code: code.into(), msg: format!("{code}: {e}") },
+                });
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
+                return;
+            }
         };
         let local = listener
             .local_addr()

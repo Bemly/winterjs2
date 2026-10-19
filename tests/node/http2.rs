@@ -3,6 +3,68 @@
 use crate::helpers::*;
 
 #[test]
+fn http2_compat_header_faces() {
+    // C 轮壳面：头名归一（trim+小写）/writeHead 元组与平铺/setNextStreamID 校验/
+    // kTimeout 与 alpnProtocol/sendDate 关/同步 address（正常+报错+边界）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "hf.mjs",
+        r#"
+import http2 from "node:http2";
+import { kTimeout } from "node:internal/timers";
+const server = http2.createServer((req, res) => {
+  console.log("req-eah", req.stream.endAfterHeaders);
+  res.sendDate = false;
+  res.setHeader("X-Foo", "1");
+  console.log("has", res.hasHeader("x-foo"), res.hasHeader(" X-FOO\t"));
+  console.log("get", res.getHeader("X-FOO "));
+  try { res.setHeader(); } catch (e) { console.log("set-missing", e.code); }
+  try { res.writeHead(200, ["a"]); } catch (e) { console.log("odd", e.code); }
+  res.writeHead(200, [["x-a", "1"], ["x-a", "2"], ["X-B", 7]]);
+  res.end("ok");
+});
+server.listen(0, () => {
+  const port = server.address().port;
+  console.log("sync-addr", port > 0);
+  const client = http2.connect(`http://localhost:${port}`);
+  client.on("error", () => {});
+  client.on("connect", () => {
+    console.log("alpn", client.alpnProtocol);
+    client.setTimeout(321);
+    console.log("kto", client[kTimeout]._idleTimeout);
+    try { client.setNextStreamID(2 ** 32); } catch (e) { console.log("nid", e.code, e.name); }
+    try { client.setNextStreamID("x"); } catch (e) { console.log("nid-type", e.code, e.name); }
+    const req = client.request({ ":path": "/" });
+    req.on("response", (h) => {
+      console.log("h-xa", h["x-a"], "h-xb", h["x-b"], "h-date", "date" in h);
+      console.log("st", h[":status"]);
+    });
+    req.on("end", () => { client.close(); server.close(); });
+    req.resume();
+    req.end();
+  });
+});
+"#,
+    );
+    assert!(out.contains("sync-addr true"), "out: {out}");
+    assert!(out.contains("alpn h2c"), "out: {out}");
+    assert!(out.contains("kto 321"), "out: {out}");
+    assert!(out.contains("nid ERR_OUT_OF_RANGE RangeError"), "out: {out}");
+    assert!(out.contains("nid-type ERR_INVALID_ARG_TYPE TypeError"), "out: {out}");
+    assert!(out.contains("req-eah true"), "out: {out}");
+    assert!(out.contains("has true true"), "out: {out}");
+    assert!(out.contains("get 1"), "out: {out}");
+    assert!(out.contains("set-missing ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("odd ERR_INVALID_ARG_VALUE"), "out: {out}");
+    assert!(out.contains("h-xa 1, 2"), "out: {out}");
+    assert!(out.contains("h-xb 7"), "out: {out}");
+    assert!(out.contains("h-date false"), "out: {out}");
+    assert!(out.contains("st 200"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn http2_cleartext() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

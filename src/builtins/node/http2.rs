@@ -473,8 +473,11 @@ pub(crate) async fn serve_conn<IO>(
                     let ev_body = ev_tx.clone();
                     tokio::spawn(pump_request_body(body_in, ev_body, server_id, stream_id));
                 }
-                // JS 不应答即挂起（记档）；reset 已发则 service 回 Err（hyper RST），
-                // 干净关（NO_ERROR）回 200 空体（偏差记档：body API 无法 RST NO_ERROR）。
+                // JS 不应答即挂起（记档）；reset/干净关均回 Err（hyper RST）——
+                // 未应答即无头可发，回 200 空体是错的（write-head-after-close
+                // 套件：close 后客户端必须收不到 response）。
+                // （旧 200 兜底注记“body API 无法 RST NO_ERROR”已失效，
+                // 有回归即按套件逐个修，不全局回退。）
                 let head = match tokio::select! {
                     r = rx => r,
                     _ = conn_dead.changed() => {
@@ -490,10 +493,9 @@ pub(crate) async fn serve_conn<IO>(
                             ));
                         }
                         let _ = dead_clean.lock().unwrap().remove(&stream_id);
-                        return Ok(http::Response::builder()
-                            .status(200)
-                            .body(ChanBody { rx: tokio::sync::mpsc::unbounded_channel().1, done: true })
-                            .expect("200 fallback builds"));
+                        return Err::<http::Response<ChanBody>, anyhow::Error>(anyhow::anyhow!(
+                            "h2 stream closed without response"
+                        ));
                     }
                 };
                 let (btx, brx) = tokio::sync::mpsc::unbounded_channel::<BodyMsg>();
@@ -520,7 +522,10 @@ pub(crate) async fn serve_conn<IO>(
             }
         })
     };
-    let conn = hyper::server::conn::http2::Builder::new(Exec).serve_connection(io, svc);
+    // date 头全权归 JS（sendDate 口径；hyper 缺省 auto_date 会无视 sendDate=false）。
+    let mut h2b = hyper::server::conn::http2::Builder::new(Exec);
+    h2b.auto_date_header(false);
+    let conn = h2b.serve_connection(io, svc);
     tokio::pin!(conn);
     loop {
         tokio::select! {

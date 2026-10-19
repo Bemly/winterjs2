@@ -22,6 +22,11 @@ function __wjs2_rsaPubExp(v) {
   }
   return Number(v);
 }
+function __wjs2BrandErr() {
+  const e = new TypeError("Illegal invocation");
+  e.code = "ERR_INVALID_THIS";
+  return e;
+}
 function __wjs2_x_bits(algorithm, st, length) {
   const pubKey = algorithm?.public;
   const pst = __wjs2_keyState.get(pubKey);
@@ -52,10 +57,16 @@ function __wjs2_ecdh_bits(algorithm, st, length) {
   return secret.slice(0, bits / 8).buffer;
 }
 globalThis.crypto = {
-  getRandomValues(view) { __wjs2_fill_random(view); return view; },
+  getRandomValues(view) {
+    if (this !== globalThis.crypto) throw __wjs2BrandErr();
+    __wjs2_fill_random(view);
+    return view;
+  },
   randomUUID() { return __wjs2_random_uuid(); },
   subtle: {
-    async digest(algorithm, data) {
+    digest(algorithm, data) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const name = typeof algorithm === "string" ? algorithm : String(algorithm?.name ?? algorithm);
       let view = data;
       if (view instanceof ArrayBuffer) view = new Uint8Array(view);
@@ -64,8 +75,11 @@ globalThis.crypto = {
       }
       const out = __wjs2_subtle_digest(name, view);
       return out.buffer;
+      })();
     },
-    async generateKey(alg, extractable, usages) {
+    generateKey(alg, extractable, usages) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const name = typeof alg === "string" ? alg.toUpperCase() : String(alg?.name ?? "").toUpperCase();
       usages = [...(usages ?? [])].map(String);
       if (name === "AES-GCM") {
@@ -127,8 +141,11 @@ globalThis.crypto = {
         throw new Error(`NotSupportedError: generateKey ${name} needs follow-up`);
       }
       throw new Error(`NotSupportedError: generateKey ${name} needs Phase 3 c-4`);
+      })();
     },
-    async importKey(format, keyData, alg, extractable, usages) {
+    importKey(format, keyData, alg, extractable, usages) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const name = typeof alg === "string" ? alg.toUpperCase() : String(alg?.name ?? "").toUpperCase();
       usages = [...(usages ?? [])].map(String);
       const needHash = name === "HMAC" ? __wjs2_normHash(alg?.hash) : undefined;
@@ -266,8 +283,11 @@ globalThis.crypto = {
         return __wjs2_makeKey({ name, hash: needHash, length: bytes.length * 8 }, bytes, usages, !!extractable);
       }
       throw new Error(`NotSupportedError: importKey ${name} needs Phase 3 c-4`);
+      })();
     },
-    async exportKey(format, key) {
+    exportKey(format, key) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const st = __wjs2_keyState.get(key);
       if (!st) throw new TypeError("exportKey: not a CryptoKey");
       if (!st.extractable) throw new Error("InvalidAccessError: key is not extractable");
@@ -361,8 +381,11 @@ globalThis.crypto = {
         return { kty: "oct", k: __wjs2_b64urlEncode(st.material), alg: st.alg.name === "AES-GCM" ? `A${st.alg.length}GCM` : `HS${st.alg.hash.split("-")[1]}`, ext: true };
       }
       throw new Error(`NotSupportedError: exportKey ${format} needs Phase 3 c-4`);
+      })();
     },
-    async encrypt(algorithm, key, data) {
+    encrypt(algorithm, key, data) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const st = __wjs2_keyState.get(key);
       if (!st) throw new TypeError("encrypt: not a CryptoKey");
       __wjs2_needUsage(st, "encrypt");
@@ -379,8 +402,11 @@ globalThis.crypto = {
         return out.buffer;
       }
       throw new TypeError("encrypt: unsupported key");
+      })();
     },
-    async decrypt(algorithm, key, data) {
+    decrypt(algorithm, key, data) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const st = __wjs2_keyState.get(key);
       if (!st) throw new TypeError("decrypt: not a CryptoKey");
       __wjs2_needUsage(st, "decrypt");
@@ -397,8 +423,11 @@ globalThis.crypto = {
         return out.buffer;
       }
       throw new TypeError("decrypt: unsupported key");
+      })();
     },
-    async sign(algorithm, key, data) {
+    sign(algorithm, key, data) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const st = __wjs2_keyState.get(key);
       if (!st) throw new TypeError("sign: not a CryptoKey");
       __wjs2_needUsage(st, "sign");
@@ -434,8 +463,11 @@ globalThis.crypto = {
         return out.buffer;
       }
       throw new TypeError("sign: unsupported key");
+      })();
     },
-    async verify(algorithm, key, signature, data) {
+    verify(algorithm, key, signature, data) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const st = __wjs2_keyState.get(key);
       if (!st) throw new TypeError("verify: not a CryptoKey");
       __wjs2_needUsage(st, "verify");
@@ -465,8 +497,11 @@ globalThis.crypto = {
         return __wjs2_ecdsa_verify(st.alg.namedCurve, hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
       }
       throw new TypeError("verify: unsupported key");
+      })();
     },
-    async deriveBits(algorithm, baseKey, length) {
+    deriveBits(algorithm, baseKey, length) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const st = __wjs2_keyState.get(baseKey);
       if (!st || (st.alg.name !== "ECDH" && st.alg.name !== "X25519")) {
         throw new TypeError("deriveBits: not an ECDH/X25519 key");
@@ -475,8 +510,11 @@ globalThis.crypto = {
       __wjs2_needUsage(st, "deriveBits");
       if (st.alg.name === "X25519") return __wjs2_x_bits(algorithm, st, length);
       return __wjs2_ecdh_bits(algorithm, st, length);
+      })();
     },
-    async deriveKey(algorithm, baseKey, derivedKeyAlg, extractable, usages) {
+    deriveKey(algorithm, baseKey, derivedKeyAlg, extractable, usages) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return (async () => {
       const st = __wjs2_keyState.get(baseKey);
       if (!st || (st.alg.name !== "ECDH" && st.alg.name !== "X25519")) {
         throw new TypeError("deriveKey: not an ECDH/X25519 key");
@@ -502,6 +540,37 @@ globalThis.crypto = {
         return __wjs2_makeKey({ name: "HMAC", hash, length }, bytes, [...(usages ?? [])].map(String), !!extractable);
       }
       throw new Error(`NotSupportedError: deriveKey to ${dname || "?"} needs follow-up`);
+      })();
+    },
+    // 未实现面（methods-not-async 套件点名须在场 + 非 async + 品牌检查；
+    // 真实现随算法轮补齐，此处先 NotSupportedError 占位）。
+    wrapKey(format, key, wrappingKey, wrapAlgorithm) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return Promise.reject(new Error("NotSupportedError: wrapKey needs follow-up"));
+    },
+    unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, keyUsages) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return Promise.reject(new Error("NotSupportedError: unwrapKey needs follow-up"));
+    },
+    encapsulateBits(encapsulation, publicKey) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return Promise.reject(new Error("NotSupportedError: encapsulateBits needs follow-up"));
+    },
+    encapsulateKey(encapsulation, publicKey) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return Promise.reject(new Error("NotSupportedError: encapsulateKey needs follow-up"));
+    },
+    decapsulateBits(decapsulation, privateKey, length) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return Promise.reject(new Error("NotSupportedError: decapsulateBits needs follow-up"));
+    },
+    decapsulateKey(decapsulation, privateKey, unwrappedKeyAlgorithm, extractable, keyUsages) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return Promise.reject(new Error("NotSupportedError: decapsulateKey needs follow-up"));
+    },
+    getPublicKey(key, usages) {
+      if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
+      return Promise.reject(new Error("NotSupportedError: getPublicKey needs follow-up"));
     },
   },
 };

@@ -1360,3 +1360,34 @@ G1/G2/G3/G9 已收官。）
 - 附带：url 域 `internal/url` isURL 最小移植（test-url-is-url-internal 转绿，
   url 14/14；黑盒 `url_internal_is_url_faces`）；构建 0 警告收尾
   （ec 括号/repl 死码删除/元组初始化）。
+
+## 2026-10-19 http2 C 轮壳面（首批 13 件转绿）+ cluster 补记
+
+- C 轮（不动 hyper 底座；bound 面另案）：头名归一 `__normName`
+  （trim+小写，get/has/remove/set/append/trailer 全走）/writeHead 元组与
+  平铺（append 语义 + 奇数长 ERR_INVALID_ARG_VALUE）/伪头文案
+  （PSEUDOHEADER_NOT_ALLOWED 连字符）/HEADERS_SENT 三处补门/
+  removeHeader('date') 关 sendDate/kTimeout 符号（`session[kTimeout]._
+  idleTimeout`）/alpnProtocol h2c/setNextStreamID 文案（`> 0 and <=
+  4294967295` + 非数 ARG_TYPE；close 码分档）/unescaped-path 译码
+  （NGHTTP2_PROTOCOL_ERROR）/additionalHeaders 门序（INVALID_INFO_STATUS
+  RangeError/STATUS_101/伪头/HEADERS_AFTER_RESPOND 文案对齐）/
+  :authority 缺省抑制（host-only 经 x-wjs-no-authority 内部标记，
+  两端同剥）/sendDate 下沉（hyper auto_date_header(false)，JS 全权）/
+  error-order 同步 address（native 同步 bind+from_std，
+  forbidden-blocking-fd 注记）/endafterheaders 意图透传（method 缺省
+  endStream，native 不再按体空猜）/write-head-after-close 双杀
+  （createPushResponse 双参 + INVALID_STREAM；200 兜底改 RST）。
+- 转绿（base17 DIFF→0，逐件单跑复验）：compat-socket/headers/send-date/
+  writehead-array/serverrequest-host/serverrequest-end/error-order/
+  endafterheaders/write-head-after-close/write-head-destroyed/
+  setNextStreamID/invalidargtypes/unescaped-path（13 件；黑盒
+  `http2_compat_header_faces` 14 断言；冒烟 5/5）。
+- 余：create-client-session 应答体截断（服务端 write+end 流式竞速，深水）/
+  info-headers 1xx 下发（native interim-headers bound）/create-client-secure
+  （tls 面，随 P2-tls）/createConnection 三件（需 native 双工桥输送任意 JS
+  duplex + 服务端 connection 接管，另案设计）/push/ALTSVC-ORIGIN/帧错映射
+  （bound B）/其余 TIMEOUT 待复判。
+- pit 备忘（未单独立编号，记 journal）：close 单发——Writable autoDestroy
+  与 stream 转发各派一次，真机只认一次，emit 层幂等；END_STREAM 意图与体空
+  解耦（同 tick 的 end() 不得抢跑进 HEADERS）；伪头文案以真机逐字为准。

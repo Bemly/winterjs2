@@ -1332,3 +1332,31 @@ G1/G2/G3/G9 已收官。）
 - group 记档：组缩进已落地，余对象多行——node inspect 缺省 breakLength 80
   的布局引擎（本仓 inspect 单行），动全局换行会摇 util 绿件，深水另案。
 - 验证：node 套件 console 5/16；黑盒 console 4/4；冒烟 5/5。
+
+## 2026-10-19 cluster P0/P1/P2 轮（25/80→58/80，TIMEOUT 27→6）+ url internal 轮
+
+- 范围：cluster 域 80 件；base 25 绿/28 DIFF/27 TIMEOUT（base16）→
+  cluster-p0 30/80（P0 中继 + P2 扇出）→ p1 45/80（P1 构造器/state/destroy/
+  setup/cwd/进程桥/退出语义）→ p3 56/80（ack/关完再派发/early-ctl）。
+  驗證：黑盒 cluster 4/4、冒烟 5/5、check-lines/check-naming 双绿；
+  `child_exec_shell_self_and_timeout` 系 HEAD 预存红（stash 对照同红，非本轮）。
+- P0 listening 中继：worker 内 `net.Server.prototype.listen` 补丁，
+  起服即报 primary（`{address,addressType,fd,port}` node 形，basic 套件点名），
+  跨线程 fd 共享仍无能力（disconnect 套件 round-2 拒连，记档另案：同端口共享）。
+- P2 消息扇出 + error 转发 + 起步缓冲（fork 后即达消息攒后重放）+
+  真机 ack（worker 主动断开等回执，race 套件）+ 强制退出路（forced-exit）。
+- P1：Worker options 构造器 + 函数形（`Worker.call`）+ state/exitCode/
+  signalCode + destroy 双侧 + setupPrimary 真机缺省/合并/emit + cwd 虚拟化
+  （线程禁真 chdir，`process.cwd` 复写，相对路径记档偏离）+ 进程桥
+  （side proc EE；primary stub disconnect 走 raw 路）+ 退出序（exit 先记账，
+  disconnect 后派发）+ disconnect cb 等全部退出（intercom 口径）。
+- 坑 4.278（断开-起服竞速同步旗）、4.279（unref 丢 exit、早关 port 丢 ack）。
+- 余 22（16 DIFF + 6 TIMEOUT）：共享 bind（disconnect/ipv6only-false/
+  ipc-throw/net-server-drop-connection…）/RR 分发 3/handle 传递/net backlog
+  主侧路由/dgram 族/kill 信号语义（kill-signal 已绿，infinite-loop 另案）
+  /uncaught-exception（child  interplay）/relative-path/net-send/
+  listen-pipe（net 面）/worker-no-exit（连接续命）/worker-handle-close，
+  另案记档，下轮按 triage 优先级啃。
+- 附带：url 域 `internal/url` isURL 最小移植（test-url-is-url-internal 转绿，
+  url 14/14；黑盒 `url_internal_is_url_faces`）；构建 0 警告收尾
+  （ec 括号/repl 死码删除/元组初始化）。

@@ -108,3 +108,32 @@
 - 修法二：append 模式探针一律新文件名（`Date.now()`/计数后缀）。
 - 复现：症状一 `node -e` 一行；症状二 `/tmp/fstest/u1*.cjs`。
 - 推广铁律：**"实现 bug"先证伪探针**——append/覆盖/共享路径三问走完再进源码。
+
+### 4.278 cluster 断开-起服竞速：同步旗才栏得住（2026-10-19）
+
+- 症状：`test-cluster-disconnect-leak/race/shared-leak` 挂死——primary
+  fork 后即 disconnect，worker 用户代码尚未跑（`await import` 让出点）。
+- 根因：ctl 在 bootstrap 期到达，`CloseServers` 空跑（server 还没 listen），
+  派发旗 `__clusterGone` 置位在 microtask，用户 `listen` 插空起服，无人再关。
+- 修法：守门认同步旗 `process.connected`（`DoDisconnect` 内同步置 false，
+  插空无门）+ 未起服也一律调 `close`（bind 窗口压住 listening 派发）+
+  关完 server 才走后续（`checkWaitingCount` 口径，wait-server-close 套件要求
+  disconnect 处理时 server 已关）。复现：`leakrep.cjs`（先 disconnect 后 listen）。
+- 推广铁律：**"先到先得"的状态必须同步置位**——microtask 设旗栏不住同 tick
+  用户代码；竞速守门一律认同步量（connected/closed 旗），派发可异步。
+
+### 4.279 线程续命丢 exit + 先关 port 丢 ack（2026-10-19）
+
+- 症状一：`worker.disconnect` 后主进程先退，`exit` 事件丢失
+ （`test-cluster-worker-disconnect` 的 exit mustCall 挂 0）。
+- 根因一：worker 线程 `unref` 即不再续命主循环——node 子进程靠进程句柄
+  续命到退出，线程 unref 无对等物。
+- 修法一：主进程恒等 worker 退出（server 在 disconnect 时同步关，
+  无柄即退；不断即等，真机同）。教训：**跨进程语义往线程底座搬时，
+  "谁续命谁"必须逐项核对**，unref 只用于明确抛弃的句柄。
+- 症状二：worker 主动 disconnect 的本地派发永不到（race 套件挂死）。
+- 根因二：`parentPort.close()` 与 primary 回执竞速——port 早关，ack 收不到。
+- 修法二：ack 到达后才关 port + 100ms 超时兜底（幂等）。复现：`race2.cjs`
+ （nextTick 先于 disconnect  fired，且 fired 必达）。
+- 推广铁律：**双向通道"先关后收"必丢信**——关的一方永远是收完的一方；
+  超时兜底 + 幂等派发是标准件。

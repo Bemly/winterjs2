@@ -826,3 +826,102 @@ import { inspect } from "node:util";
     assert!(!stdout.contains("bc-brand-bad"), "out: {stdout}");
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_message_port_faces() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { MessageChannel, MessagePort, Worker, markAsUntransferable } from "node:worker_threads";
+import util from "node:util";
+// 原型整形（message-port 套件逐字）
+console.log("mp-proto", JSON.stringify(Object.getOwnPropertyNames(MessagePort.prototype).sort()) === JSON.stringify(["close","constructor","hasRef","onmessage","onmessageerror","postMessage","ref","start","unref"]));
+// 构造门（message-port-constructor 套件）
+const t = (n, f, code) => { try { f(); console.log(n, "NO-THROW"); } catch (e) { console.log(n, e.code === code); } };
+t("mp-call", () => MessagePort(), "ERR_CONSTRUCT_CALL_INVALID");
+t("mp-new", () => new MessagePort(), "ERR_CONSTRUCT_CALL_INVALID");
+t("mp-newx", () => new MessagePort("x"), "ERR_CONSTRUCT_CALL_INVALID");
+t("mc-call", () => MessageChannel(), "ERR_CONSTRUCT_CALL_REQUIRED");
+// close 回调异步 + 顺序 + 双关（close 套件）
+const { port1, port2 } = new MessageChannel();
+const order = [];
+port1.on("close", () => order.push("event"));
+port1.close(() => order.push("cb"));
+order.push("sync");
+let fired = 0;
+port1.on("close", () => fired++);
+setTimeout(() => {
+  console.log("mp-close-order", JSON.stringify(order) === JSON.stringify(["sync","event","cb"]), fired === 1);
+  // transfer 归一（message-port 套件）
+  const c = new MessageChannel();
+  c.port1.postMessage(4, {});
+  c.port1.postMessage(5, { transfer: undefined });
+  t("mp-bare0", () => c.port1.postMessage(5, 0), "ERR_INVALID_ARG_TYPE");
+  t("mp-optnull", () => c.port1.postMessage(5, { transfer: null }), "ERR_INVALID_ARG_TYPE");
+  // 自杀式投递（target 套件）
+  const s = new MessageChannel();
+  const ab = new ArrayBuffer(10);
+  let warned = false;
+  process.on("warning", (w) => { warned = w.message.includes("communication channel was lost"); });
+  s.port2.on("message", () => console.log("mp-suicide-leak BAD"));
+  s.port2.postMessage(null, [s.port1, ab]);
+  // transfer-self 文案 + untransferable（self/untransferable 套件）
+  try { s.port1.postMessage(null, [s.port1]); console.log("mp-self NO-THROW"); }
+  catch (e) { console.log("mp-self", e.constructor.name === "DOMException" && e.name === "DataCloneError" && e.code === 25 && e.message === "Transfer list contains source port"); }
+  const u1 = new MessageChannel(); const u2 = new MessageChannel();
+  markAsUntransferable(u2.port1);
+  try { u1.port1.postMessage(u2.port1, [u2.port1]); console.log("mp-unxfer NO-THROW"); }
+  catch (e) { console.log("mp-unxfer", e.constructor.name === "DOMException" && e.name === "DataCloneError" && e.code === 25); }
+  // ports 透传（ports 块）
+  const p1 = new MessageChannel(); const p2 = new MessageChannel();
+  p1.port1.postMessage({ port: p2.port2 }, [p2.port2]);
+  p1.port2.addEventListener("message", (ev) => {
+    console.log("mp-ports", ev.ports.length === 1, ev.ports[0] instanceof MessagePort, ev.target === p1.port2);
+    // 对端关闭透出（channel 块 2）
+    const d = new MessageChannel();
+    let dc = 0;
+    d.port1.on("close", () => dc++);
+    d.port2.on("close", () => dc++);
+    d.port2.close();
+    setTimeout(() => {
+      console.log("mp-peerclose", dc === 2, ab.byteLength === 0, warned);
+      console.log("mp-inspect", util.inspect(s.port1).includes("active: false"), util.inspect(p1.port1).includes("active: true"));
+      console.log("mp-hasref", (() => { const h = new MessageChannel(); const f0 = h.port1.hasRef(); h.port1.on("message", () => {}); const f1 = h.port1.hasRef(); h.port1.close(); h.port2.close(); return f0 === false && f1 === true; })());
+      for (const q of [c.port1,c.port2,s.port1,s.port2,u1.port1,u1.port2,u2.port1,u2.port2,p1.port1,p1.port2,p2.port1,p2.port2,d.port1,d.port2]) { try { q.close(); } catch {} }
+      // process worker 事件（worker-event 套件）
+      const w = new Worker("1+1", { eval: true });
+      w.on("online", () => { console.log("mp-worker-ev", w.threadId > 0); w.terminate(); });
+    }, 100);
+  });
+}, 50);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "mp-proto true",
+        "mp-call true",
+        "mp-new true",
+        "mp-newx true",
+        "mc-call true",
+        "mp-close-order true true",
+        "mp-bare0 true",
+        "mp-optnull true",
+        "mp-self true",
+        "mp-unxfer true",
+        "mp-ports true true true",
+        "mp-peerclose true true true",
+        "mp-inspect true true",
+        "mp-hasref true",
+        "mp-worker-ev true",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    dir.close().unwrap();
+}

@@ -425,6 +425,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_port_listen", Some(node::worker::port_listen), 1),
             ("__wjs2_port_unlisten", Some(node::worker::port_unlisten), 1),
             ("__wjs2_port_has_ref", Some(node::worker::port_has_ref), 1),
+            ("__wjs2_port_is_peer", Some(node::worker::port_is_peer), 2),
+            ("__wjs2_port_is_active", Some(node::worker::port_is_active), 1),
             // Phase 9g-1: node:quic（Endpoint/会话；流/数据报 9g-2）
             ("__wjs2_quic_listen", Some(node::quic::quic_listen), 1),
             ("__wjs2_quic_ep_addr", Some(node::quic::quic_ep_addr), 1),

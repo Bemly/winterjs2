@@ -2,6 +2,8 @@
 pub const BLOB_JS: &str = r#"
 // ---- Blob（Web 全局；fetch/consumers/node:internal/blob 共用；9b）----
 const __wjs2_blobBytes = new WeakMap();
+// worker 线信封 Blob/File roundtrip 用（内部面；用户文档不暴露）。
+globalThis.__wjs2_blobBytes = __wjs2_blobBytes;
 globalThis.Blob = class Blob {
   constructor(parts = [], options = {}) {
     const chunks = [];

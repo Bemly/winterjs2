@@ -309,9 +309,16 @@ globalThis.TextDecoder = class TextDecoder {
     if (view === undefined) view = undefined;
     else if (view instanceof ArrayBuffer) view = new Uint8Array(view);
     else if (typeof SharedArrayBuffer !== "undefined" && view instanceof SharedArrayBuffer) {
-      throw new TypeError("TextDecoder.decode does not accept SharedArrayBuffer views yet");
-    } else if (ArrayBuffer.isView(view) && !(view instanceof Uint8Array)) {
-      view = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      // 10f：SAB 快照拷贝后解码（真机读当前字节；跨会话真共享另案）。
+      view = new Uint8Array(view);
+    } else if (ArrayBuffer.isView(view)) {
+      const __buf = view.buffer;
+      if (typeof SharedArrayBuffer !== "undefined" && __buf instanceof SharedArrayBuffer) {
+        // SAB 视图快照拷贝（真机同款；底座 `view_bytes` 仍拒 shared，拷贝后恒过）。
+        view = new Uint8Array(view);
+      } else if (!(view instanceof Uint8Array)) {
+        view = new Uint8Array(__buf, view.byteOffset, view.byteLength);
+      }
     } else if (view !== undefined && view !== null && !(view instanceof Uint8Array)) {
       // R3b：非 BufferSource 即 ERR_INVALID_ARG_TYPE（真机文案逐字；consumers 套件点名码）。
       const e = new TypeError(`The "list" argument must be an instance of SharedArrayBuffer, ArrayBuffer or ArrayBufferView. Received ${view === null ? "null" : typeof view}`);

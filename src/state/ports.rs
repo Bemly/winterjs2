@@ -19,8 +19,8 @@ pub fn port_pair() -> Option<(u64, u64)> {
         p.worker_next_id += 1;
         let b = p.worker_next_id;
         with_rooted(|s| {
-            s.worker_ports.push(WorkerPort { id: a, peer: b, peer_tx: tx.clone(), target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None, pending: Vec::new() });
-            s.worker_ports.push(WorkerPort { id: b, peer: a, peer_tx: tx, target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None, pending: Vec::new() });
+            s.worker_ports.push(WorkerPort { id: a, peer: b, peer_tx: tx.clone(), target: None, open: true, refed: false, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None, pending: Vec::new() });
+            s.worker_ports.push(WorkerPort { id: b, peer: a, peer_tx: tx, target: None, open: true, refed: false, listening: false, counted: false, peer_closed: false, peer_is_worker: false, forward: None, moved: false, via: None, pending: Vec::new() });
         });
         Some((a, b))
     })
@@ -36,7 +36,7 @@ pub fn port_alloc_cross(
         p.worker_next_id
     });
     with_rooted(|s| {
-        s.worker_ports.push(WorkerPort { id, peer: peer_worker, peer_tx, target: None, open: true, refed: true, listening: false, counted: false, peer_closed: false, peer_is_worker: true, forward: None, moved: false, via: None, pending: Vec::new() });
+        s.worker_ports.push(WorkerPort { id, peer: peer_worker, peer_tx, target: None, open: true, refed: false, listening: false, counted: false, peer_closed: false, peer_is_worker: true, forward: None, moved: false, via: None, pending: Vec::new() });
     });
     id
 }
@@ -91,6 +91,22 @@ pub fn port_unlisten(id: u64) {
 
 pub fn port_has_ref(id: u64) -> bool {
     with_rooted(|s| s.worker_ports.iter().find(|p| p.id == id).is_some_and(|p| p.refed))
+}
+
+/// 端口是否仍活跃（inspect `active:` 用；transfer-self 套件：对端关闭后
+/// 本端即 inactive）。JS 侧 closed/neutered 另由调用方叠加。
+pub fn port_is_active(id: u64) -> bool {
+    with_rooted(|s| {
+        s.worker_ports.iter().find(|p| p.id == id).is_some_and(|p| p.open && !p.moved && !p.peer_closed)
+    })
+}
+
+/// 是否为发送端的纠缠对端（同会话端口对；跨会话 peer 为 worker id 永不命中）。
+/// 自杀式投递判定用（target 套件：对端随消息发出即通道丢失）。
+pub fn port_is_entangled_peer(src: u64, cand: u64) -> bool {
+    with_rooted(|s| {
+        s.worker_ports.iter().find(|p| p.id == src).is_some_and(|p| !p.peer_is_worker && p.peer == cand)
+    })
 }
 
 /// 摘目标（`__wjs2_port_detach` 用）：迁移排空后/静默摘除，不通知对端，不碰路由。
@@ -175,8 +191,11 @@ pub fn port_post(id: u64, json: String) -> bool {    enum Route {
             }
             // 10f：本地 pair 且对端表项在本会话 → 直入对端 pending（同步收信
             // 口 + pump 逐轮派发；跨会话口仍走通道）。
+            // 跨会话 ID 碰撞修正：各会话 worker_next_id 各自计数，main 的 peer id
+            // 极易撞上本会话本地端口 id——必须互惠校验（q.peer == p.id），否则
+            // 跨线程回包误投本地同 id 端口（message-channel 块 3 回环根因）。
             if !p.peer_is_worker
-                && s.worker_ports.iter().any(|q| q.id == p.peer && q.open && !q.moved)
+                && s.worker_ports.iter().any(|q| q.id == p.peer && q.peer == p.id && q.open && !q.moved)
             {
                 return Some(Route::Local { peer: p.peer });
             }
@@ -297,6 +316,53 @@ pub fn port_peer_closed(id: u64) {
     }
 }
 
+/// worker 线程消亡传导：路由经已死收件箱（转发器）或指向已死链的本地表项，
+/// 全部记 peer_closed 并重算续命（channel 块 3：worker terminate 后主端收
+/// 'close'、进程可退出；真机探针）。返回新失活 id（调用方负责 JS 通知）。
+/// 同步回收两边已死会话的邀约槽（accept 永不到，防槽泄漏）。
+pub fn port_sweep_dead_routes() -> Vec<u64> {
+    // 邀约槽：任一端收件箱已死即撤。
+    if let Ok(mut m) = port_xfer().lock() {
+        m.retain(|_, o| !o.source_tx.is_closed() && !o.peer_tx.is_closed());
+    }
+    let mut dead = Vec::new();
+    loop {
+        let mut marked = Vec::new();
+        with_rooted(|s| {
+            for p in s.worker_ports.iter() {
+                if p.peer_closed || dead.contains(&p.id) {
+                    continue;
+                }
+                // 直连死：转发目标收件箱已死。
+                if p.forward.as_ref().is_some_and(|f| f.tx.is_closed()) {
+                    marked.push(p.id);
+                    continue;
+                }
+                // 传递死：对端是本地表项且已失活。
+                if !p.peer_is_worker
+                    && let Some(q) = s.worker_ports.iter().find(|q| q.id == p.peer)
+                    && (q.peer_closed || dead.contains(&q.id))
+                {
+                    marked.push(p.id);
+                }
+            }
+        });
+        if marked.is_empty() {
+            break;
+        }
+        for id in marked {
+            with_rooted(|s| {
+                if let Some(p) = s.worker_ports.iter_mut().find(|p| p.id == id) {
+                    p.peer_closed = true;
+                }
+            });
+            port_bump(port_recount(id));
+            dead.push(id);
+        }
+    }
+    dead
+}
+
 // ── 端口迁移（9i-2；`transferList` 的 MessagePort 件）───────────────────────
 //
 // 表是会话级的，id 只在源会话有效；跨会话迁移走进程级邀约槽：offer 侧快照
@@ -411,7 +477,7 @@ pub fn port_accept(nonce: &str) -> Option<u64> {
             peer_tx: offer.peer_tx,
             target: None,
             open: true,
-            refed: true,
+            refed: false,
             listening: false,
             counted: false,
             peer_closed: false,

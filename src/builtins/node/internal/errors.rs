@@ -242,6 +242,8 @@ const genericNodeError = hideStackFrames(function genericNodeError(message, erro
 // ── codes（9a 按需全集；后续模块按需在此追加，保持字母序）─────────────────
 E('ERR_ASYNC_CALLBACK', '%s must be a function', TypeError);
 E('ERR_ASYNC_TYPE', 'Invalid name for async "type": %s', TypeError);
+E('ERR_CLOSED_MESSAGE_PORT', 'Cannot send data on closed MessagePort', Error, HideStackFramesError);
+E('ERR_CONSTRUCT_CALL_INVALID', 'Constructor cannot be called', TypeError, HideStackFramesError);
 E('ERR_CONSTRUCT_CALL_REQUIRED', 'Cannot call constructor without `new`', TypeError, HideStackFramesError);
 E('ERR_FALSY_VALUE_REJECTION', 'Promise was rejected with falsy value', Error, HideStackFramesError);
 E('ERR_INVALID_ARG_TYPE',

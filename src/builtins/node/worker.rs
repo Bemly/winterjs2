@@ -95,6 +95,19 @@ fn with_str_args(
     crate::jsapi_glue::call_two(cx, global, fun, a.get(), b.get())
 }
 
+/// 对端失活通知（PortClose/WExit-sweep 共用；目标缺失/非对象/__ev 缺失即静默，
+/// 通知失败不炸 pump——失活记账已在 state 落定）。
+fn notify_peer_close(cx: &mut JSContext, global: *mut JSObject, to: u64) {
+    let Some(target) = state::port_target(to) else { return };
+    if !target.is_object() {
+        return;
+    }
+    rooted!(&in(cx) let t: *mut JSObject = target.to_object());
+    if let Some(fun) = get_prop_value(cx, t.get(), c"__ev") {
+        let _ = with_str_args(cx, global, fun, "peer-close", "");
+    }
+}
+
 /// 事件分发（事件循环 `pump_once` 内调用；目标已摘即丢弃）。
 pub fn dispatch(
     cx: &mut JSContext,
@@ -111,6 +124,8 @@ pub fn dispatch(
     match ev {
         WorkerEvent::PortClose { to } => {
             state::port_peer_closed(to);
+            // 10f：对端关闭透出本端 'close'（JS 侧幂等去重 + 异步发射）。
+            notify_peer_close(cx, global, to);
             Ok(())
         }
         WorkerEvent::PortForward { to, dest_tx, dest_id } => {
@@ -241,6 +256,10 @@ pub fn dispatch(
             }
             // purge 一律放派发之后（§4.36 checklist）。
             state::worker_target_remove(worker_id);
+            // 10f：消亡传导（channel 块 3；无监听即静默，JS 侧幂等去重）。
+            for to in state::port_sweep_dead_routes() {
+                notify_peer_close(cx, global, to);
+            }
             Ok(())
         }
     }
@@ -912,6 +931,34 @@ pub unsafe extern "C" fn port_has_ref(
     };
     frame.set_rval(mozjs::jsval::BooleanValue(state::port_has_ref(id)));
     true
+}
+
+/// 单/双 id 布尔查询 natives 共用核（is_active/is_peer；SAFETY: 同 port_pair）。
+fn port_query(cx_raw: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut JSVal, stride: u32, f: fn(u64, u64) -> bool) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let a = match arg_id(&mut cx, &frame, 0) { Some(id) => id, None => return false };
+    let b = if stride < 2 { 0 } else { match arg_id(&mut cx, &frame, 1) { Some(id) => id, None => return false } };
+    frame.set_rval(mozjs::jsval::BooleanValue(f(a, b)));
+    true
+}
+
+/// 端口是否仍活跃（inspect `active:` 用）。`__wjs2_port_is_active(id)` → boolean。
+pub unsafe extern "C" fn port_is_active(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    port_query(cx_raw, argc, vp, 1, |a, _| state::port_is_active(a))
+}
+
+/// 是否为发送端的纠缠对端（自杀投递判定用）。`__wjs2_port_is_peer(src, cand)` → boolean。
+pub unsafe extern "C" fn port_is_peer(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    port_query(cx_raw, argc, vp, 2, state::port_is_entangled_peer)
 }
 
 /// 同步收信口（`receiveMessageOnPort` 底座；10f）。`__wjs2_port_try_recv(id)`

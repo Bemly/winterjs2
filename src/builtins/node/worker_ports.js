@@ -180,7 +180,7 @@ export const threadId = Number(__wjs2_worker_thread_id());
 // 10f：本线程构造名（主线程 null；worker 无名亦 null——thread-name 套件）。
 export const threadName = __wjs2_worker_name() || null;
 const __parentId = String(__wjs2_worker_parent());
-export const parentPort = (__parentId === "") ? null : new MessagePort(__parentId);
+export const parentPort = (__parentId === "") ? null : new MessagePort(__parentId, __kPortInternal);
 const __dataRaw = __wjs2_worker_data();
 export const workerData = (__dataRaw === undefined || __dataRaw === "") ? null : __fromWire(String(__dataRaw));
 export const resourceLimits = {};
@@ -351,12 +351,22 @@ export class Worker extends EventEmitter {
     if (options.stderr) this.__stderr = new __WorkerStdio();
     this.__ev = this.__ev.bind(this);
     __wjs2_worker_attach(this.__id, this);
+    // 10f 对拍：新建 Worker 派发 process 'worker' 事件（worker-event 套件；
+    // 真机异步，microtask 递延；参数为 Worker 实例本身）。
+    const __self = this;
+    queueMicrotask(() => {
+      try {
+        globalThis.process?.emit?.("worker", __self);
+      } catch { /* 忽略 */ }
+    });
   }
   __ev(kind, payload) {
     if (kind === "message") {
       let value;
       try {
         value = __fromWire(String(payload));
+        // Worker 'message' 无 ports 面——残留 offer 槽撤回收（行内已承接即 no-op）。
+        __withdrawPorts(String(payload));
       } catch (e) {
         this.emit("messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
         return;
@@ -393,6 +403,9 @@ export class Worker extends EventEmitter {
     __wjs2_worker_post(this.__id, wire);
   }
   terminate() {
+    // 10f：terminate 即 ref（terminate-unrefed 套件——unref 后 terminate 仍须
+    // 决议；退出即摘续命，ref 不泄漏）。
+    try { this.ref(); } catch { /* 忽略 */ }
     try { __wjs2_worker_terminate(this.__id); } catch { /* 已退出即走下 */ }
     if (this.__exited !== null) return Promise.resolve(this.__exited);
     return new Promise((resolve) => { this.__termWaiters.push(resolve); });

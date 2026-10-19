@@ -89,14 +89,18 @@ async fn run_module(
         return Err(crate::error::from_entry_reason(&reason, url.as_str(), &src)
             .unwrap_or(Error::Other(reason)));
     }
-    if let Some(s) = fulfillment {
-        // 脚本语义对齐：决议 undefined 不打印
-        if s != "undefined" {
-            println!("{s}");
+    // worker_threads 内完成值恒不回显（node 口径；主线程 --eval/--run 行为不动）。
+    if state::worker_is_main() {
+        if let Some(s) = fulfillment {
+            // 脚本语义对齐：决议 undefined 不打印
+            if s != "undefined" {
+                println!("{s}");
+            }
+            return Ok(());
         }
-        return Ok(());
+        return print_completion(rt, global, rval.get(), false);
     }
-    print_completion(rt, global, rval.get(), false)
+    Ok(())
 }
 
 /// 致命错收尾（node `triggerUncaughtException` 尾段）：先打印错误，再以 exitCode=1 派发
@@ -412,7 +416,12 @@ async fn run_inner(
         let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
         crate::builtins::node::process_::emit_exit(&mut realm, global.get());
     }
-    let r = print_completion(&mut rt, &global, rval.get(), false);
+    // worker_threads 内完成值恒不回显（node 口径；见上）。
+    let r = if state::worker_is_main() {
+        print_completion(&mut rt, &global, rval.get(), false)
+    } else {
+        Ok(())
+    };
     // §4.8：跳过引擎/运行时析构（带 timer 的路径在 JS_DestroyContext 里 SEGV）。
     // CLI 进程即将退出，内存由 OS 回收；见 AGENTS §4.8。
     end_session(rt, engine);

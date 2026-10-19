@@ -359,3 +359,41 @@ show("brand-exec", () => exec({}));
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn url_internal_is_url_faces() {
+    // `internal/url` isURL 判形（test-url-is-url-internal.js 对拍件；真机 node 26.8.1 逐项实测）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "iu.cjs",
+        r##"
+const { isURL } = require("internal/url");
+const { parse } = require("node:url");
+const show = (l, v) => console.log(l, JSON.stringify(v));
+show("whatwg", isURL(new URL("https://www.nodejs.org")));
+show("legacy", isURL(parse("https://www.nodejs.org")));
+show("plain", isURL({ href: "https://www.nodejs.org", protocol: "https:", path: "/" }));
+show("null", isURL(null));
+show("undef", isURL(undefined));
+show("num", isURL(42));
+show("auth", isURL({ href: "https://x/", protocol: "https:", auth: null }));
+try { require("internal/nope"); console.log("nope OK"); } catch (e) { console.log("nope THROW", e.code); }
+"##,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    for line in [
+        "whatwg true",
+        "legacy false",
+        "plain false",
+        "null false",
+        "undef false",
+        "num false",
+        "auth false",
+        "nope THROW undefined",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

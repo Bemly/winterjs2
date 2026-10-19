@@ -38,6 +38,7 @@ pub mod symbols;
 pub mod test_mock;
 pub mod timers;
 pub mod types;
+pub mod url;
 pub mod util;
 pub mod validators;
 pub mod webstream_adapters;
@@ -132,6 +133,8 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:_http_outgoing", http_aliases::OUTGOING_SOURCE),
     // 残件轮：node:internal/http（套件直引 internal/http，kOutHeaders）。
     ("node:internal/http", http_aliases::HTTP_SOURCE),
+    // url 域：套件直引 `internal/url`（isURL 判形，base17 收尾）。
+    ("node:internal/url", url::SOURCE),
     // plan3 test Slice B1：MockTracker 核心（node:test 经此接线）。
     ("node:internal/test/mock", test_mock::SOURCE),
 ];

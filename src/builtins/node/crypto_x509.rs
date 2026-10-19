@@ -148,6 +148,19 @@ pub unsafe extern "C" fn x509_parse(
     let mut san_ip: Vec<String> = Vec::new();
     let mut san_email: Vec<String> = Vec::new();
     let mut san_uri: Vec<String> = Vec::new();
+    // node/OpenSSL 口径：SAN 值含 NUL/控制符/逗号/引号即双引号包裹，
+    // 其中 NUL 转义为字面 `\u0000` 六字符（0-dns-altname 套件逐字节对过）。
+    let quote_san = |v: &str| -> String {
+        if v.chars()
+            .any(|c| c.is_control() || c == ',' || c == '"')
+        {
+            format!("\"{}\"", v.replace('\0', "\\u0000"))
+        } else {
+            v.to_owned()
+        }
+    };
+    // 证书原序混排（node 按扩展出现序，不按类型分组）。
+    let mut san_parts: Vec<String> = Vec::new();
     let mut key_usage: Option<Vec<String>> = None;
     let mut ext_key_usage: Option<Vec<String>> = None;
     let mut ca = false;
@@ -160,17 +173,30 @@ pub unsafe extern "C" fn x509_parse(
                     for name in san.0.iter() {
                         use x509_cert::ext::pkix::name::GeneralName;
                         match name {
-                            GeneralName::DnsName(s) => san_dns.push(s.to_string()),
+                            GeneralName::DnsName(s) => {
+                                san_dns.push(s.to_string());
+                                san_parts.push(format!("DNS:{}", quote_san(s.as_str())));
+                            }
                             GeneralName::IpAddress(o) => {
                                 let b = o.as_bytes();
                                 if b.len() == 4 {
-                                    san_ip.push(format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]));
+                                    let ip = format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]);
+                                    san_ip.push(ip.clone());
+                                    san_parts.push(format!("IP Address:{ip}"));
                                 } else if b.len() == 16 {
-                                    san_ip.push(b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(":"));
+                                    let ip = b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(":");
+                                    san_ip.push(ip.clone());
+                                    san_parts.push(format!("IP Address:{ip}"));
                                 }
                             }
-                            GeneralName::Rfc822Name(s) => san_email.push(s.to_string()),
-                            GeneralName::UniformResourceIdentifier(s) => san_uri.push(s.to_string()),
+                            GeneralName::Rfc822Name(s) => {
+                                san_email.push(s.to_string());
+                                san_parts.push(format!("EMAIL:{}", quote_san(s.as_str())));
+                            }
+                            GeneralName::UniformResourceIdentifier(s) => {
+                                san_uri.push(s.to_string());
+                                san_parts.push(format!("URI:{}", quote_san(s.as_str())));
+                            }
                             _ => {}
                         }
                     }
@@ -219,19 +245,6 @@ pub unsafe extern "C" fn x509_parse(
                 }
             }
         }
-    }
-    let mut san_parts: Vec<String> = Vec::new();
-    for d in &san_dns {
-        san_parts.push(format!("DNS:{d}"));
-    }
-    for e in &san_email {
-        san_parts.push(format!("EMAIL:{e}"));
-    }
-    for u in &san_uri {
-        san_parts.push(format!("URI:{u}"));
-    }
-    for i in &san_ip {
-        san_parts.push(format!("IP Address:{i}"));
     }
     let obj_of = |pairs: &[(String, String)]| -> serde_json::Map<String, serde_json::Value> {
         pairs.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect()

@@ -127,10 +127,10 @@ export function get(a, b, c) {
   return getFrom(ClientRequest, options, cb);
 }
 export function createServer(options, cb) {
-  // node https.js：createServer = new Server(opts, cb)（ALPN 缺省面在 Server 内）。
-  const server = new Server(options, cb);
-  if (typeof cb === "function") server.on("request", cb);
-  return server;
+  // node https.js：createServer = new Server(opts, cb)（ALPN 缺省面在 Server 内；
+  // Server 构造器已挂首参 listener，此处禁重复挂——重复即每请求双派发，
+  // 第二次 writeHead 必 ERR_HTTP_HEADERS_SENT，hwm 系 15 件根因）。
+  return new Server(options, cb);
 }
 
 export {

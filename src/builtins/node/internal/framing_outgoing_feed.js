@@ -493,6 +493,11 @@ export function withClientRequest(openSocket, flavor) {
         if (Number.isFinite(__n) && __n >= 0) __reqHWM = __n;
       }
       this[kHighWaterMark] = __reqHWM;
+      // 10f：响应 readableHWM 与请求选项同源（hwm 套件：highWaterMark: 0 即
+      // res.readableHighWaterMark === 0；缺省走 socket 面）。
+      this.__resHWM = (options !== null && typeof options === "object" && !(options instanceof URL) &&
+        options.highWaterMark !== undefined && Number.isFinite(Number(options.highWaterMark)) && Number(options.highWaterMark) >= 0)
+        ? Number(options.highWaterMark) : undefined;
       if (this._writableState !== undefined && this._writableState !== null) {
         this._writableState.highWaterMark = __reqHWM;
       }

@@ -259,3 +259,49 @@ console.log("ecparams", crypto.createPrivateKey("-----BEGIN EC PARAMETERS-----\n
     assert!(out.contains("setca ERR_CRYPTO_OPERATION_FAILED ERR_OSSL_PEM_ASN1_LIB ERR_INVALID_ARG_TYPE"), "out: {out}");
     assert!(out.contains("ecparams ec"), "out: {out}");
 }
+
+#[test]
+fn tls_alpn_negotiation() {
+    // ALPN 静态协商（alpn-server-client 套件 Test1/4 口径；callback 另案）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "a.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = tls.createServer({{ key, cert, ALPNProtocols: ["a", "b", "c"] }}, (sock) => {{
+  console.log("srv-alpn", sock.alpnProtocol);
+  sock.destroy();
+}});
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  const tryOne = (protos, tag, next) => {{
+    const cli = tls.connect({{ port, host: "127.0.0.1", ca: cert, ALPNProtocols: protos }}, () => {{
+      console.log(tag, cli.alpnProtocol);
+      cli.destroy();
+      next();
+    }});
+    cli.on("error", (e) => {{ console.log(tag, "err", e.code); next(); }});
+  }};
+  tryOne(["a", "b", "c"], "c1", () =>
+    tryOne(["c", "b", "e"], "c2", () =>
+      tryOne(["x", "y"], "c3", () => server.close())));
+}});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 1500);
+"#
+        ),
+    );
+    assert!(out.contains("srv-alpn a"), "out: {out}");
+    assert!(out.contains("c1 a"), "out: {out}");
+    assert!(out.contains("c2 b"), "out: {out}");
+    assert!(out.contains("c3 err ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}

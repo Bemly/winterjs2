@@ -1391,3 +1391,14 @@ G1/G2/G3/G9 已收官。）
 - pit 备忘（未单独立编号，记 journal）：close 单发——Writable autoDestroy
   与 stream 转发各派一次，真机只认一次，emit 层幂等；END_STREAM 意图与体空
   解耦（同 tick 的 end() 不得抢跑进 HEADERS）；伪头文案以真机逐字为准。
+
+## 2026-10-19 tls 轮（ALPN 静态协商 + SAN 整形 + X509 PEM）
+
+- ALPN：服务端 `__tlsOpts` 补 `ALPNProtocols`（构造顺位修正）+
+  native `ListenOpts` 接表并写入 rustls server config + 无交集
+  `NoApplicationProtocol` 映射 `ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL`
+  （alpn-server-client 基础四组 + fatal alert 转绿；ALPNCallback 另案——
+  rustls 无 select-callback API，需 ClientHello 内省 + JS 回调 mid-handshake）。
+  黑盒 `tls_alpn_negotiation`（a/b/无交集三档）。
+- SAN：扩展原序混排（分组改逐条）+ NUL 转义字面 `\u0000` 并引号
+  （0-dns-altname 转绿；node-main 检出与 26.8.2 行文差已实证同形）。

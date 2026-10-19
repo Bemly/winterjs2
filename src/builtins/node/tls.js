@@ -383,6 +383,10 @@ class TLSSocket extends Socket {
     }
     if (this.ALPNProtocols !== undefined) {
       wire.alpnB64 = Buffer.from(this.ALPNProtocols).toString("base64");
+    } else if (this.__tlsServer?.ALPNProtocols !== undefined) {
+      // 服务端 accept 出的 socket 继承 server 的 ALPN 表（已是 wire 形 Buffer；
+      // __isServer 旗在包裹时才立，此处认 __tlsServer 归属）。
+      wire.alpnB64 = Buffer.from(this.__tlsServer.ALPNProtocols).toString("base64");
     }
     return wire;
   }
@@ -597,6 +601,9 @@ function __handshakeErr(msg, host) {
     // rustls "received corrupt message of type InvalidContentType"（对端发非 TLS 字节）
     // → OpenSSL 同场景文案（SSL routines:...:wrong version number；node 套件断言形）。
     [/InvalidContentType/, "ERR_SSL_HANDSHAKE_FAILURE", "SSL routines::wrong version number"],
+    // rustls 对端 fatal NoApplicationProtocol（ALPN 无交集）→ node 专用码
+    //（alpn-server-client 套件 TestFatalAlert 点名 code）。
+    [/NoApplicationProtocol/, "ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL", "TLSv1 alert no application protocol"],
     [/NotValidForName/, "ERR_TLS_CERT_ALTNAME_INVALID", `Hostname/IP does not match certificate's altnames: Host: ${host}. is not in the cert's altnames`],
     [/UnknownIssuer/, "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "unable to verify the first certificate"],
     [/Expired/, "CERT_HAS_EXPIRED", "certificate has expired"],
@@ -645,6 +652,12 @@ class Server extends EventEmitter {
     this.setSecureContext(options);
     // node Server 构造：ALPN 列表 → wire 形（TLS 引擎协商 + ALPNCallback 面）。
     if (options.ALPNProtocols !== undefined) convertALPNProtocols(options.ALPNProtocols, this);
+    // ALPN 表随监听下发 native（alpn-server-client 套件；字符串归一）。
+    // 注：setSecureContext 内不做（当时 this.ALPNProtocols 尚未就绪）。
+    if (this.ALPNProtocols !== undefined && Array.isArray(options.ALPNProtocols)) {
+      this.__tlsOpts.ALPNProtocols =
+        options.ALPNProtocols.map((p) => Buffer.isBuffer(p) ? p.toString("latin1") : String(p));
+    }
     this.__handshakeTimeout = options.handshakeTimeout || (120 * 1000);
     this.__SNICallback = options.SNICallback;
     this.__pskCallback = options.pskCallback;

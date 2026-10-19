@@ -260,12 +260,14 @@ struct ConnectOpts {
     alpn_b64: Option<String>,
 }
 
-/// 监听选项 JSON（server）：`{cert, key}`（PEM 串；缺失即同步 TypeError）。
+/// 监听选项 JSON（server）：`{cert, key, ALPNProtocols?}`（PEM 串；缺失即同步 TypeError）。
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 struct ListenOpts {
     cert: Option<String>,
     key: Option<String>,
+    #[serde(rename = "ALPNProtocols")]
+    alpn: Option<Vec<String>>,
 }
 
 /// `__wjs2_tls_connect(host, port, optsJson, target)` → id。
@@ -468,19 +470,31 @@ pub unsafe extern "C" fn tls_listen(
     ensure_provider();
     // node 口径：无 key/cert 也可起服务（SNICallback/后续 context 场景）——握手时无证书可出示，
     // 该连接握手失败走 'tlsClientError'，服务本身照常监听。
+    // ALPN 列表直挂（alpn-server-client 套件；缺省空即不协商）。
+    let alpn: Vec<Vec<u8>> = opts
+        .alpn
+        .unwrap_or_default()
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect();
     let cfg = match (opts.cert, opts.key) {
         (Some(cert_pem), Some(key_pem)) => match server_config(&cert_pem, &key_pem) {
-            Ok(c) => std::sync::Arc::new(c),
+            Ok(mut c) => {
+                c.alpn_protocols = alpn;
+                std::sync::Arc::new(c)
+            }
             Err(e) => {
                 report_error(&mut cx, &e);
                 return false;
             }
         },
-        _ => std::sync::Arc::new(
-            rustls::ServerConfig::builder()
+        _ => {
+            let mut c = rustls::ServerConfig::builder()
                 .with_no_client_auth()
-                .with_cert_resolver(std::sync::Arc::new(NoCert)),
-        ),
+                .with_cert_resolver(std::sync::Arc::new(NoCert));
+            c.alpn_protocols = alpn;
+            std::sync::Arc::new(c)
+        }
     };
     let Some((id, ev_tx)) = state::net_alloc() else {
         report_error(&mut cx, "OperationError: net driver not installed");

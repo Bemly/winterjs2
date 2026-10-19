@@ -683,6 +683,8 @@ class Http2ServerResponse extends Writable {
   appendHeader(name, value) {
     if (this.headersSent) throw __code("ERR_HTTP2_HEADERS_SENT");
     const k = __normName(name);
+    // node compat assertValidHeader 口径：伪头一律 PSEUDOHEADER_NOT_ALLOWED。
+    if (k.startsWith(":")) throw __code("ERR_HTTP2_PSEUDOHEADER_NOT_ALLOWED");
     __validateHeaderName(k);
     __validateHeaderValue(k, value);
     const cur = this.__headers[k];

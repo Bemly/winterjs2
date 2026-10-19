@@ -1402,3 +1402,20 @@ G1/G2/G3/G9 已收官。）
   黑盒 `tls_alpn_negotiation`（a/b/无交集三档）。
 - SAN：扩展原序混排（分组改逐条）+ NUL 转义字面 `\u0000` 并引号
   （0-dns-altname 转绿；node-main 检出与 26.8.2 行文差已实证同形）。
+
+## 2026-10-19 base18 全域基线（node-main 检出，3574→3528 件）+ 口径说明
+
+- base18（`~/.wjs-sweep/base18/`，2 并发，~52min）：SAME0 **2284** /
+  SAME1 203 / DIFF 925 / TIMEOUT 116。base16（node 26.8.2）为 SAME0 2313 /
+  DIFF 1103 / TIMEOUT 131。直接数不可比——node-main 引入 SAME1 膨胀
+  （双边同红，多系 node-main 自身行为变更/新件，见下）。
+- 可比口径（我方确定红）：DIFF 1103→925（-178）、TIMEOUT 131→116（-15）。
+  域级绿（base16→base18）：http2 87→98、tls 81→84、cluster 25→59、
+  worker 57→57、vm 46→46、http 345→322（-23 系 SAME1 膨胀 23，双边同红）、
+  fs 286→282、stream 197→173（SAME1 33，双边同红为主）、crypto 68→62、
+  child 71→72、module 4→7、process 69?→70、readline 4?→7。
+- 教训：跨 node 版本对拍先算 SAME1 再谈涨跌（4.270 姊妹篇）；基线检出已钉
+  本地 node 版本（v26.8.1，`~/node-test` 主仓稀疏检出；`~/wjs-data`
+  软链重建指向家目录，外置盘缺席）。
+- 本轮记账外：appendHeader 伪头门（compat assertValidHeader 口径）、
+  0-dns-altname SAN 整形、alpn 静态协商、X509 PEM/no-start-line。

@@ -1419,3 +1419,19 @@ G1/G2/G3/G9 已收官。）
   软链重建指向家目录，外置盘缺席）。
 - 本轮记账外：appendHeader 伪头门（compat assertValidHeader 口径）、
   0-dns-altname SAN 整形、alpn 静态协商、X509 PEM/no-start-line。
+
+## 2026-10-19 webcrypto 键面轮（getRandomValues/methods-not-async/hidden-slots）
+
+- subtle 去 async 化（方法须为普通函数）+ 品牌检查（this 非 subtle 即
+  ERR_INVALID_THIS 拒绝）+ 7 缺失方法占位（wrap/unwrap/encapsulate/decapsulate
+  系 + getPublicKey）；getRandomValues 同步品牌检查。
+- RSA 尺寸放宽至 512（真机实测；hidden-slots 要 1024）。
+- algorithm.hash 对象化（{name}）+ getter 深拷贝（defineProperty 防原型污染
+  写入抛错）+ JWK key_ops 回填 + usages 公私分流（public 仅 verify/encrypt/
+  wrapKey 系，private 缺失即 SyntaxError 空用途；真机逐项对拍）+
+  needUsage 文案对齐（Unable to use this key to ...）。
+- structuredClone(CryptoKey) JS 层包装（无键直通原生；有键则快照重建；
+  二进制走 base64 桥；transfer+key 混用记档偏离）。
+- KeyObject.from(CryptoKey) 经 prelude 内部槽桥接（secret；绕过可伪造 getter）。
+- 转绿：getRandomValues/methods-not-async/hidden-slots；node crypto 黑盒 26/26、
+  Rust crypto 单测 15/15。

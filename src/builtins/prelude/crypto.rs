@@ -2,10 +2,42 @@
 pub const CRYPTO_JS: &str = r#"
 globalThis.CryptoKey = class CryptoKey {
   constructor() { throw new TypeError("Illegal constructor"); }
-  get algorithm() { return { ...__wjs2_keyState.get(this)?.alg }; }
+  // 深拷贝快照（hidden-slots 套件：篡改返回对象不影响内部；hash/publicExponent
+  // 须逐层拷，浅铺会共享嵌套引用）。
+  get algorithm() {
+    const a = __wjs2_keyState.get(this)?.alg;
+    if (a === undefined) return undefined;
+    // 深拷贝 + defineProperty 写入（hidden-slots 套件污染 Object.prototype
+    // 同名只读属性时，普通赋值即抛；defineProperty 绕过原型只读栏）。
+    const out = {};
+    for (const k of Object.keys(a)) {
+      let v = a[k];
+      if (v !== null && typeof v === "object") {
+        v = ArrayBuffer.isView(v) ? v.slice() : { ...v };
+      }
+      Object.defineProperty(out, k, { value: v, writable: true, enumerable: true, configurable: true });
+    }
+    return out;
+  }
   get extractable() { return !!__wjs2_keyState.get(this)?.extractable; }
   get type() { return __wjs2_keyState.get(this)?.kind ?? "secret"; }
   get usages() { return [...(__wjs2_keyState.get(this)?.usages ?? [])]; }
+  // util.inspect 直读内部槽（hidden-slots 套件：伪造 getter 不得污染输出）。
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    const st = __wjs2_keyState.get(this) ?? {};
+    const fmt = (v) => {
+      if (typeof v === "string") return `'${v}'`;
+      if (typeof v === "number" || typeof v === "boolean") return String(v);
+      if (v instanceof Uint8Array) return `Uint8Array(${v.length}) [ ${[...v].join(", ")} ]`;
+      if (Array.isArray(v)) return `[ ${v.map(fmt).join(", ")} ]`;
+      if (v !== null && typeof v === "object") {
+        return `{ ${Object.keys(v).map((k) => `${k}: ${fmt(v[k])}`).join(", ")} }`;
+      }
+      return String(v);
+    };
+    const alg = st.alg ?? {};
+    return `CryptoKey {\n  type: ${fmt(st.kind ?? "secret")},\n  extractable: ${!!st.extractable},\n  algorithm: ${fmt(alg)},\n  usages: ${fmt(st.usages ?? [])}\n}`;
+  }
 };
 function __wjs2_normCurve(c) {
   const s = String(c ?? "").trim().toUpperCase().replace("_", "-");
@@ -23,9 +55,24 @@ function __wjs2_rsaPubExp(v) {
   return Number(v);
 }
 function __wjs2BrandErr() {
-  const e = new TypeError("Illegal invocation");
+  const e = new TypeError("Illegal constructor");
   e.code = "ERR_INVALID_THIS";
   return e;
+}
+// 非对称 usages 公私分流（node 口径：public 仅 verify/encrypt/wrapKey 系，
+// private 仅 sign/decrypt/unwrapKey/derive 系；private 为空即抛）。
+function __wjs2_splitUsages(usages) {
+  const PUB = ["verify", "encrypt", "wrapKey", "encapsulateBits", "encapsulateKey", "encapsulate"];
+  const PRIV = ["sign", "decrypt", "unwrapKey", "deriveKey", "deriveBits", "decapsulate", "decapsulateBits", "decapsulateKey"];
+  const pubU = [];
+  const privU = [];
+  for (const u of usages ?? []) {
+    if (PUB.includes(u)) pubU.push(u);
+    else if (PRIV.includes(u)) privU.push(u);
+    else { pubU.push(u); privU.push(u); }
+  }
+  if (privU.length === 0) throw new DOMException("Usages cannot be empty when creating a key.", "SyntaxError");
+  return { pubU, privU };
 }
 function __wjs2_x_bits(algorithm, st, length) {
   const pubKey = algorithm?.public;
@@ -103,7 +150,8 @@ globalThis.crypto = {
       }
       if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-OAEP" || name === "RSA-PSS") {
         const length = Number(alg?.modulusLength ?? 2048);
-        if (![2048, 3072, 4096].includes(length)) throw new Error("NotSupportedError: RSA modulusLength must be 2048/3072/4096");
+        // node 口径：512 起（hidden-slots 套件 1024；真机实测 512/1024/2048 皆可）。
+        if (!Number.isInteger(length) || length < 512 || length > 16384) throw new Error("NotSupportedError: RSA modulusLength must be an integer between 512 and 16384");
         const e = __wjs2_rsaPubExp(alg?.publicExponent);
         if (!Number.isInteger(e) || e < 2 || e > 2 ** 33 - 1) throw new Error("DataError: bad RSA publicExponent");
         const hash = __wjs2_normHash(alg?.hash ?? "SHA-256");
@@ -111,30 +159,34 @@ globalThis.crypto = {
         const pubDer = __wjs2_rsa_public(privDer);
         const expBytes = (() => { const out = []; let n = e; do { out.unshift(n & 255); n = Math.floor(n / 256); } while (n > 0); return new Uint8Array(out); })();
         const keyAlg = { name, modulusLength: length, publicExponent: expBytes, hash };
-        const mkPub = __wjs2_makeKey(keyAlg, pubDer, usages, !!extractable, "public");
-        const mkPriv = __wjs2_makeKey(keyAlg, privDer, usages, !!extractable, "private");
+        const { pubU: rsaPubU, privU: rsaPrivU } = __wjs2_splitUsages(usages);
+        const mkPub = __wjs2_makeKey(keyAlg, pubDer, rsaPubU, !!extractable, "public");
+        const mkPriv = __wjs2_makeKey(keyAlg, privDer, rsaPrivU, !!extractable, "private");
         return { publicKey: mkPub, privateKey: mkPriv };
       }
       if (name === "ECDSA" || name === "ECDH") {
         const curve = __wjs2_normCurve(alg?.namedCurve);
         const privDer = __wjs2_ec_generate(curve);
         const pubDer = __wjs2_ec_public(curve, privDer);
-        const mkPub = __wjs2_makeKey({ name, namedCurve: curve }, pubDer, usages, !!extractable, "public");
-        const mkPriv = __wjs2_makeKey({ name, namedCurve: curve }, privDer, usages, !!extractable, "private");
+        const { pubU: ecPubU, privU: ecPrivU } = __wjs2_splitUsages(usages);
+        const mkPub = __wjs2_makeKey({ name, namedCurve: curve }, pubDer, ecPubU, !!extractable, "public");
+        const mkPriv = __wjs2_makeKey({ name, namedCurve: curve }, privDer, ecPrivU, !!extractable, "private");
         return { publicKey: mkPub, privateKey: mkPriv };
       }
       if (name === "ED25519") {
         const seed = __wjs2_ed_generate();
         const pub = __wjs2_ed_public(seed);
-        const mkPub = __wjs2_makeKey({ name, namedCurve: "Ed25519" }, pub, usages, !!extractable, "public");
-        const mkPriv = __wjs2_makeKey({ name, namedCurve: "Ed25519" }, seed, usages, !!extractable, "private");
+        const { pubU: edPubU, privU: edPrivU } = __wjs2_splitUsages(usages);
+        const mkPub = __wjs2_makeKey({ name, namedCurve: "Ed25519" }, pub, edPubU, !!extractable, "public");
+        const mkPriv = __wjs2_makeKey({ name, namedCurve: "Ed25519" }, seed, edPrivU, !!extractable, "private");
         return { publicKey: mkPub, privateKey: mkPriv };
       }
       if (name === "X25519") {
         const priv = __wjs2_x_generate();
         const pub = __wjs2_x_public(priv);
-        const mkPub = __wjs2_makeKey({ name, namedCurve: "X25519" }, pub, usages, !!extractable, "public");
-        const mkPriv = __wjs2_makeKey({ name, namedCurve: "X25519" }, priv, usages, !!extractable, "private");
+        const { pubU: xPubU, privU: xPrivU } = __wjs2_splitUsages(usages);
+        const mkPub = __wjs2_makeKey({ name, namedCurve: "X25519" }, pub, xPubU, !!extractable, "public");
+        const mkPriv = __wjs2_makeKey({ name, namedCurve: "X25519" }, priv, xPrivU, !!extractable, "private");
         return { publicKey: mkPub, privateKey: mkPriv };
       }
       if (name === "ED448") {
@@ -293,7 +345,7 @@ globalThis.crypto = {
       if (!st.extractable) throw new Error("InvalidAccessError: key is not extractable");
       const aname = st.alg.name;
       if (aname === "RSASSA-PKCS1-V1_5" || aname === "RSA-OAEP" || aname === "RSA-PSS") {
-        const hash = st.alg.hash ?? "SHA-256";
+        const hash = __wjs2_normHash(st.alg.hash ?? "SHA-256");
         const isPriv = st.kind === "private";
         const privDer = isPriv ? st.material : null;
         const pubDer = isPriv ? __wjs2_rsa_public(st.material) : st.material;
@@ -316,6 +368,7 @@ globalThis.crypto = {
               ? { "SHA-256": "PS256", "SHA-384": "PS384", "SHA-512": "PS512" }[hash] ?? "PS256"
               : { "SHA-256": "RSA-OAEP", "SHA-384": "RSA-OAEP-384", "SHA-512": "RSA-OAEP-512" }[hash] ?? "RSA-OAEP";
           jwk.ext = true;
+          jwk.key_ops = [...st.usages];
           return jwk;
         }
         throw new Error(`NotSupportedError: exportKey ${format} for RSA needs pkcs8/spki/jwk`);
@@ -338,6 +391,7 @@ globalThis.crypto = {
           const jwk = { kty: "EC", crv: curve, x: parts.x, y: parts.y };
           if (isPriv) jwk.d = parts.d;
           jwk.ext = true;
+          jwk.key_ops = [...st.usages];
           return jwk;
         }
         if (format === "raw") {
@@ -368,6 +422,7 @@ globalThis.crypto = {
           // JWA 只给 Ed25519 定义了 "EdDSA"；X25519 无 alg（与 Node 一致，省略）。
           if (aname === "ED25519") jwk.alg = "EdDSA";
           jwk.ext = true;
+          jwk.key_ops = [...st.usages];
           return jwk;
         }
         if (format === "raw") {
@@ -378,7 +433,7 @@ globalThis.crypto = {
       }
       if (format === "raw") return st.material.slice().buffer;
       if (format === "jwk") {
-        return { kty: "oct", k: __wjs2_b64urlEncode(st.material), alg: st.alg.name === "AES-GCM" ? `A${st.alg.length}GCM` : `HS${st.alg.hash.split("-")[1]}`, ext: true };
+        return { kty: "oct", k: __wjs2_b64urlEncode(st.material), alg: st.alg.name === "AES-GCM" ? `A${st.alg.length}GCM` : `HS${__wjs2_normHash(st.alg.hash).split("-")[1]}`, ext: true, key_ops: [...st.usages] };
       }
       throw new Error(`NotSupportedError: exportKey ${format} needs Phase 3 c-4`);
       })();
@@ -432,7 +487,7 @@ globalThis.crypto = {
       if (!st) throw new TypeError("sign: not a CryptoKey");
       __wjs2_needUsage(st, "sign");
       if (st.alg.name === "HMAC") {
-        const out = __wjs2_hmac_sign(st.alg.hash, st.material, __wjs2_dataBytes(data));
+        const out = __wjs2_hmac_sign(__wjs2_normHash(st.alg.hash), st.material, __wjs2_dataBytes(data));
         return out.buffer;
       }
       if (st.alg.name === "RSASSA-PKCS1-V1_5") {
@@ -472,7 +527,7 @@ globalThis.crypto = {
       if (!st) throw new TypeError("verify: not a CryptoKey");
       __wjs2_needUsage(st, "verify");
       if (st.alg.name === "HMAC") {
-        return __wjs2_hmac_verify(st.alg.hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        return __wjs2_hmac_verify(__wjs2_normHash(st.alg.hash), st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
       }
       if (st.alg.name === "RSASSA-PKCS1-V1_5") {
         if (st.kind === "private") throw new TypeError("verify: not an RSA public key");
@@ -574,4 +629,116 @@ globalThis.crypto = {
     },
   },
 };
+// structuredClone 的 CryptoKey 面（hidden-slots 套件）：native 只走 JSON 纯数据，
+// 类实例自身无可枚举属性——此处先把键换成快照描述子再进原生，出后再复原为键。
+// 快照 deep-copy（publicExponent 切片），篡改隔离；transfer 含键暂不支持（抛）。
+(function __wjs2_wrapStructuredClone() {
+  const __orig = globalThis.structuredClone;
+  if (typeof __orig !== "function") return;
+  const __b64enc = (u8) => {
+    let s = "";
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
+  const __b64dec = (s) => {
+    const bin = atob(String(s));
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  };
+  const __packKey = (k) => {
+    const st = __wjs2_keyState.get(k);
+    if (!st) return k;
+    // 手工 walk（JSON replacer 看不到 TypedArray：toJSON 先转 plain object）。
+    const __packAlg = (v) => {
+      if (v instanceof ArrayBuffer) return { __wjs2Bytes: __b64enc(new Uint8Array(v)) };
+      if (ArrayBuffer.isView(v)) return { __wjs2Bytes: __b64enc(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) };
+      if (Array.isArray(v)) return v.map(__packAlg);
+      if (v !== null && typeof v === "object") {
+        const o = {};
+        for (const key of Object.keys(v)) o[key] = __packAlg(v[key]);
+        return o;
+      }
+      return v;
+    };
+    const alg = __packAlg(st.alg ?? null);
+    return {
+      __wjs2CryptoKey: true,
+      alg,
+      materialB64: __b64enc(st.material),
+      usages: [...(st.usages ?? [])],
+      extractable: !!st.extractable,
+      kind: st.kind ?? "secret",
+    };
+  };
+  const __pack = (v, seen) => {
+    if (v !== null && typeof v === "object") {
+      if (seen.has(v)) return seen.get(v);
+      if (v instanceof CryptoKey) {
+        const p = __packKey(v);
+        seen.set(v, p);
+        return p;
+      }
+      if (v instanceof ArrayBuffer) {
+        const p = { __wjs2Bytes: __b64enc(new Uint8Array(v)) };
+        seen.set(v, p);
+        return p;
+      }
+      if (ArrayBuffer.isView(v)) {
+        const p = { __wjs2Bytes: __b64enc(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)), __wjs2View: v.constructor.name };
+        seen.set(v, p);
+        return p;
+      }
+      if (Array.isArray(v)) {
+        const out = [];
+        seen.set(v, out);
+        for (const e of v) out.push(__pack(e, seen));
+        return out;
+      }
+      const out = {};
+      seen.set(v, out);
+      for (const k of Object.keys(v)) out[k] = __pack(v[k], seen);
+      return out;
+    }
+    return v;
+  };
+  const __reviveBytes = (v) => {
+    if (v !== null && typeof v === "object" && typeof v.__wjs2Bytes === "string" && Object.keys(v).length <= 2) {
+      const u8 = __b64dec(v.__wjs2Bytes);
+      return v.__wjs2View === "DataView" ? new DataView(u8.buffer) : u8;
+    }
+    return v;
+  };
+  const __unpack = (v) => {
+    if (v !== null && typeof v === "object") {
+      if (v.__wjs2CryptoKey === true) {
+        const bytes = __b64dec(v.materialB64);
+        return __wjs2_makeKey(__unpack(v.alg), bytes, v.usages, v.extractable, v.kind);
+      }
+      const r = __reviveBytes(v);
+      if (r !== v) return r;
+      if (Array.isArray(v)) return v.map(__unpack);
+      const out = {};
+      for (const k of Object.keys(v)) out[k] = __unpack(v[k]);
+      return out;
+    }
+    return v;
+  };
+  globalThis.structuredClone = function (value, options) {
+    // 快道：不含 CryptoKey 即原样直通（transfer/detach 语义零扰动）。
+    const __seen = new Set();
+    const __hasKey = (v) => {
+      if (v !== null && typeof v === "object") {
+        if (__seen.has(v)) return false;
+        __seen.add(v);
+        if (v instanceof CryptoKey) return true;
+        if (Array.isArray(v)) return v.some(__hasKey);
+        return Object.keys(v).some((k) => __hasKey(v[k]));
+      }
+      return false;
+    };
+    if (!__hasKey(value)) return __orig.call(this, value, options);
+    return __unpack(__orig.call(this, __pack(value, new Map()), options));
+  };
+})();
 "#;

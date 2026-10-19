@@ -109,9 +109,19 @@ function __wjs2_normHash(h) {
 }
 function __wjs2_makeKey(alg, material, usages, extractable, kind) {
   const k = Object.create(CryptoKey.prototype);
-  __wjs2_keyState.set(k, { alg, material, usages, extractable, kind: kind ?? "secret" });
+  // hash 归一为 {name} 对象（node WebCrypto 口径；hidden-slots 套件点名
+  // algorithm.hash.name；字符串输入在此统一转形，消费侧只认对象形）。
+  const a = alg === null || typeof alg !== "object" ? {} : { ...alg };
+  if (typeof a.hash === "string") a.hash = { name: a.hash };
+  __wjs2_keyState.set(k, { alg: a, material, usages, extractable, kind: kind ?? "secret" });
   return k;
 }
+// KeyObject.from 桥（hidden-slots 套件：绕过可伪造的原型 getter，直读内部槽）。
+globalThis.__wjs2_cryptoKeyInfo = (k) => {
+  const s = __wjs2_keyState.get(k);
+  if (!s) return null;
+  return { kind: s.kind, material: s.material, usages: s.usages, extractable: s.extractable, alg: s.alg };
+};
 function __wjs2_keyBytes(v) {
   if (v instanceof ArrayBuffer) return new Uint8Array(v);
   if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
@@ -122,7 +132,7 @@ function __wjs2_dataBytes(v) {
   return __wjs2_keyBytes(v);
 }
 function __wjs2_needUsage(st, op) {
-  if (!st.usages.includes(op)) throw new Error(`InvalidAccessError: key cannot be used to ${op}`);
+  if (!st.usages.includes(op)) throw new DOMException(`Unable to use this key to ${op}`, "InvalidAccessError");
 }
 function __wjs2_aesParams(algorithm) {
   const iv = __wjs2_dataBytes(algorithm?.iv ?? new Uint8Array(0));

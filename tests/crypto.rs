@@ -127,8 +127,8 @@ fn asymmetric_errors() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("NotSupportedError"), "stderr: {stderr}");
     let ok = stdout_of(&mut winterjs2().args(["--eval",
-        r#"const k = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); try { await crypto.subtle.sign("ECDSA", k.publicKey, new Uint8Array(1)); console.log("no-throw"); } catch (e) { console.log(String(e).includes("private key") ? "sign-needs-private" : e); }"#]));
-    assert_eq!(ok, "sign-needs-private\n", "usage: {ok}");
+        r#"const k = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); console.log(k.publicKey.usages.join(","), k.privateKey.usages.join(",")); try { await crypto.subtle.sign("ECDSA", k.publicKey, new Uint8Array(1)); console.log("no-throw"); } catch (e) { console.log(e.name === "InvalidAccessError" ? "sign-needs-private" : e); }"#]));
+    assert_eq!(ok, "verify sign\nsign-needs-private\n", "usage: {ok}");
 }
 
 #[test]
@@ -167,9 +167,9 @@ if (await crypto.subtle.verify("Ed25519", kp.publicKey, await crypto.subtle.sign
 // 报错：raw 非 32B
 try {{ await crypto.subtle.importKey("raw", new Uint8Array(31).buffer, {{ name: "Ed25519" }}, true, ["verify"]); throw new Error("must throw"); }}
 catch (e) {{ if (!String(e.message).includes("32 bytes")) throw e; }}
-// 报错：公钥验签用私钥对象
+// 报错：私钥无 verify 用途（node 按用途报错，非按类型）
 try {{ await crypto.subtle.verify("Ed25519", kp.privateKey, s2, MSG); throw new Error("must throw"); }}
-catch (e) {{ if (!String(e.message).includes("public key")) throw e; }}
+catch (e) {{ if (e.name !== "InvalidAccessError") throw e; }}
 console.log("ed-ok");
 "#
     );
@@ -238,7 +238,7 @@ if (jwk.kty !== "RSA" || jwk.alg !== "PS256" || typeof jwk.d !== "string") throw
 const k2 = await crypto.subtle.importKey("jwk", jwk, { name: "RSA-PSS", hash: "SHA-256" }, true, ["sign"]);
 if (await crypto.subtle.verify({ name: "RSA-PSS", saltLength: 32 }, kp.publicKey, await crypto.subtle.sign({ name: "RSA-PSS", saltLength: 32 }, k2, MSG), MSG) !== true) throw new Error("jwk roundtrip failed");
 try { await crypto.subtle.sign({ name: "RSA-PSS", saltLength: 32 }, kp.publicKey, MSG); throw new Error("must throw"); }
-catch (e) { if (!String(e.message).includes("private key")) throw e; }
+catch (e) { if (e.name !== "InvalidAccessError") throw e; }
 console.log("pss-ok");
 "#;
     assert_eq!(

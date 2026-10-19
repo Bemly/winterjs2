@@ -622,9 +622,25 @@ class KeyObject {
     }
     return false;
   }
-  // 10f crypto二轮：`KeyObject.from`（CryptoKey 互转；宿主无 CryptoKey 品牌，
-  // 非法输入口径先行，有效输入另案）。
+  // 10f crypto二轮：`KeyObject.from`（CryptoKey 互转；hidden-slots 套件要求
+  // 直读内部槽——绕过可伪造的原型 getter，经 prelude 桥拿真实 material）。
   static from(key) {
+    const CK = globalThis.CryptoKey;
+    const info = (typeof CK === "function" && key instanceof CK &&
+      typeof globalThis.__wjs2_cryptoKeyInfo === "function")
+      ? globalThis.__wjs2_cryptoKeyInfo(key) : null;
+    if (info !== null && (info.kind === "secret" || info.kind === "private" || info.kind === "public")) {
+      const Cls = info.kind === "secret" ? SecretKeyObject
+        : info.kind === "public" ? PublicKeyObject : PrivateKeyObject;
+      const k = new Cls(info.kind, info.kind, Buffer.from(info.material));
+      __koState.set(k, {
+        kind: info.kind,
+        keyType: info.kind,
+        material: Buffer.from(info.material),
+        detail: null,
+      });
+      return k;
+    }
     const recv = typeof key === "string" ? `type string ('${key}')`
       : key === null ? "null"
       : key === undefined ? "undefined"

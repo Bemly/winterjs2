@@ -2458,3 +2458,19 @@ G1/G2/G3/G9 已收官。）
   长时 `h:mm:ss` 全局面可记偏离（套件正则短时恒过）。
 - 交付：两套件 rc=0（干净树复验）+ 黑盒/单测/冒烟/双守门全绿（见上轮）；
   commits：8050f60 + 707a929 + 336e7b0（记账）+ 本轮 void-m 单行（待推）。
+
+## 2026-10-20 test-console.js 模块面5小修（lane/console，转绿）
+
+- 范围（Bun 清单外，以 node 原文为锚）：`new Console()` 实例的 time/timeLog/
+  timeEnd/count/countReset。修法（`src/builtins/node/console.rs` JS 面，
+  零 Rust 改动）：入参 `${label}` 归一（Symbol 抛 TypeError，真机同）+
+  `time` has 守卫（dup 警告并保留原计时）+ 缺标/缺数走 `process.emitWarning`
+ （8 文本逐字，Warning 无 code）+ 时长 `process.hrtime()` 差值喂本轮落地的
+  `formatTime`（`node:internal/debuglog` 具名导入，无循环）+ `countReset`
+  命中删 `${label}`（不预归一，原文同）。`timeLog` 余参经 `_out` 续接既有。
+- 黑盒 `console_timer_count_warning_faces`（输出形×7 正则 + 归一标签 +
+  dup 不重置 + `__proto__` + 死链回落 + Symbol×3 TypeError + 8 警告逐字；
+  SL| 行前缀避 JSON 转义整行匹配，自研 `regex_lite_match` 只认三构式）。
+- 验证：console:: 5/5；util::+stream:: 25/25；两目标套件 rc=0 复绿；
+  冒烟 5/5；check-lines/naming ok。全局面（Rust Instant/`Timer…` 文案/余参丢弃）
+  未动，另案（见定级稿 R-a~R-h 全局列）。commit 36b1310 已推 lane/console。

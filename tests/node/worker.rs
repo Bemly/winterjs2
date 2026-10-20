@@ -925,3 +925,72 @@ setTimeout(() => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_thread_msg_routes() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(&dir, "p.mjs", r#"
+import { Worker, postMessageToThread, threadId } from "node:worker_threads";
+import { once } from "node:events";
+const w = new Worker("const wt=require('node:worker_threads');wt.parentPort.on('message',()=>{});wt.parentPort.postMessage('ready');process.on('workerMessage',(v,s)=>{wt.parentPort.postMessage(['echo',v,s]);wt.postMessageToThread(0,'hi-main');});", { eval: true });
+await once(w, "message");
+process.on("workerMessage", (v, s) => console.log("tmRouteBack", v === "hi-main" && s === w.threadId));
+w.on("message", (m) => { if (Array.isArray(m) && m[0] === "echo") console.log("tmRouteOk", m[1].n === 3 && m[2] === threadId); });
+await postMessageToThread(w.threadId, { n: 3 }).then((v) => console.log("tmRouteRes", v === undefined));
+await new Promise((r) => setTimeout(r, 500)); await w.terminate();
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(["tmRouteBack true", "tmRouteRes true", "tmRouteOk true"].iter().all(|l| s.lines().any(|x| x == *l)), "out: {s}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn worker_thread_msg_errors() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(&dir, "p.mjs", r#"
+import { Worker, postMessageToThread, threadId } from "node:worker_threads";
+import { once } from "node:events";
+const t = async (tag, f, code, msg) => { try { await f(); console.log(tag, "NO-THROW"); } catch (e) { console.log(tag, e.code === code && e.message === msg); } };
+await t("tmErrSelf", () => postMessageToThread(threadId, 1), "ERR_WORKER_MESSAGING_SAME_THREAD", "Cannot sent a message to the same thread");
+await t("tmErrUnknown", () => postMessageToThread(2 ** 40, 1), "ERR_WORKER_MESSAGING_FAILED", "Cannot find the destination thread or listener");
+await t("tmErrTimeType", () => postMessageToThread(999, 1, [], "x"), "ERR_INVALID_ARG_TYPE", "The \"timeout\" argument must be of type number. Received type string ('x')");
+await t("tmErrTimeRange", () => postMessageToThread(999, 1, [], -1), "ERR_OUT_OF_RANGE", "The value of \"timeout\" is out of range. It must be >= 0. Received -1");
+const w = new Worker("const wt=require('node:worker_threads');wt.parentPort.on('message',()=>{});wt.parentPort.postMessage('ready');", { eval: true });
+await once(w, "message");
+await t("tmErrNoListen", () => postMessageToThread(w.threadId, 1), "ERR_WORKER_MESSAGING_FAILED", "Cannot find the destination thread or listener");
+const w2 = new Worker("process.on('workerMessage',()=>{throw new Error('KABOOM');});const wt=require('node:worker_threads');wt.parentPort.on('message',()=>{});wt.parentPort.postMessage('ready');", { eval: true });
+await once(w2, "message"); await t("tmErrThrow", () => postMessageToThread(w2.threadId, 1), "ERR_WORKER_MESSAGING_ERRORED", "The destination thread threw an error while processing the message");
+await w.terminate(); await w2.terminate();
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(["tmErrSelf true", "tmErrUnknown true", "tmErrTimeType true", "tmErrTimeRange true", "tmErrNoListen true", "tmErrThrow true"].iter().all(|l| s.lines().any(|x| x == *l)), "out: {s}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn worker_thread_msg_transfer_edge() {
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(&dir, "p.mjs", r#"
+import { Worker, postMessageToThread, MessageChannel } from "node:worker_threads";
+import { once } from "node:events";
+const w = new Worker("const wt=require('node:worker_threads');wt.parentPort.on('message',()=>{});wt.parentPort.postMessage('ready');process.on('workerMessage',(v)=>{ const p=v&&v.port; if(p) p.on('message',()=>{p.postMessage('pong');}); });", { eval: true });
+await once(w, "message");
+const { port1, port2 } = new MessageChannel();
+await postMessageToThread(w.threadId, { port: port2 }, [port2]);
+port1.on("message", (m) => { console.log("tmEdgePort", m === "pong"); port1.close(); });
+port1.postMessage("ping");
+const tok = async (tag, f) => { try { console.log(tag, (await f()) === undefined); } catch { console.log(tag, false); } };
+const terr = async (tag, f, code) => { try { await f(); console.log(tag, "NO-THROW"); } catch (e) { console.log(tag, e.code === code || e.name === code); } };
+await tok("tmEdgeShort", () => postMessageToThread(w.threadId, 1, 2000)); const wb = new Worker("while(true){}", { eval: true }); await terr("tmEdgeZero", () => postMessageToThread(wb.threadId, 1, 0), "ERR_WORKER_MESSAGING_TIMEOUT"); await wb.terminate(); await terr("tmEdgeClone", () => postMessageToThread(w.threadId, () => {}, 0), "DataCloneError");
+await new Promise((r) => setTimeout(r, 300)); await w.terminate();
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(["tmEdgePort true", "tmEdgeShort true", "tmEdgeZero true", "tmEdgeClone true"].iter().all(|l| s.lines().any(|x| x == *l)), "out: {s}");
+    dir.close().unwrap();
+}

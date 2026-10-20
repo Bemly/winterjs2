@@ -109,16 +109,37 @@ function __clusterForceExit() {
 // 收发闭包只读 globalThis，不跨模块直接引用）。
 // 进程桥（__wjs2_cluster_side_proc）同步扇出 disconnect/message（worker-destroy
 // 套件挂在 cluster.worker.process 上；error 不经此路，防无监听抛错）。
-function __clusterSideEmit(ev, a) {
+function __clusterSideEmit(ev, a, b) {
   try {
     const __side = globalThis.__wjs2_cluster_side;
-    if (__side) __side.emit(ev, a);
+    if (__side) __side.emit(ev, a, b);
   } catch {}
   if (ev === "error") return;
   try {
     const __proc = globalThis.__wjs2_cluster_side_proc;
-    if (__proc) __proc.emit(ev, a);
+    if (__proc) __proc.emit(ev, a, b);
   } catch {}
+}
+// cluster 传柄用户消息派发（listen-handle-cluster 套件）：信封即 reviver
+// 重建后交付 (msg, obj)（node got 同序）；余者原样单参。
+function __clusterEmitUserMessage(message) {
+  if (message !== null && typeof message === "object" && !Array.isArray(message) &&
+      message.__wjs2_handle !== undefined && message.__wjs2_handle !== null &&
+      typeof message.__wjs2_handle === "object") {
+    const h = message.__wjs2_handle;
+    const rev = globalThis.__wjs2_handleRevivers?.[h.type];
+    if (typeof rev === "function") {
+      try {
+        rev(h, (obj) => {
+          process.__wjs2_emit("message", message.__wjs2_msg, obj);
+          __clusterSideEmit("message", message.__wjs2_msg, obj);
+        });
+      } catch {}
+      return;
+    }
+  }
+  process.__wjs2_emit("message", message);
+  __clusterSideEmit("message", message);
 }
 process.disconnect = () => __clusterDoDisconnect(false);
 // 起步缓冲：fork 后即达的用户消息先攒，待用户模块载完（监听器已挂）再重放；
@@ -157,8 +178,7 @@ if (parentPort !== null) {
       __earlyMessages.push(message);
       return;
     }
-    process.__wjs2_emit("message", message);
-    __clusterSideEmit("message", message);
+    __clusterEmitUserMessage(message);
   });
   parentPort.on("close", () => {
     if (process.connected) {
@@ -234,8 +254,7 @@ try {
 await import(__mod);
 __booted = true;
 for (const __m of __earlyMessages) {
-  process.__wjs2_emit("message", __m);
-  __clusterSideEmit("message", __m);
+  __clusterEmitUserMessage(__m);
 }
 `;
 
@@ -311,8 +330,20 @@ class ClusterWorker extends EventEmitter {
       if (cb) queueMicrotask(() => cb(err));
       return false;
     }
+    // cluster 传柄（listen-handle-cluster 套件）：第二参 net.Server 即 dup
+    // 监听 fd 随信封走（node child_process send/got 'net.Server' 口径；
+    // 无柄线形不变）。
+    let __payload = message;
+    for (const a of rest) {
+      if (a !== null && typeof a === "object" && a.__wjs2_netServer === true && typeof a.__id === "number") {
+        let __fd = -1;
+        try { __fd = Number(__wjs2_net_dup_listen(a.__id)); } catch {}
+        if (__fd >= 0) __payload = { __wjs2_msg: message, __wjs2_handle: { type: "net.Server", fd: __fd } };
+        break;
+      }
+    }
     try {
-      this.__w.postMessage(message);
+      this.__w.postMessage(__payload);
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       if (!err.code) err.code = "ERR_IPC_CHANNEL_CLOSED";

@@ -164,6 +164,32 @@ pub(crate) fn net_rst_purge(id: u64) {
     }
 }
 
+// ── server 监听 fd 记账（cluster-1 传柄 dup 用；RST 面同款静态）──────────────
+/// server id → 监听 fd（TCP listen-bind 成功点记；take/dup 后摘除或 close 即清）。
+fn net_srv_fds() -> &'static Mutex<HashMap<u64, i32>> {
+    static MAP: OnceLock<Mutex<HashMap<u64, i32>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 记录 server 监听 fd。
+pub fn net_srv_fd_record(id: u64, fd: i32) {
+    if let Ok(mut m) = net_srv_fds().lock() {
+        m.insert(id, fd);
+    }
+}
+
+/// 取 server 监听 fd（只读；dup 不摘，close 清）。
+pub fn net_srv_fd_get(id: u64) -> Option<i32> {
+    net_srv_fds().lock().ok().and_then(|m| m.get(&id).copied())
+}
+
+/// 清 server 监听 fd（close/purge）。
+pub fn net_srv_fd_clear(id: u64) {
+    if let Ok(mut m) = net_srv_fds().lock() {
+        m.remove(&id);
+    }
+}
+
 /// 写端是否已死（死则读端 EOF 需代行收尾，End 命令无人消费）。
 pub fn net_writer_dead(id: u64) -> bool {
     with_plain(|p| p.net_sockets.get(&id).is_some_and(|e| !e.writer_alive))
@@ -258,6 +284,7 @@ pub(crate) fn net_purge_entry(id: u64) -> bool {
             .is_some_and(|e| e.refed && e.holding)
     });
     net_rst_purge(id);
+    net_srv_fd_clear(id);
     if counted {
         with_plain(|p| p.net_open = p.net_open.saturating_sub(1));
     }
@@ -283,6 +310,11 @@ pub fn net_hold_put(token: u64, l: std::net::TcpListener) {
 }
 pub fn net_hold_take(token: u64) -> bool {
     with_plain(|p| p.net_held.remove(&token).is_some())
+}
+
+/// 取出预留 listener（cluster-2 裸柄 take-direct 认领；取走即摘，无关绑竞速）。
+pub fn net_hold_take_listener(token: u64) -> Option<std::net::TcpListener> {
+    with_plain(|p| p.net_held.remove(&token))
 }
 
 /// 占位 listener 的 fd（dup 出独立 fd；未知 token 回 -1）。

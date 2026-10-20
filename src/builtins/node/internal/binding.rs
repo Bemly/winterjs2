@@ -24,11 +24,28 @@ const __table = {
   // （与真机在不支持平台的行为一致；有 127.0.0.2 的机器上保守跳过，记档）。
   tcp_wrap: (() => {
     function TCP() {}
-    TCP.prototype.bind = function (addr) {
+    TCP.prototype.bind = function (addr, port) {
       if (addr === "127.0.0.1" || addr === "localhost" || addr === "::1") return 0;
+      // cluster-2 裸柄：通配地址真绑 + 预留（其余维持存根语义，
+      // localaddress 套件保守跳过面不动）。
+      if (addr === "0.0.0.0") {
+        try {
+          const r = String(__wjs2_net_tcp_wrap_bind(addr, Number(port) || 0));
+          const [tok, p] = r.split(":");
+          this.__boundHost = addr;
+          this.__boundPort = Number(p);
+          this.__holdToken = Number(tok);
+          this.__takeHeld = true;
+          return 0;
+        } catch { return -22; }
+      }
       return -22;
     };
     TCP.prototype.close = function () { return undefined; };
+    TCP.prototype.address = function () {
+      if (this.__boundPort === undefined) return null;
+      return { address: this.__boundHost ?? "0.0.0.0", family: String(this.__boundHost).includes(":") ? "IPv6" : "IPv4", port: this.__boundPort };
+    };
     return { TCP, constants: { SOCKET: 1 } };
   })(),
 };

@@ -21,6 +21,8 @@ class __ServerClass extends EventEmitter {
     }
     this.__id = 0;
     this.__listening = null;
+    // cluster 传柄识别旗（worker.send 第二参 Server 判定）。
+    try { this.__wjs2_netServer = true; } catch {}
     this.allowHalfOpen = !!(options && typeof options === "object" && options.allowHalfOpen);
     // node 口径（server-keepalive 套件点名）：keepAlive/keepAliveInitialDelay 存自身
     // （默认 false/0，真机 26 实测）；_handle 在 listen 成功路径建桩（含 onconnection）。
@@ -122,6 +124,16 @@ class __ServerClass extends EventEmitter {
       }
       port.__adopted = true;
       if (port.__udsPath !== undefined) __boundPaths.delete(port.__udsPath);
+      // cluster-2 裸柄：预留 token 命中即 take-direct 认领（免关绑竞速；
+      // 仅裸柄置 __takeHeld，BoundSocket 旧路一字不动）。
+      if (!port.__isPipe && port.__takeHeld === true && port.__holdToken !== undefined && port.__holdToken !== null) {
+        if (cb) this.once("listening", cb);
+        this.__setupHandle();
+        this.__port = port.__boundPort;
+        this.__id = Number(__wjs2_net_listen(0, "HELD:" + String(port.__holdToken), this));
+        this.__applyUnrefLatch();
+        return this;
+      }
       if (port.__holdToken) { try { __wjs2_net_unhold(port.__holdToken); } catch {} }
       if (cb) this.once("listening", cb);
       this.__setupHandle();
@@ -237,14 +249,11 @@ class __ServerClass extends EventEmitter {
         }
       }
       if (typeof o.fd === "number" && o.fd >= 0) {
-        // node 口径：listen({fd}) 非法 fd 即异步 EINVAL（error 事件；真机实证）；
-        // 负数/非数值 fd 落 node 尾 throw（{fd:-1} → 'must have the property'）。
+        // cluster-1 收端：有效监听 fd 即认领（native "FD:" 标记；无效沿旧 EINVAL 路）。
         if (cb0) this.once("listening", cb0);
-        queueMicrotask(() => {
-          const e = new Error(`listen EINVAL: invalid argument`);
-          e.code = "EINVAL"; e.syscall = "listen"; e.errno = -4071;
-          this.emit("error", e);
-        });
+        this.__setupHandle();
+        this.__id = Number(__wjs2_net_listen(0, "FD:" + String(o.fd | 0), this));
+        this.__applyUnrefLatch();
         return this;
       }
       if (("port" in o) && (o.port === undefined || o.port === null)) {
@@ -429,6 +438,14 @@ function Server(...args) {
 }
 Object.setPrototypeOf(Server, __ServerClass);
 Server.prototype = __ServerClass.prototype;
+// cluster 传柄重建（node child_process got 'net.Server' 口径）：收端
+// new Server + listen({fd})，listening 后交付（注册表解耦，无硬依赖）。
+try {
+  ((globalThis.__wjs2_handleRevivers ??= {}))["net.Server"] = (data, emit) => {
+    const s = new Server();
+    s.listen({ fd: data.fd }, () => { try { emit(s); } catch {} });
+  };
+} catch { /* 无 globalThis 即跳过 */ }
 export function createConnection(...args) {
   // node 口径（incoming-message-options 套件）：options 进 Socket 构造器
   //（readableHighWaterMark 等流选项生效；旧无参构造即丢）。

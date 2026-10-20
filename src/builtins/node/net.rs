@@ -146,8 +146,8 @@ pub enum NetCmd {
 pub(crate) use super::net_pumps::spawn_pumps;
 use super::net_pumps::{opt_num, set_rval_str};
 pub use super::net_pumps::{
-    net_attach, net_bind, net_connect, net_destroy, net_end, net_isip, net_listen,
-    net_reset, net_write,
+    net_attach, net_bind, net_connect, net_destroy, net_dup_listen, net_end,
+    net_isip, net_listen, net_reset, net_tcp_wrap_bind, net_write,
 };
 
 

@@ -2802,4 +2802,58 @@ G1/G2/G3/G9 已收官。）
   `tls_` 15/15；附带修 https_connect_lookup_family（回归）；冒烟 5/5；
   双守门绿（含 `split-js` 切 net_socket_ev.js 280 行 + OnceLock 退 struct 字段）。
 
+## 2026-10-21 net P2 设计（listen-handle-cluster ×2，IPC 柄底座）
+
+- 套件语义（真机实测）：① cluster-1：primary `worker.send(null, server)`
+  传已监听 Server，worker 重建 `instanceof net.Server` 即 `process.exit(0)`；
+  primary 见 exit 关 server 即退。node 内幕（child_process.js）：按型注册
+  `send/got`——'net.Server' 发原始 `_handle`（fd 过 IPC），收端
+  `new Server()` + `listen(handle)` 后交付。② cluster-2：
+  `internalBinding('tcp_wrap')` 裸 `TCP.bind('0.0.0.0', 0)` 回 0，
+  `listen(handle)` 即听后退出（`--expose-internals` 本仓已放行）。
+- 关键判定（同线程 worker_threads 共享 fd 表，无需 SCM_RIGHTS）：
+  复用 holdToken（`net_hold_put/take` 预留底座）+ cluster internalMessage
+  信封（有柄才包、无柄线形不变），只新增最小桥，不另起传输。
+- 方案：
+  1. cluster-1 发端：`worker.send` 认 Server（`__wjs2_netServer` 旗），新
+     native `__wjs2_net_dup_listen(serverId)` dup 监听 fd（同 socket 双
+     accept，内核分发；原 fd 不动），信封 `{__wjs2_msg, __wjs2_handle:
+     {type:'net.Server', fd}}` 经既有 postMessage。
+  2. 收端：`globalThis.__wjs2_handleRevivers` 注册表（net 侧注册，无硬依赖），
+     重建 `new Server()` + `listen({fd})` 有效形，listening 后交付
+     `process "message"` 第二参（node `got` 同序）。
+  3. fd 认领：`listen({fd})` 有效 fd 走新 `net_listen` `"FD:<n>"` 标记
+    （"UDS:" 同款约定；SO_TYPE==SOCK_STREAM 校验，无效沿旧 EINVAL 路——
+     fd0/ebadf 套件不动）；`from_raw_fd` 单一归属（发端 dup 出、收端一次
+     消费，UNSAFE-BOUNDARY 注记）。
+  4. server fd 记账：TCP listen-bind 成功点（同步/异步双址）记 id→fd
+    （OnceLock 静态，purge/close 即清，RST 面同款）。
+  5. cluster-2 裸柄：tcp_wrap `TCP.bind` 真绑 + `net_hold_put` 预留，柄整
+     BoundSocket 形（address 函 + `__boundPort/Host/Token`），`listen(handle)`
+     走既有 adopt，唯 token 命中改 take-direct（新 `"HELD:<token>"` 标记，
+     免关绑竞速；BoundSocket 旧路一字不动）。
+  6. primary 收尾：既有 fork/exit/drain 机制，复验。
+- 不做：`net.Socket` 句柄传递（`_setupWorker`/`_connections` 记账大件，无套件
+  点名）；BoundSocket transfer 协议；spawn stdio 传柄（fd-server 另案，见下）。
+- 另案记一笔：test-listen-fd-server.js 现红（spawn stdio>3 项拒），P0/P1 未碰
+  spawn，base19b 未收录（疑基线口径/环境），P2 不碰，终验复判。
+
+## 2026-10-21 net P2 落地（listen-handle-cluster ×2）
+
+- 按设计实现：`__wjs2_net_dup_listen`（dup 传柄）+ `__wjs2_net_tcp_wrap_bind`
+  （真绑预留）+ `net_listen` `"FD:"/"HELD:"` 标记（"UDS:" 同款；SO_TYPE 门，
+  fd0/ebadf 沿旧错）+ server fd 记账（同步预绑即记，purge/close 即清）+
+  `listen({fd})` 有效认领 + BoundSocket 形裸柄 take-direct（`__takeHeld` 门，
+  旧路不动）+ `worker.send` 信封（有柄才包）+ 收端 reviver 注册表
+  （listening 后交付第二参）+ tcp_wrap 通配真绑（环回存根面不动）。
+- 排障两则：① 同步 listening 微任务先于任务记账 → 预绑点同步记 fd；
+  ② 插入 HELD 分支时重复了 `once/listening+__setupHandle`（bound 双响）→ 去重。
+- 验证：cluster-1/2 双绿；黑盒 +2（handle 传送/tcp_wrap 真绑）；`net_` 22/22、
+  `http_` 35/35、`https_` 12/12、`tls_` 15/15、`cluster_` 6/6；fd0/ebadf/
+  boundsocket/call-listen/localaddress 皆绿；冒烟 5/5；双守门绿。
+- 未覆盖面（设计内不做，实证从未绿）：boundsocket-transfer-worker
+  （worker transfer 校验拒，无基线收录，注释本就标另案）；fd-server
+  （spawn stdio，见设计另案）。
+
+
 

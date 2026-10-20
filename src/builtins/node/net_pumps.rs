@@ -548,8 +548,56 @@ pub unsafe extern "C" fn net_listen(
     // host 缺省时置此旗）。成功 rval "id:port" 并任务内直接起 accept；失败 rval
     // "id:0"，任务内照常异步报 ServerError + ServerClose（绝不抛）。
     // 无新增 unsafe（纯 safe：std bind + 通道发送）。
-    enum SyncPre { No, Ok(std::net::TcpListener, u16), Fail(String, String) }
-    let pre = if !reuse
+    enum SyncPre { No, Ok(std::net::TcpListener, u16), Adopted(std::net::TcpListener), Fail(String, String) }
+    // cluster-1/2 柄认领（"UDS:" 同款标记约定）：FD:<n> 采外部 fd（dup 出的
+    // 监听端/外部传入），HELD:<token> 取预留 listener；成功即预绑（rval 纯 id，
+    // 地址面走异步 Listening 事件），失败 Fail 走异步错。
+    // UNSAFE-BOUNDARY(from_raw_fd)：fd 单一归属——dup 出（发端）/预留转交，
+    // 本分支一次消费；非法 fd 即 Fail（EINVAL），不抛。
+    let adopted: Option<std::io::Result<std::net::TcpListener>> = if host.starts_with("FD:") {
+        Some((|| {
+            #[cfg(unix)]
+            {
+                use std::os::fd::FromRawFd as _;
+                let n: i32 = host[3..].parse().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "listen EINVAL: invalid argument"))?;
+                // 有效性门：SOCK_STREAM（fd0/2 等一律 EINVAL）。
+                let stype: i32 = unsafe {
+                    let mut v: libc::c_int = 0;
+                    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                    if libc::getsockopt(n, libc::SOL_SOCKET, libc::SO_TYPE, &mut v as *mut _ as *mut libc::c_void, &mut len) != 0 {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "listen EINVAL: invalid argument"));
+                    }
+                    v
+                };
+                if stype != libc::SOCK_STREAM {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "listen EINVAL: invalid argument"));
+                }
+                // SAFETY(见上)：调用方保证 fd 为可接管监听端（dup/外部传入），本处唯一消费。
+                let l = unsafe { std::net::TcpListener::from_raw_fd(n) };
+                l.set_nonblocking(true).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "listen EINVAL: invalid argument"))?;
+                Ok(l)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "listen EINVAL: invalid argument"))
+            }
+        })())
+    } else if let Some(tok) = host.strip_prefix("HELD:") {
+        Some(tok.parse::<u64>().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "listen EINVAL: invalid argument")).and_then(|t| {
+            state::net_hold_take_listener(t).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "listen EINVAL: invalid argument"))
+        }))
+    } else {
+        None
+    };
+    let pre = if let Some(adopted) = adopted {
+        match adopted {
+            Ok(l) => SyncPre::Adopted(l),
+            Err(e) => {
+                let code = crate::builtins::node::fs::io_code(&e);
+                SyncPre::Fail(code.to_string(), format!("{code}: {e}"))
+            }
+        }
+    } else if !reuse
         && frame.argc() > 4
         && frame.arg(4).is_string()
         && value_to_string(&mut cx, frame.arg(4)) == "1"
@@ -557,6 +605,13 @@ pub unsafe extern "C" fn net_listen(
         match std::net::TcpListener::bind(("0.0.0.0", port as u16)) {
             Ok(l) => {
                 let p = l.local_addr().map(|a| a.port()).unwrap_or(0);
+                // cluster-1 传柄：同步预绑即记 fd（microtask listening 先于任务，
+                // 任务内记账赶不上 listen 回调内的 worker.send）。
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsRawFd as _;
+                    state::net_srv_fd_record(id, l.as_raw_fd());
+                }
                 SyncPre::Ok(l, p)
             }
             Err(e) => {
@@ -570,7 +625,7 @@ pub unsafe extern "C" fn net_listen(
     match &pre {
         SyncPre::Ok(_, p) => set_rval_str(&mut cx, &frame, &format!("{id}:{p}")),
         SyncPre::Fail(_, _) => set_rval_str(&mut cx, &frame, &format!("{id}:0")),
-        SyncPre::No => set_rval_str(&mut cx, &frame, &id.to_string()),
+        SyncPre::Adopted(_) | SyncPre::No => set_rval_str(&mut cx, &frame, &id.to_string()),
     };
     let accept_handle = handle.clone();
     accept_handle.spawn(async move {
@@ -583,7 +638,7 @@ pub unsafe extern "C" fn net_listen(
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
                 return;
             }
-            SyncPre::Ok(std_listener, _) => {
+            SyncPre::Ok(std_listener, _) | SyncPre::Adopted(std_listener) => {
                 let _ = std_listener.set_nonblocking(true);
                 // SAFETY(tokio 契约)：std listener 非阻塞 + 本 runtime 线程内接管
                 // （同文件 reuse 路径既有口径，无新增 unsafe 块）。
@@ -617,6 +672,12 @@ pub unsafe extern "C" fn net_listen(
         let local = listener
             .local_addr()
             .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
+        // cluster-1 传柄用 fd 记账（dup 即用；close/purge 即清）。
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            state::net_srv_fd_record(id, listener.as_raw_fd());
+        }
         let _ = ev_tx.send(NetEvent {
             id,
             kind: NetKind::Listening { addr: local.ip().to_string(), port: local.port() },
@@ -783,6 +844,60 @@ pub unsafe extern "C" fn net_reset(
     }
     state::net_cmd(id as u64, NetCmd::Close);
     true
+}
+
+/// `__wjs2_net_dup_listen(id)` → dup 出的监听 fd（cluster-1 传柄；-1 即无记录）。
+/// UNSAFE-BOUNDARY（dup）：fd 系 listen 成功点记录的存活监听 fd；dup 出独立 fd，
+/// 原 fd 不动；返回的 fd 归调用方（worker 认领），未知 id 回 -1 不抛。
+pub unsafe extern "C" fn net_dup_listen(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: dup_listen: id must be a number");
+        return false;
+    };
+    #[cfg(unix)]
+    let out: i32 = match state::net_srv_fd_get(id as u64) {
+        // SAFETY(见上)：记录在案的存活监听 fd 上 dup；新 fd 独立归属。
+        Some(fd) => unsafe { libc::dup(fd) },
+        None => -1,
+    };
+    #[cfg(not(unix))]
+    let out: i32 = -1;
+    set_rval_str(&mut cx, &frame, &out.to_string());
+    true
+}
+
+/// `__wjs2_net_tcp_wrap_bind(host, port)` → `"token:port"`（cluster-2 裸柄；
+/// 真绑 + 预留；失败抛带 code 的 Error）。
+pub unsafe extern "C" fn net_tcp_wrap_bind(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let host = value_to_string(&mut cx, frame.arg(0));
+    let port = opt_num(&frame, 1).unwrap_or(0.0) as u16;
+    let addr_str = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+    match std::net::TcpListener::bind(addr_str.as_str()) {
+        Ok(l) => {
+            let p = l.local_addr().map(|a| a.port()).unwrap_or(0);
+            let token = state::net_hold_add();
+            state::net_hold_put(token, l);
+            set_rval_str(&mut cx, &frame, &format!("{token}:{p}"));
+            true
+        }
+        Err(e) => {
+            let code = crate::builtins::node::fs::io_code(&e);
+            report_error(&mut cx, &format!("{code}: {e}"));
+            false
+        }
+    }
 }
 
 /// `__wjs2_net_bind(host, port, path[, reuse])` → "port"（BoundSocket 同步 bind 底座）。

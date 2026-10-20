@@ -34,8 +34,8 @@
 //! - worker eval 的 completion 值照脚本语义打印（Node 不打印；`void 0` 收尾即可）。
 //! - `terminate()` 只在事件循环检查点生效（同步死循环停不下来，与主线程同限）。
 //! - stdin/stdout/stderr 恒 null；execArgv/resourceLimits/stdin/out/err 管道/
-//!   trackUnmanagedFds/credentials 接受忽略；`postMessageToThread`/`threadName`/
-//!   `markAsUntransferable`/locks 不导出；`stderr/stdout` 不管道。
+//!   trackUnmanagedFds/credentials 接受忽略；`threadName`/`markAsUntransferable`/
+//!   locks 不导出；`stderr/stdout` 不管道。
 //! - 无 `error` 监听的 worker 错误即 fatal（Node 同款 unhandled 'error'）。
 
 use std::collections::HashMap;
@@ -71,6 +71,10 @@ pub enum WorkerEvent {
     WOnline { worker_id: u64 },
     /// 主→worker：终止（置 `worker_terminated` 旗，检查点退出）。
     WTerminate,
+    /// 跨线程直投（`postMessageToThread`）：目标会话 `workerMessage` 派发 + 回执。
+    ThreadMsg { nonce: String, source: u64, wire: String, reply_tx: tokio::sync::mpsc::UnboundedSender<WorkerEvent> },
+    /// 直投回执（发送方会话唤醒等待者；0 投递/1 无监听/2 监听抛错）。
+    ThreadAck { nonce: String, result: u64 },
 }
 
 /// 进程级环境数据（`setEnvironmentData` 跨线程共享；值走 JSON 线）。
@@ -80,7 +84,7 @@ fn env_data() -> &'static Mutex<HashMap<String, String>> {
     ENV_DATA.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn with_str_args(
+pub(crate) fn with_str_args(
     cx: &mut JSContext,
     global: *mut JSObject,
     fun: JSVal,
@@ -171,6 +175,12 @@ pub fn dispatch(
             }
             Ok(())
         }
+        WorkerEvent::ThreadMsg { nonce, source, wire, reply_tx } => {
+            super::worker_messaging::thread_deliver(cx, global, &failed, &nonce, source, &wire, reply_tx)
+        }
+        WorkerEvent::ThreadAck { nonce, result } => {
+            super::worker_messaging::thread_ack(cx, global, &failed, &nonce, result)
+        }
         WorkerEvent::PortMsg { to, json } => {
             let Some(target) = state::port_target(to) else {
                 // 摘 target 后到达的迟到消息：有转发路由即改道（`forwarded` 排空竞态）。
@@ -242,6 +252,10 @@ pub fn dispatch(
         WorkerEvent::WExit { worker_id, code } => {
             if !state::worker_exited(worker_id) {
                 return Ok(()); // 重复 Exit 即丢弃
+            }
+            // 直投注册表同步摘除（已死线程后续发送即无路由 FAILED，不悬挂）。
+            if let Some(tid) = state::worker_tid(worker_id) {
+                state::thread_unregister(tid);
             }
             if let Some(target) = state::worker_target(worker_id) {
                 if target.is_object() {
@@ -767,7 +781,7 @@ pub use super::worker_term::{
     term_tls_bind, term_tls_flagged, worker_boot_from_slot, worker_booted,
     worker_spawn,
 };
-pub use super::worker_messaging::{worker_attach, worker_post, worker_tid};
+pub use super::worker_messaging::{post_to_thread, thread_bridge_attach, worker_attach, worker_post, worker_tid};
 
 
 /// 终止 worker（`WTerminate`；退出码经 `WExit` 事件回传，恒 1）。
@@ -916,8 +930,6 @@ pub unsafe extern "C" fn port_try_recv(
     }
     true
 }
-
-/// 内嵌 ESM 源（`node:worker_threads`，9f-2：通道核，无 Worker）。
 
 /// 内嵌 ESM 源（`node:worker_threads`；§0.9 按域分块：`worker_clone.js`
 /// structuredClone 线信封 + `worker_ports.js`（BC/Worker/stdio/出口），concat 字节恒等）。

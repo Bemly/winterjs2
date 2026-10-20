@@ -422,6 +422,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_worker_terminate", Some(node::worker::worker_terminate), 1),
             ("__wjs2_worker_set_ref", Some(node::worker::worker_set_ref), 2),
             ("__wjs2_worker_tid", Some(node::worker::worker_tid), 1),
+            ("__wjs2_thread_bridge_attach", Some(node::worker::thread_bridge_attach), 1),
+            ("__wjs2_post_to_thread", Some(node::worker::post_to_thread), 4),
             ("__wjs2_port_listen", Some(node::worker::port_listen), 1),
             ("__wjs2_port_unlisten", Some(node::worker::port_unlisten), 1),
             ("__wjs2_port_has_ref", Some(node::worker::port_has_ref), 1),

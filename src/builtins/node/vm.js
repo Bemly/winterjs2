@@ -349,6 +349,15 @@ function __syncOut(id, obj) {
   const std = rec ? rec.std : null;
   const init = rec ? rec.init : null;
   const snap = JSON.parse(__vmCall(() => __wjs2_vm_keys_all(id)));
+  // vm 侧数据描述符三旗批量快照（partial-update/proxy-query 口径：vm 内
+  // defineProperty 的非默认旗须保形回写；访问器键不在此集——源端自管）。
+  // 单轮 run 摊一次，结果缺席即回落纯赋值（旧行为）。
+  let flags = null;
+  try {
+    flags = new Map(JSON.parse(__vmCall(() => __wjs2_vm_run(id,
+      "JSON.stringify(Object.getOwnPropertyNames(globalThis).map(k => { const dd = Object.getOwnPropertyDescriptor(globalThis, k); return dd && ('value' in dd) ? [k, !!dd.writable, !!dd.enumerable, !!dd.configurable] : null; }).filter(Boolean))",
+      "vm-sync-flags.js"))).map(([kk, w, e, c]) => [kk, [w, e, c]]));
+  } catch { flags = null; }
   for (const entry of snap) {
     // symbol 占位无跨 realm 身份：只维护存在性（ownkeys 计数口径），不做值同步。
     if (entry !== null && typeof entry === "object") continue;
@@ -385,6 +394,16 @@ function __syncOut(id, obj) {
     // 首轮 sync-in 的 define 产物即如此）则赋值抛——只读数据即跳过。
     // 可写数据才赋值（保留既有描述符，10c-3 回落语义）；目标缺席（全新键）直接挂载。
     if (d && d.writable === false) continue;
+    // vm 侧非默认数据描述符：保形回写（partial-update：enumerable/writable
+    // 单项改写不丢其余旗；proxy-query：hidden 非枚举跨轮保持）。目标不可配置
+    // 或代理拒定义即回落跳过（不抛，旧静默语义）。
+    const f = flags ? flags.get(k) : undefined;
+    if (f !== undefined && (!f[0] || !f[1] || !f[2])) {
+      try {
+        Object.defineProperty(obj, k, { value: cur, writable: f[0], enumerable: f[1], configurable: f[2] });
+      } catch { /* 回落跳过 */ }
+      continue;
+    }
     try {
       obj[k] = cur;
     } catch {

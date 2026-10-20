@@ -587,6 +587,67 @@ catch (e) { console.log("to-mod", e.code === "ERR_SCRIPT_EXECUTION_TIMEOUT", e.m
 }
 
 #[test]
+fn vm_sync_descriptor_fidelity() {
+    // partial-update/proxy-query 口径：vm 内 defineProperty 非默认旗保形回写
+    // （单项改写不丢其余旗、跨轮保持）；linked 模块命名空间预取（未初始化访问
+    // ReferenceError）；__modErr 码类→构造器映射（ARG_TYPE→TypeError）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+const ctx = vm.createContext({});
+vm.runInContext(`
+  globalThis.a1 = 1;
+  Object.defineProperty(globalThis, 'a1', { enumerable: false });
+  Object.defineProperty(globalThis, 'a2', { value: 2, enumerable: false, configurable: true });
+  Object.defineProperty(globalThis, 'a2', { enumerable: true });
+  globalThis.b1 = 1;
+  Object.defineProperty(globalThis, 'b1', { writable: false });
+`, ctx);
+const d1 = Object.getOwnPropertyDescriptor(ctx, "a1");
+console.log("df-a1", ctx.a1 === 1, d1.enumerable === false);
+const d2 = Object.getOwnPropertyDescriptor(ctx, "a2");
+console.log("df-a2", ctx.a2 === 2, d2.enumerable === true);
+const d3 = Object.getOwnPropertyDescriptor(ctx, "b1");
+console.log("df-b1", ctx.b1 === 1, d3.writable === false);
+console.log("df-reread", vm.runInContext("a1", ctx) === 1, vm.runInContext("Object.getOwnPropertyDescriptor(globalThis, 'b1').writable", ctx) === false);
+// 模块命名空间 linked 可见（未初始化导出访问 ReferenceError；求值后取值）。
+const m = new vm.SourceTextModule("export const q = 40 + 1;");
+m.linkRequests([]);
+m.instantiate();
+let nsName = "";
+try { m.namespace.q; } catch (e) { nsName = e.name; }
+console.log("df-ns", m.status === "linked", nsName === "ReferenceError", Reflect.ownKeys(m.namespace).includes("q"));
+await m.evaluate();
+console.log("df-nseval", m.namespace.q === 41);
+// __modErr 码类映射。
+const bad = (f) => { try { f(); return "NO"; } catch (e) { return `${e.constructor.name}:${e.code || ""}`; } };
+console.log("df-err", bad(() => new vm.SourceTextModule("1", { context: "x" })), bad(() => { const q = new vm.SourceTextModule("1"); q.linkRequests("x"); }));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "df-a1 true true",
+        "df-a2 true true",
+        "df-b1 true true",
+        "df-reread true true",
+        "df-ns true true true",
+        "df-nseval true",
+        "df-err TypeError:ERR_INVALID_ARG_TYPE TypeError:ERR_INVALID_ARG_TYPE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn vm_module_linking_surface() {
     // linkRequests/instantiate/moduleRequests/标识按 context 独立 + cachedData 存根。
     let dir = assert_fs::TempDir::new().unwrap();

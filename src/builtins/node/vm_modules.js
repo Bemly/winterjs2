@@ -36,7 +36,12 @@ function __vmModTag(code) {
 }
 
 function __modErr(code, message) {
-  const err = new Error(message);
+  // 真机码类→构造器映射（实测）：ARG_TYPE→TypeError、OUT_OF_RANGE→RangeError，
+  // 其余 Error；只定构造器，码仍挂载（module-errors 点名 name）。
+  let err;
+  if (code === "ERR_INVALID_ARG_TYPE") err = new TypeError(message);
+  else if (code === "ERR_OUT_OF_RANGE") err = new RangeError(message);
+  else err = new Error(message);
   err.code = code;
   throw err;
 }
@@ -159,8 +164,13 @@ export class SourceTextModule extends Module {
   }
   get namespace() {
     this.__assertThis();
-    if (this.__status !== "evaluated" && this.__status !== "evaluating") {
+    if (this.__status !== "evaluated" && this.__status !== "evaluating" && this.__status !== "linked") {
       __modErr("ERR_VM_MODULE_STATUS", "Module status must not be unlinked or linking");
+    }
+    // linked 预取（instantiate/link 落定时抓命名空间；未初始化导出访问
+    // 按规范抛 ReferenceError，真机口径）。
+    if (this.__ns === undefined) {
+      this.__ns = __vmCall(() => __wjs2_vm_mod_ns(this.__id));
     }
     return this.__ns;
   }

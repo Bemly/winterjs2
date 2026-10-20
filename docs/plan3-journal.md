@@ -2543,3 +2543,35 @@ G1/G2/G3/G9 已收官。）
 - 守门触发拆分：`require.rs` 被顶到 1061 行 → `REQUIRE_PRELUDE` 纯字符串整体
   搬入 `require_prelude.rs`（原位 `pub use` 重导出；require.rs 784/新文件 282，
   纯搬移先行一提交）。
+## 2026-10-20 base19b 纯净重跑（干净树，SAME0 2470/3528，open-fix 验证）
+
+- 运行：pull 已最新（f1f1f26）+ status 空 + load ~12 → `cargo build -j2`
+  2m39s（含等他 lane 包锁）二进制 21:31（md5 788b9ff6db4a519f884823d4a7bab91c；
+  跑后 md5 复核一致）→ 冒烟 5/5 → sweep 同 base19 参数
+  （--tag base19b，jobs 2，thread 3599，port 29999，scope 缺省，node 缓存），
+  21:31:56 → 22:16:33（~45min，缓存热故快），3528/3528 无 abort。
+  工件 `~/wjs-data/sweep/base19b/`。系统盘 49→38GB（他 lane 活动，看门狗安好）。
+- 总表：SAME0 **2470** / SAME1 207 / DIFF 820 / TIMEOUT 31（绿 70.0%）。
+  vs base19（2397/206/841/84）：绿 **+73**、DIFF -21、TIMEOUT **-53**；
+  真实欠账 925→**851（-74）**。逐件：fixed 75（fs 37/http2 13/stream 5/
+  zlib 4/net 3/tls 3/http 2/https 2/readline 2/console/pipe/stdio/timers 各1），
+  newred 仅 2（keygen-async-dsa TIMEOUT=既有慢 DSA flake，journal:811；
+  http2-multiplex DIFF=复探 rc=0，flake），TIMEOUT→DIFF 46 翻转。
+- 重点① fs：DIFF 75→**38**（-37 = open 三宗罪全愈，数与 base19 新红 fs 37
+  严丝合缝；绿 246→**283**，87%，回到 base18 上方）。余 38 皆真欠账
+  （promises-file-handle 族/realpath/readdir/glob/cp/mkdtemp…），待 C 后续。
+- 重点② HANG 自报：results.log **34 HANG + 107 MUSTCALL 定位行**
+  （base19 为 0）——f1f1f26 变量对齐生产验证通过；TIMEOUT 件转为带定位
+  DIFF（46 件），http2 TIMEOUT 25→**2**（仅 client-http1-server +
+  reset-flood 留守，皆帧错映射 bound 面）。
+- 重点③ P0 两回归仍挂（定位与 9 遍复判同址）：socket-destroy-delayed
+  DIFF/HANG@test:31、goaway-opaquedata DIFF/HANG@test:20——C 轮继续；
+  proxy-over-h2 / tunnelling / socket-close / pipe-offset **转绿**。
+  （后两者 base19 挂疑 load-301 抖动或级联，base19b load ~10 即绿。）
+- 域级 Δ（绿/TIMEOUT）：http2 122→134（T25→2）、tls 93→96（T14→1）、
+  net 95→98（T4→0）、http 325→327、fs 246→283、https 46→48、
+  stream 169→174、zlib 46→50、readline 10→12、timers 42→43、
+  console 15→16、stdio 1→2、pipe 6→7；crypto 63→62（-1，dsa flake）。
+- Top10（base19b 差额）：http2-109、tls-89、crypto-41、net-39、http-39、
+  fs-39、worker-34、child-29、vm-28、webcrypto-22。
+- base19b 为干净基线候选（§0.3 换表待用户确认；本任务只记账不改表）。

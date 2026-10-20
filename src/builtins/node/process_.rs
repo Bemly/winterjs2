@@ -162,10 +162,13 @@ pub fn drain_next_ticks(
                                     false
                                 }
                                 // R9：分发抛错（monitor 监听抛的新错）——新 pending
-                                // 即 fatal 本体，退出码 7（entry 路径同口径）。
+                                // 即 fatal 本体，退出码 7（entry 路径同口径；
+                                // worker 会话恒 1，exit-code 矩阵点名）。
                                 None => {
                                     if crate::jsapi_glue::exception_pending(cx) {
-                                        state::set_exit_code(Some(7));
+                                        if state::worker_is_main() {
+                                            state::set_exit_code(Some(7));
+                                        }
                                     } else {
                                         crate::jsapi_glue::set_pending_exception(cx, err_root.get());
                                     }
@@ -222,11 +225,12 @@ pub fn dispatch_entry_throw(
             false
         }
         // R9：分发抛错（monitor 监听抛的新错，真机口径）——保留新 pending
-        //（不恢复原错），退出码 7（monitor2 套件点名；原错路径为 1）。
+        //（不恢复原错），退出码 7（monitor2 套件点名；原错路径为 1；
+        // worker 会话恒 1，exit-code 矩阵点名）。
         None => {
             if !crate::jsapi_glue::exception_pending(cx) {
                 crate::jsapi_glue::set_pending_exception(cx, err_root.get());
-            } else {
+            } else if state::worker_is_main() {
                 state::set_exit_code(Some(7));
             }
             false

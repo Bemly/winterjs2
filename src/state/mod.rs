@@ -512,6 +512,9 @@ pub struct PlainState {
     pub worker_stdio_pipe: u8,
     /// worker 线程专有：`--require` 预加载清单（按序，stdio-from-preload 套件）。
     pub worker_preload: Vec<String>,
+    /// worker 线程专有：`_fatalException` 置空崩溃（WError 压制、stderr 直出、
+    /// exit 6——exit-code 矩阵；主会话置位无影响）。
+    pub worker_crash_silent: bool,
     /// worker 终止旗（`WTerminate` 到达置位；事件循环检查点退出，见 §4.18 顺序）。
     pub worker_terminated: bool,
     /// 主会话的 worker 句柄表（worker_id → 发往 worker 会话收件箱的端点等）。

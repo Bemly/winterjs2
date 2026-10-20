@@ -496,3 +496,31 @@
 - 复现：once 竞速探针（5s 超时版首轮即丢）vs 修复后 30/30；`git show` 前必跑同构黑盒。
 - 推广铁律：**整批派发配同步发射即埋 once 陷阱**——凡"排队+延迟刷"管线，发射循环内
   必须复查监听存活，无人即停，禁连发进虚空；修泵粒度不如修队列语义（影响面小）。
+
+### 4.327 info 读取消费 pending，先读后分发即永假（2026-10-21，vm lane）
+
+- 症状：worker 入口抛错 + uncaughtException 监听永不触发（WError + exit 1）；
+  主线程经典入口正常（走 CJS 分支）。
+- 根因：经典分支先 `error_info_from_exception_stack`（注释自称"消费异常值"）
+  后 `dispatch_entry_throw`——info 读取取走 pending，分发 take 永空。
+  主线程正常因真文件多走 cjs_interop→CJS 分支（先分发后读）；worker-eval
+  伪文件名落经典分支。取证：分支入口 pending=true，分发点 false。
+- 修法：info 成功且 pending 已空即 `set_pending_exception` 放回再分发
+  （未取走重设等值无害；info 失败/throw undefined 不碰）。
+- 复现：worker 入口 `process.on('uncaughtException', noop); throw`（修前
+  WError+1，修后 exit 0）。
+- 推广铁律：**先分发后取证**——任何"读错 + 路由"两段式，先路由（take），
+  后取证；取证函数一律视为消费 pending，复用前先放回。
+
+### 4.328 worker fatal 必须先派发会话内 exit 再定码（2026-10-21，vm lane）
+
+- 症状：exit-code 矩阵 6/7 格（exit 监听改码）恒 1；且 error 事件照发。
+- 根因：真机口径 = uncaught（接住与否）→ 会话内 'exit'（码为当时 exitCode，
+  监听可改）→ 终码；旧实现 fatal 直落 WError + 1，会话内 exit 从不派发。
+- 修法：`fatal_exit` worker 臂：落 1（6/7 保留）→ 会话内 `emit_exit` →
+  原错原样返回（WError 照发）；`run_worker_thread` Err 臂终码听
+  `state::exit_code().unwrap_or(1)`；`_fatalException` 置空另压
+  `worker_crash_silent`（无 error 事件、stderr 直出、exit 6）。
+- 复现：11 格矩阵探针（单跑/矩阵双过；孤立过矩阵挂即查跨会话状态）。
+- 推广铁律：**fatal 先办后事再定码**——exit 监听是改码的最后机会，任何提前
+  定码（unwrap_or(1) 写死）都是与真机为敌；终码只读会话 exitCode 状态。

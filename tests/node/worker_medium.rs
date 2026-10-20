@@ -223,3 +223,61 @@ t("req-eq", [`--require={preload}`], undefined);
     assert!(!stdout.lines().any(|l| l == "EXCL-KID"), "exclusive leaked:\n{stdout}");
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_exit_code_faces() {
+    // 正常：exitCode/exit 监听/改码矩阵 12 格（node test-worker-exit-code，
+    // 逐格断码；error 事件照发——werr 格点名）。
+    // 报错：uncaught 文案透传（error 事件断 message）。
+    // 边界：监听内再抛 worker 恒 1（主线程 7）；_fatalException 置空即 6。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Worker, parentPort } from "node:worker_threads";
+const caseSrc = [
+  [`process.exitCode = 42; process.on('exit', (c) => { if (process.exitCode !== 42 || c !== 42) { console.log('bad0'); process.exit(99); } });`, 42, null],
+  [`process.exitCode = 99; process.on('exit', (c) => { if (process.exitCode !== 42 || c !== 42) { console.log('bad1'); process.exit(99); } }); process.exit(42);`, 42, null],
+  [`process.exitCode = 99; process.on('exit', (c) => { if (c !== 1 || process.exitCode !== 1) { console.log('bad2'); process.exit(99); } }); throw new Error('ok');`, 1, "Error: ok"],
+  [`process.exitCode = 95; process.on('exit', (c) => { if (process.exitCode !== 95 || c !== 95) { console.log('bad3'); process.exit(99); } process.exitCode = 99; });`, 99, null],
+  [`const noop = () => {}; process.on('exit', (c) => { process.off('uncaughtException', noop); if (process.exitCode !== undefined || c !== 0) { console.log('bad4'); process.exit(99); } }); process.on('uncaughtException', noop); throw new Error('ok');`, 0, null],
+  [`const f = () => { process.exitCode = 97; }; process.on('exit', (c) => { process.off('uncaughtException', f); if (process.exitCode !== 97 || c !== 97) { console.log('bad5'); process.exit(99); } }); process.on('uncaughtException', f); throw new Error('ok');`, 97, null],
+  [`process.on('exit', (c) => { if (process.exitCode !== 1 || c !== 1) { console.log('bad6'); process.exit(99); } process.exitCode = 98; }); throw new Error('ok');`, 98, "Error: ok"],
+  [`process.on('exit', (c) => { if (process.exitCode !== 1 || c !== 1) { console.log('bad7'); process.exit(99); } process.exitCode = 0; }); throw new Error('ok');`, 0, "Error: ok"],
+  [`process.on('uncaughtException', () => { throw new Error('ok'); }); throw new Error('bad');`, 1, "Error: ok"],
+  [`process.exitCode = 99; process.on('exit', (c) => { if (process.exitCode !== 0 || c !== 0) { console.log('bad9'); process.exit(99); } }); process.exit(0);`, 0, null],
+  [`process._fatalException = undefined; throw new Error('ok');`, 6, null],
+];
+let pend = caseSrc.length;
+caseSrc.forEach(([src, want, errWant], i) => {
+  const w = new Worker(`const { parentPort } = require('worker_threads'); parentPort.once('message', () => { ${src} });`, { eval: true });
+  if (errWant !== null) w.on("error", (e) => console.log("ew" + i, String(e) === errWant));
+  else w.on("error", (e) => console.log("e-unexpected" + i, e.message));
+  w.on("exit", (code) => { console.log("ex" + i, code === want); if (--pend === 0) console.log("done"); });
+  w.postMessage(i);
+});
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for i in 0..11 {
+        assert!(
+            stdout.lines().any(|l| l == format!("ex{i} true")),
+            "missing ex{i}:\n{stdout}"
+        );
+    }
+    for i in [2, 6, 7, 8] {
+        assert!(
+            stdout.lines().any(|l| l == format!("ew{i} true")),
+            "missing ew{i}:\n{stdout}"
+        );
+    }
+    assert!(stdout.lines().any(|l| l == "done"), "out: {stdout}");
+    assert!(!stdout.contains("e-unexpected"), "out: {stdout}");
+    dir.close().unwrap();
+}

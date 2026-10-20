@@ -145,16 +145,24 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
                 Err(Error::Exit(c)) => *c,
                 Err(e) => {
                     let message = worker_error_text(e);
+                    // 静默崩溃（`_fatalException` 置空）：无 WError 事件、stderr
+                    // 直出诊断、exit 6（真机口径；exit-code 矩阵）。
+                    let silent = state::with_plain(|p| p.worker_crash_silent);
                     // 终止引发的 uncatchable interrupt 错：不发 WError（真机口径——
                     // terminate 的错误不进 worker 'error' 事件，vm-context-terminate
                     // 套件 error mustNotCall 点名），只按终止退出码 1 收场。
-                    if !crate::builtins::node::worker::term_tls_flagged() {
+                    if !silent && !crate::builtins::node::worker::term_tls_flagged() {
                         let inbox = state::with_plain(|p| p.worker_main_inbox.clone());
                         if let Some(tx) = inbox {
-                            let _ = tx.send(WorkerEvent::WError { worker_id: wid, message });
+                            let _ = tx.send(WorkerEvent::WError { worker_id: wid, message: message.clone() });
                         }
                     }
-                    1
+                    if silent {
+                        eprintln!("{message}");
+                    }
+                    // 终码听会话 exitCode（fatal 内已派发会话 'exit'，监听可改码；
+                    // 缺省 1——exit-code 矩阵；终止供码见下 Ok 臂，不受此影响）。
+                    state::exit_code().unwrap_or(1)
                 }
                 Ok(()) => {
                     if state::worker_terminated() { 1 } else { 0 }

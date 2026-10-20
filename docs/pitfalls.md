@@ -289,6 +289,8 @@
 - 4.324 会话级协议错事件（2026-10-21，http2 lane）
 - 4.325 CANCEL-RST 收尾剃刀竞态（2026-10-21，http2 lane）
 - 4.326 pump 整批排空 + 端口同步连发丢 once 后继（2026-10-21，vm lane）
+- 4.327 info 读取消费 pending，先读后分发即永假（2026-10-21，vm lane）
+- 4.328 worker fatal 必须先派发会话内 exit 再定码（2026-10-21，vm lane）
 
 ## 条目
 

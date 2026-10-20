@@ -547,3 +547,21 @@ pub fn dispatch_cpu(
         _ => Ok(()),
     }
 }
+
+/// UNSAFE-BOUNDARY: 静默崩溃标记。`__wjs2_worker_crash_silent()` → undefined
+/// （`_fatalException` 置空崩溃：WError 压制、stderr 直出、exit 6；
+/// exit-code 矩阵；主会话调用无影响）。
+/// 前置：无（纯 state 置位）；覆盖：`tests/node/worker_medium.rs::worker_exit_code_faces`。
+pub unsafe extern "C" fn worker_crash_silent(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 worker::port_pair（仅置 rval + 纯 Rust 置位，不读 JS 堆）
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    state::with_plain(|p| p.worker_crash_silent = true);
+    frame.set_rval(UndefinedValue());
+    let _ = &mut cx;
+    true
+}

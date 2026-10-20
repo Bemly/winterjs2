@@ -809,7 +809,7 @@ pub use super::worker_term::{
     term_tls_bind, term_tls_flagged, worker_boot_from_slot, worker_booted,
     worker_spawn,
 };
-pub use super::worker_messaging::{WORKER_PRELOAD_RUN, WORKER_STDIO_INIT, dispatch_cpu, dispatch_stdio, post_to_thread, thread_bridge_attach, worker_attach, worker_cpu_sample, worker_post, worker_stdin_to, worker_stdio_out, worker_tid};
+pub use super::worker_messaging::{WORKER_PRELOAD_RUN, WORKER_STDIO_INIT, dispatch_cpu, dispatch_stdio, post_to_thread, thread_bridge_attach, worker_attach, worker_cpu_sample, worker_crash_silent, worker_post, worker_stdin_to, worker_stdio_out, worker_tid};
 
 
 /// 终止 worker（`WTerminate`；退出码经 `WExit` 事件回传，恒 1）。

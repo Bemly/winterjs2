@@ -456,6 +456,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_worker_stdio", Some(node::worker::worker_stdio_out), 2),
             ("__wjs2_worker_stdin", Some(node::worker::worker_stdin_to), 2),
             ("__wjs2_worker_cpu_sample", Some(node::worker::worker_cpu_sample), 2),
+            ("__wjs2_worker_crash_silent", Some(node::worker::worker_crash_silent), 0),
             ("__wjs2_thread_bridge_attach", Some(node::worker::thread_bridge_attach), 1),
             ("__wjs2_post_to_thread", Some(node::worker::post_to_thread), 4),
             ("__wjs2_port_listen", Some(node::worker::port_listen), 1),

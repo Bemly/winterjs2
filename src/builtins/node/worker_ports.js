@@ -61,17 +61,19 @@ export class BroadcastChannel extends EventEmitter {
   }
   __flushQueue() {
     while (this.__queue.length > 0) {
-      // 逐条查关（wpt：onmessage 内 close 阻断同端口已排队任务）。
+      // 逐条查关（wpt：onmessage 内 close 阻断同端口已排队任务）+ 无监听停刷
+      //（端口 once 陷阱同款 4.326；新监听经 newListener 续刷）。
       if (this.__closed) return;
+      if (this.listenerCount("message") === 0) return;
       const raw = this.__queue.shift();
       let value;
       try {
         value = __fromWire(String(raw));
       } catch (err) {
-        this.emit("messageerror", err instanceof Error ? err : new Error("worker message is not valid JSON"));
+        __workerEmitSafe(this, "messageerror", err instanceof Error ? err : new Error("worker message is not valid JSON"));
         continue;
       }
-      this.emit("message", value);
+      __workerEmitSafe(this, "message", value);
     }
   }
   get name() {

@@ -600,14 +600,16 @@ function __portFlushQueue(port) {
     try {
       decoded = __fromWirePorts(raw);
     } catch (e) {
-      port.emit("messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
+      // 监听抛错走 uncaughtException（exit-code 矩阵 parentPort 回调抛错点名；
+      // `__workerEmitSafe` 住后半段 worker_ports.js，concat 同域运行时可见）。
+      __workerEmitSafe(port, "messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
       continue;
     }
     // EE 单参（node 真机：transfer 亦单参，once() 即 [value]；onmessage 的
     // MessageEvent.ports 经 __lastPorts 边信道同步递达，发射内读清）。
     port.__lastPorts = decoded.ports;
     try {
-      port.emit("message", decoded.message);
+      __workerEmitSafe(port, "message", decoded.message);
     } finally {
       port.__lastPorts = null;
     }
@@ -621,7 +623,7 @@ function __portEv(port, kind, payload) {
     port.__peerClosed = true;
     if (port.__closed || port.__closeEmitted) return;
     port.__closeEmitted = true;
-    queueMicrotask(() => { try { port.emit("close"); } catch { /* 忽略 */ } });
+    queueMicrotask(() => { __workerEmitSafe(port, "close"); });
     return;
   }
   if (kind === "forwarded") {
@@ -747,10 +749,10 @@ MessagePort.prototype.close = function close(cb) {
   const self = this;
   queueMicrotask(() => {
     try {
-      // 对端先到已发过即跳过（双关竞速只发一次）。
+      // 对端先到已发过即跳过（双关竞速只发一次；监听抛错走 uncaught）。
       if (!self.__closeEmitted) {
         self.__closeEmitted = true;
-        self.emit("close");
+        __workerEmitSafe(self, "close");
       }
     } finally {
       __wjs2_port_close(self.__id);

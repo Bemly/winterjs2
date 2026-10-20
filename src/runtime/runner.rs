@@ -108,7 +108,25 @@ async fn run_module(
 /// 仅 CLI 主进程主线程生效（登记了渲染配色）；worker/testrun 原错透传自理。
 fn fatal_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, e: Error) -> Error {
     let e = map_exit_sentinel(e);
-    if matches!(e, Error::Exit(_)) || !state::worker_is_main() {
+    if matches!(e, Error::Exit(_)) {
+        return e;
+    }
+    if !state::worker_is_main() {
+        // worker 未捕获错：会话内先派发 'exit'（监听可经 exitCode 改码，
+        // exit-code 矩阵点名；WError 照发，终码默认 1，6/7 保留）。
+        // 主线程同口径见下（渲染除外——子错误经 WError 由父侧渲染）。
+        if state::with_plain(|p| p.process_exited.is_none()) {
+            let __keep: Option<i32> = state::exit_code();
+            if __keep != Some(7) && __keep != Some(6) {
+                state::set_exit_code(Some(1));
+            }
+            {
+                let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
+                crate::builtins::node::process_::emit_exit(&mut realm, global.get());
+                // 监听抛错不污染 teardown（已在 unwind 中，无人接）。
+                let _ = crate::jsapi_glue::take_pending_exception(&mut realm);
+            }
+        }
         return e;
     }
     let Some(color) = crate::error::render_color() else { return e };
@@ -372,6 +390,11 @@ async fn run_inner(
                 let is_syntax = kind.as_deref() == Some("SyntaxError");
                 // P2-process R7：入口抛错先走 uncaught 分发（capture→监听），
                 // 接住即转事件循环（脚本中止但进程续活）；语法错照旧走重试/渲染。
+                // info 读取取走 pending（worker 会话实测），此处放回再分发
+                // （CJS 分支"先分发后读"同序语义；info 失败/pending 仍在即跳过）。
+                if info.is_some() && !crate::jsapi_glue::exception_pending(&mut realm) {
+                    crate::jsapi_glue::set_pending_exception(&mut realm, exc.get());
+                }
                 let entry_handled = if !is_syntax {
                     crate::builtins::node::process_::dispatch_entry_throw(
                         &mut realm,

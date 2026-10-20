@@ -2089,3 +2089,24 @@ G1/G2/G3/G9 已收官。）
 
 
 
+## 2026-10-20 lane合回master merge预览（只读merge-tree，4 lane）
+
+- 方法：`git merge-tree $(git merge-base master lane/X) master lane/X`（只读，
+  未动工作区）。四 lane 基线同为 707a929；master 自基线仅进 journal
+  （c1a5cf7 base19）+ plan3.md（R16b bound），代码面零推进——故代码合回全绿。
+- lane/http2：tip=707a929，master..lane 独占 0 件——**无待合入（空）**。
+  注：http2 lane 活全在 master 直推（含 open 回归 22f2db2，已在 master）。
+- lane/vm：同上，独占 0 件——**无待合入（空）**。
+- lane/console：独占 1 件（336e7b0，纯文档：journal 任务3 + pitfalls
+  4.290/4.291 + 索引行）。pitfalls-06.md/pitfalls.md 自动合入无标记；
+  **冲突 1：docs/plan3-journal.md 尾部双追加**（我方 base19 段 vs 对方任务3段，
+  同文件改重叠、零重命名/零删除改并存；解法：两段全留按时间排序）。
+- lane/whatwg：独占 5 件（f1127e3/ee0b4c6/ee67142 journal + 7afbd18 tls.js
+  纯搬移切片 + 1246228 N2 fix）。tls.js/tls.rs/tests/node/tls.rs 自动合入
+  （全系对方单边改，master 未碰三文件）；tls_defaultecdhcurve.js 单边新增；
+  **冲突 1：同上 journal 尾部双追加**（1 组标记块，两段全留）。
+  零重命名/零删除改并存。
+- 合回顺序（console/whatwg 文件集除 journal 外不交，任一序皆可；推荐）：
+  1. console 先（纯文档，零代码风险，journal 冲突先解掉一半）；
+  2. whatwg 后（代码：tls 切片+N2 fix+tests，合后重编跑 tls 域+冒烟）。
+  http2/vm 跳过。base19b 等 fs 修复+冻结后另排（本任务不启动）。

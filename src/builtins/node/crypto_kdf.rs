@@ -66,7 +66,7 @@ pub unsafe extern "C" fn kdf_pbkdf2(
         report_error(&mut cx, "ERR_OUT_OF_RANGE: PBKDF2 iterations out of range");
         return false;
     }
-    if !(0.0..=1073741824.0).contains(&len) {
+    if !(0.0..=2147483647.0).contains(&len) {
         report_error(&mut cx, "ERR_OUT_OF_RANGE: PBKDF2 key length out of range");
         return false;
     }

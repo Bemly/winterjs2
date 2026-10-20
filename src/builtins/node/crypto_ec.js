@@ -11,7 +11,8 @@ const __EC_OPENSSL_NAMES = {
   "P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1", "secp256k1": "secp256k1",
 };
 function __badEcCurve() {
-  const err = new Error("Invalid EC curve name");
+  // 真机口径（keygen 套件 482 行钉住）：TypeError 形；码维持供既有黑盒断言。
+  const err = new TypeError("Invalid EC curve name");
   err.code = "ERR_CRYPTO_INVALID_CURVE";
   throw err;
 }

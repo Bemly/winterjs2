@@ -5,9 +5,18 @@ function __cryptErr(e) {
   const rest = m.replace(/^[A-Z][A-Z0-9_]*: /, "");
   const err = new Error(rest || code);
   err.code = code;
-  // 真机 OpenSSL 系错误恒带 `reason`（与 message 同文案，node 口径）；
+  // 真机 OpenSSL 系错误恒带 `library`/`reason`（与 message 同文案，node 口径）；
+  // 经 `=` 赋值（原型链用户 setter 透传，sign 两件 'bye, bye' 套件钉住）；
   // 非 OSSL 码（ERR_CRYPTO_*/ERR_INVALID_ARG_TYPE 等）维持原形状。
-  if (code.startsWith("ERR_OSSL_")) err.reason = rest || code;
+  if (code.startsWith("ERR_OSSL_")) {
+    const om = rest.match(/^error:[0-9A-Fa-f]+:([^:]*):(.*)$/);
+    if (om) {
+      err.library = om[1];
+      err.reason = om[2].replace(/^:/, "");
+    } else {
+      err.reason = rest || code;
+    }
+  }
   throw err;
 }
 function __cryptCall(fn) {
@@ -17,21 +26,48 @@ function __cryptCall(fn) {
     __cryptErr(e);
   }
 }
+// SAB 背缓冲视图一律拷贝为普通 ArrayBuffer 背（native 侧尚不收 SAB 中转；
+// pbkdf2 套件 SAB 口令行钉住；slice 回同型 Uint8Array + 新 ArrayBuffer）。
+function __deSABView(u8) {
+  if (typeof SharedArrayBuffer !== "undefined" && u8.buffer instanceof SharedArrayBuffer) {
+    return u8.slice();
+  }
+  return u8;
+}
+// node 口径（internal/errors outOfRange）：整数且 |v|>2^32 即数字下划线分组；
+// bigint 同理（尾缀 n）；余下直转字符串。
+function __outOfRangeReceived(v) {
+  if (typeof v === "bigint") {
+    const s = v < 0n ? v.toString().slice(1) : v.toString();
+    const g = s.replace(/(?=(?:\d{3})+$)/g, "_").replace(/^_/, "");
+    if (v > 4294967296n || v < -4294967296n) return (v < 0n ? "-" : "") + g + "n";
+    return `${v}n`;
+  }
+  if (Number.isInteger(v) && Math.abs(v) > 4294967296) {
+    const neg = v < 0;
+    const g = Math.abs(v).toString().replace(/(?=(?:\d{3})+$)/g, "_").replace(/^_/, "");
+    return (neg ? "-" : "") + g;
+  }
+  return String(v);
+}
 function __cryptBytes(input, what, inputEncoding) {
-  if (typeof input === "string") {
-    try {
+  if (typeof input === "string") {    try {
       return Buffer.from(input, inputEncoding ?? "utf8");
     } catch {
       return Buffer.from(input, "utf8");
     }
   }
-  if (input instanceof Uint8Array) return input;
+  if (input instanceof Uint8Array) return __deSABView(input);
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  // 真机口径（getArrayBufferOrView）：SharedArrayBuffer 同属有效输入。
+  if (typeof SharedArrayBuffer !== "undefined" && input instanceof SharedArrayBuffer) {
+    return __deSABView(new Uint8Array(input));
+  }
   if (ArrayBuffer.isView(input)) {
-    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    return __deSABView(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
   }
   const err = new TypeError(
-    `The "${what}" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ${input === null ? "null" : typeof input}`);
+    `The "${what}" argument must be of type string or an instance of Buffer, TypedArray, or DataView.${__argTypeHelper(input)}`);
   err.code = "ERR_INVALID_ARG_TYPE";
   throw err;
 }
@@ -383,13 +419,72 @@ export function createHash(algorithm, options) {
 export function createHmac(hamc, key, options) {
   return new HmacImpl(hamc, key, options);
 }
-export function hash(algorithm, data, outputEncoding) {
+export function hash(algorithm, data, options) {
   __needStr(algorithm, "algorithm");
   const bytes = __cryptBytes(data, "data");
-  const probe = __cryptCall(() => __wjs2_crypto_hash_new(algorithm));
-  __cryptCall(() => __wjs2_crypto_hash_update(probe, bytes));
-  const out = __cryptCall(() => __wjs2_crypto_hash_digest(probe));
+  // node 口径（hash.js oneshot）：第 3 参 string | { outputEncoding?, outputLength? }；
+  // 非串非 undefined 先对象校验（validateObject 口径：数组亦拒；数/null/符号/
+  // 函数即 ARG_TYPE 'options'，oneshot 套件 0/1/NaN/true/Symbol 行钉住）。
+  let outputEncoding;
+  let outputLength;
+  if (typeof options === "string" || options === undefined) {
+    outputEncoding = options;
+  } else {
+    if (typeof options !== "object" || options === null || Array.isArray(options)) {
+      const err = new TypeError(`The "options" argument must be of type object.${__argTypeHelper(options)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    outputEncoding = options.outputEncoding ?? "hex";
+    outputLength = options.outputLength;
+  }
+  outputEncoding ??= "hex";
+  let out;
+  if (outputLength !== undefined) {
+    // outputLength：validateUint32 口径；XOF（shake128/256）经流式 HashImpl
+    // 定长（同 createHash outputLength 口径）；非 XOF 即无码 Error（node 原文）。
+    if (typeof outputLength !== "number") {
+      const err = new TypeError(`The "outputLength" argument must be of type number.${__argTypeHelper(outputLength)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    if (!Number.isInteger(outputLength) || outputLength < 0 || outputLength > 4294967295) {
+      const err = new RangeError(`The value of "outputLength" is out of range. It must be >= 0 && <= 4294967295. Received ${outputLength}`);
+      err.code = "ERR_OUT_OF_RANGE";
+      throw err;
+    }
+    outputLength += 0;
+    const flat = String(algorithm).toLowerCase().replace(/[-_]/g, "");
+    if (flat !== "shake128" && flat !== "shake256") {
+      throw new Error(`Output length ${outputLength} is invalid for ${algorithm}, which does not support XOF`);
+    }
+    const hx = new HashImpl(algorithm, { outputLength });
+    hx.update(bytes);
+    out = hx.digest(undefined);
+  } else {
+    // XOF 缺省长：DEP0198 + shake128→16/shake256→32（与 createHash 同默认，
+    // oneshot 套件逐哈希断言行钉住），经流式核。
+    const flat = String(algorithm).toLowerCase().replace(/[-_]/g, "");
+    if (flat === "shake128" || flat === "shake256") {
+      try {
+        process.emitWarning(
+          "Creating SHAKE128/256 digests without an explicit options.outputLength is deprecated.",
+          { type: "DeprecationWarning", code: "DEP0198" }
+        );
+      } catch {}
+      const hx = new HashImpl(algorithm, { outputLength: flat === "shake128" ? 16 : 32 });
+      hx.update(bytes);
+      out = hx.digest(undefined);
+    } else {
+      const probe = __cryptCall(() => __wjs2_crypto_hash_new(algorithm));
+      __cryptCall(() => __wjs2_crypto_hash_update(probe, bytes));
+      out = __cryptCall(() => __wjs2_crypto_hash_digest(probe));
+    }
+  }
   if (outputEncoding === undefined) return __outBuf(out, undefined);
+  // node 口径（hash.js oneshot）：hex 快道免检；余下先 string 校验（非串即
+  // ARG_TYPE），归一失败非 buffer 即 ARG_VALUE。
+  if (outputEncoding !== "hex") __needStr(outputEncoding, "outputEncoding");
   // 10f crypto二轮：'buffer' 编码（大小写不敏感）即回 Buffer（真机口径）。
   if (String(outputEncoding).toLowerCase() === "buffer") return __outBuf(out, undefined);
   const valid = ["hex", "base64", "base64url", "latin1", "binary", "ascii", "utf8", "utf-8", "ucs2", "utf16le"];
@@ -403,19 +498,28 @@ export function hash(algorithm, data, outputEncoding) {
 }
 
 function __randSize(size) {
-  if (typeof size !== "number" || !Number.isInteger(size)) {
-    const err = new TypeError(`The "size" argument must be of type number. Received type ${typeof size} (${String(size)})`);
+  // node 口径（random.js assertSize：validateNumber + `>>> 0` 截断；NaN/越界即
+  // OUT_OF_RANGE-range；浮点不抛，截断取整——random 套件 101.2→101 行钉住）。
+  if (typeof size !== "number") {
+    const err = new TypeError(`The "size" argument must be of type number.${__argTypeHelper(size)}`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
-  if (size < 0 || size > 2147483647) {
+  if (Number.isNaN(size) || size < 0 || size > 2147483647) {
     const err = new RangeError(`The value of "size" is out of range. It must be >= 0 && <= 2147483647. Received ${size}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
-  return size;
+  return size >>> 0;
 }
 function __randFill(view) {
+  // 真机口径：SAB 视图经临时缓冲中转（native 尚不收 SAB；random 套件 SAB 行钉住）。
+  if (typeof SharedArrayBuffer !== "undefined" && view.buffer instanceof SharedArrayBuffer) {
+    const tmp = new Uint8Array(view.length);
+    __wjs2_fill_random(tmp);
+    view.set(tmp);
+    return view;
+  }
   __wjs2_fill_random(view);
   return view;
 }
@@ -431,29 +535,60 @@ export function randomBytes(size, callback) {
   queueMicrotask(() => callback(null, buf));
   return undefined;
 }
-export function randomFillSync(buf, offset = 0, size) {
-  if (!(buf instanceof ArrayBuffer) && !ArrayBuffer.isView(buf)) {
+function __randomFillArgs(buf, offset, size) {
+  // 真机口径：SharedArrayBuffer 同属有效缓冲（random 套件 SAB 行钉住）。
+  const isSAB = typeof SharedArrayBuffer !== "undefined" && buf instanceof SharedArrayBuffer;
+  if (!(buf instanceof ArrayBuffer) && !isSAB && !ArrayBuffer.isView(buf)) {
     const err = new TypeError(`The "buf" argument must be an instance of ArrayBuffer or ArrayBufferView. Received type ${typeof buf}`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
+  // node 口径（random.js assertOffset/assertSize）：offset/size 以元素计，
+  // 先乘元素宽再校验（Uint16Array(10) offset=1 即字节 2，random 套件 227 行钉住）。
   const len = buf.byteLength;
-  offset = Number(offset);
-  if (!Number.isInteger(offset) || offset < 0 || offset > len) {
-    const err = new RangeError("The value of \"offset\" is out of range");
+  const elemSize = (buf instanceof ArrayBuffer || isSAB) ? 1 : (buf.BYTES_PER_ELEMENT || 1);
+  // node 口径（validateNumber）：offset/size 先类型门（非数即 ARG_TYPE；
+  // random 套件 'test' 行钉住），再乘元素宽。
+  if (typeof offset !== "number") {
+    const err = new TypeError(`The "offset" argument must be of type number.${__argTypeHelper(offset)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  offset = offset * elemSize;
+  // 越界文案逐字（random 套件 299 行钉住）：offset 上限取 buf 长，
+  // size 上限取 kMaxPossibleLength（2^31-1）。
+  const offMax = Math.min(len, 2147483647);
+  if (!Number.isInteger(offset) || offset < 0 || offset > offMax) {
+    const err = new RangeError(`The value of "offset" is out of range. It must be >= 0 && <= ${offMax}. Received ${offset}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
   if (size === undefined) size = len - offset;
-  size = Number(size);
-  if (!Number.isInteger(size) || size < 0 || offset + size > len) {
+  else {
+    if (typeof size !== "number") {
+      const err = new TypeError(`The "size" argument must be of type number.${__argTypeHelper(size)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    size = size * elemSize;
+  }
+  if (!Number.isInteger(size) || size < 0 || size > 2147483647) {
+    const err = new RangeError(`The value of "size" is out of range. It must be >= 0 && <= 2147483647. Received ${size}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (offset + size > len) {
     const err = new RangeError(`The value of "size + offset" is out of range. It must be <= ${len}. Received ${offset + size}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
-  const view = new Uint8Array(buf.buffer ?? buf, (buf.byteOffset ?? 0) + offset, size);
+  return [buf, offset, size];
+}
+export function randomFillSync(buf, offset = 0, size) {
+  const [b, off, sz] = __randomFillArgs(buf, offset, size);
+  const view = new Uint8Array(b.buffer ?? b, (b.byteOffset ?? 0) + off, sz);
   __randFill(view);
-  return buf;
+  return b;
 }
 export function randomFill(buf, offset, size, callback) {
   if (typeof offset === "function") { callback = offset; offset = 0; size = undefined; }
@@ -463,9 +598,14 @@ export function randomFill(buf, offset, size, callback) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
+  // node 口径：缓冲/起止全同步校验通过才排队（random 套件 mustNotCall 行钉住），
+  // 仅填充本体异步。
+  const args = __randomFillArgs(buf, offset, size);
   queueMicrotask(() => {
     try {
-      callback(null, randomFillSync(buf, offset, size));
+      const view = new Uint8Array(args[0].buffer ?? args[0], (args[0].byteOffset ?? 0) + args[1], args[2]);
+      __randFill(view);
+      callback(null, args[0]);
     } catch (e) {
       callback(e);
     }
@@ -474,30 +614,34 @@ export function randomFill(buf, offset, size, callback) {
 }
 export function randomInt(min, max, callback) {
   if (callback === undefined && typeof max === "function") { callback = max; max = undefined; }
-  if (max === undefined) { max = min; min = 0; }
-  const done = (err, val) => (callback === undefined ? undefined : callback(err, val));
-  const fail = (err) => {
-    if (callback === undefined) throw err;
-    queueMicrotask(() => callback(err));
-    return undefined;
-  };
+  // node 口径（randomInt）：单参形 max 即首参（minNotSpecified 影响 range 报错名）。
+  const minNotSpecified = max === undefined;
+  if (minNotSpecified) { max = min; min = 0; }
+  // node 口径：min/max 全同步校验（random 套件 mustNotCall 行钉住），仅抽取异步。
   for (const [name, v] of [["min", min], ["max", max]]) {
     if (typeof v !== "number" || !Number.isSafeInteger(v)) {
-      const err = new TypeError(`The "${name}" argument must be a safe integer. Received ${v === undefined ? "undefined" : `type number (${String(v)})`}`);
+      const err = new TypeError(`The "${name}" argument must be a safe integer.${__argTypeHelper(v)}`);
       err.code = "ERR_INVALID_ARG_TYPE";
-      return fail(err);
+      throw err;
     }
   }
   if (max <= min) {
-    const err = new RangeError(`The value of "max" is out of range. It must be greater than the value of "min" (${min}). Received ${max}`);
+    const err = new RangeError(`The value of "max" is out of range. It must be greater than the value of "min" (${min}). Received ${__outOfRangeReceived(max)}`);
     err.code = "ERR_OUT_OF_RANGE";
-    return fail(err);
+    throw err;
   }
   const range = max - min;
-  if (range > 281474976710656) {
-    const err = new RangeError("The value of \"range\" is out of range. It must be <= 281474976710656");
+  // node 口径（RAND_MAX=2^48-1；报错名单参 'max' 双参 'max - min'；Received 按
+  // errors.js 口径：整数且 |v|>2^32 即千分位下划线，random 套件 2^48 行钉住）。
+  if (range > 281474976710655) {
+    const err = new RangeError(`The value of "max${minNotSpecified ? "" : " - min"}" is out of range. It must be <= 281474976710655. Received ${__outOfRangeReceived(range)}`);
     err.code = "ERR_OUT_OF_RANGE";
-    return fail(err);
+    throw err;
+  }
+  if (callback !== undefined && typeof callback !== "function") {
+    const err = new TypeError(`The "callback" argument must be of type function.${__argTypeHelper(callback)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
   }
   // 拒绝采样（偏差可忽略；大区间恒终止，单测断言分布形状不测时序）
   const bytes = range <= 256 ? 1 : range <= 65536 ? 2 : range <= 16777216 ? 3 : range <= 4294967296 ? 4 : 6;

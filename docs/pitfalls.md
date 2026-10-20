@@ -252,6 +252,13 @@
 - 4.287 孙线程发主误投父线程（2026-10-20，worker-messaging lane）
 - 4.288 `defineProperty` 部分描述符保留可枚举性（2026-10-20，whatwg lane）
 - 4.289 跨 compartment 取 `this.href` 走原型链误品牌（2026-10-20，whatwg lane）
+- 4.290 setImmediate 紧循环饿死 I/O 相（2026-10-20，http2 lane）
+- 4.291 FIFO 阻塞 open 卡死 JS 线程（2026-10-20，http2 lane）
+- 4.292 O_TRUNC 开 FIFO 即 EINVAL（2026-10-20，http2 lane）
+- 4.293 POSIX 无写者读端得 0（2026-10-20，http2 lane）
+- 4.294 node respondWithFile 自动 content-length（2026-10-20，http2 lane）
+- 4.295 h2 'connection' 手动 emit 无监听即 TIMEOUT（2026-10-20，http2 lane）
+- 4.296 response 'finish' 在流关闭时（2026-10-20，http2 lane）
 
 ## 条目
 

@@ -442,14 +442,29 @@
       }
     }
     close(cb) {
+      // node 口径（lib/net.js Server.prototype.close + dc 真机探针）：已关
+      // （上次 'close' 已发）再 close，回调仍异步触发，首参
+      // ERR_SERVER_NOT_RUNNING（文案 'Server is not running.'；close-idle 套件
+      // 第二个 close 即此形）。完成旗由 'close' 首发置位；进行中重入仍走正常路。
+      if (this.__closeDone === true) {
+        if (typeof cb === "function") {
+          const __e = new Error("Server is not running.");
+          __e.code = "ERR_SERVER_NOT_RUNNING";
+          process.nextTick(() => cb(__e));
+        }
+        return this;
+      }
       this.__closing = true;
-      if (typeof cb === "function") this.once("close", cb);
+      if (typeof cb === "function") {
+        this.once("close", (...__a) => { this.__closeDone = true; cb(...__a); });
+      } else {
+        this.once("close", () => { this.__closeDone = true; });
+      }
       // node close 口径：空闲连接销毁；仍有在途请求/响应的连接 unref（进程不
       // 等待，响应落地后自然退出——pipeline-assertionerror-finish 套件；
-      // 空闲判定同 closeIdleConnections，体完响应在途不算空闲）。
+      // 空闲判定走 __srvConnIdle（半截头非空闲，server-close-idle 套件）。
       for (const sock of this.__sockets) {
-        const __st = sock.__httpState;
-        if (!__st || (__st.req === null && __st.res === null)) {
+        if (__srvConnIdle(sock.__httpState)) {
           try { sock.destroy(); } catch { /* closed meanwhile */ }
         } else if (typeof sock.unref === "function") {
           try { sock.unref(); } catch { /* gone */ }

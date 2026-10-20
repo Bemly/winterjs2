@@ -362,6 +362,22 @@ Object.defineProperty(OutgoingMessage, Symbol.hasInstance, {
   configurable: true,
 });
 
+// node 口径 ConnectionsList::idle + closeIdleConnections 双门
+//（lib/internal/http/server.js 719 行 + C++ ConnectionsList）：C++ idle()
+// 先滤掉解析中连接（收到部分字节即非空闲），JS 再滤未完 _httpMessage。
+// 本层等价：无在途 req/res + 无未解析字节（buf）+ 无停靠管线响应（outgoing）。
+// server-close-idle 套件：半截请求头连接在 close() 下存活；closeAllConnections
+// 不走此门（全杀）。
+function __srvConnIdle(st) {
+  if (!st) return true;
+  if (st.req !== null && st.req !== undefined) return false;
+  if (st.res !== null && st.res !== undefined) return false;
+  // 半截头/残段在 buf 即解析中（node C++ idle() 同款过滤）。
+  if (st.buf !== null && st.buf !== undefined && st.buf.length > 0) return false;
+  // 停靠的管线响应未发即非空闲。
+  if (st.outgoing !== undefined && st.outgoing !== null && st.outgoing.length > 0) return false;
+  return true;
+}
 export function withHttpServer(Base) {
   // 初始化逻辑独立成函数：`new Server()` 走构造器，`http.Server.call(this)`
   //（upgrade-server 套件 testServer 老式继承）直接在 this 上跑同一段。
@@ -445,8 +461,7 @@ export function withHttpServer(Base) {
           // close() 已同步 clearInterval，此 tick 仅守非同步收尾形态）。
           if (!self.__closing) return;
           for (const s of [...self.__sockets]) {
-            const st = s.__httpState;
-            if (!st || (st.req === null && st.res === null)) { try { s.destroy(); } catch { /* gone */ } }
+            if (__srvConnIdle(s.__httpState)) { try { s.destroy(); } catch { /* gone */ } }
           }
         }, 1000);
         if (typeof __iv.unref === "function") __iv.unref();
@@ -836,10 +851,8 @@ export function withHttpServer(Base) {
     }
     closeIdleConnections() {
       for (const sock of this.__sockets) {
-        const st = sock.__httpState;
-        // 空闲 = 无在途请求且无在途响应（体完但响应未落时 st.req 已空、
-        // st.res 仍在——outgoing-finish 套件 server.close 后响应被杀根因）。
-        if (!st || (st.req === null && st.res === null)) {
+        // 空闲判定走 __srvConnIdle（解析中/半截头非空闲，见该函数注）。
+        if (__srvConnIdle(sock.__httpState)) {
           try { sock.destroy(); } catch { /* closed meanwhile */ }
         }
       }

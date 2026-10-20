@@ -1555,3 +1555,9 @@ G1/G2/G3/G9 已收官。）
 - tls sni-N：rustls-pki-types 无 raw-SNI（DnsName 无非校验构造）。
 - SAB 真共享 + WASM Module 跨线程 + worker Atomics.wait：引擎墙（SM 限制）。
 - V8 内禀（%PrepareFunctionFor.../--allow-natives-syntax）、internal/* 树（--expose-internals 剥离）、sea/wasi：范围外。
+
+## 2026-10-20 会话收尾（多 lane 并行验证通过，worktree 已回收）
+
+- wave-2 5 道 + wave-3 5 道全部合入 master 并 push（0c44143），每道均经黑盒+冒烟+守门验证。
+- L-C 中途取消：5 个已提交按原样合入（socket-close TIMEOUT 未解、respond-file 另起），半截 WIP（respondfile 重构+eprintln 调试）已弃，未入库。
+- 现场：工作区干净、`git status` 空、4 个 lane worktree+分支已删（磁盘 100G），node-test 检出干净。下会话开工按 AGENTS 开工顺序即可。

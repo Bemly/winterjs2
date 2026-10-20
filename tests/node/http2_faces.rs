@@ -934,3 +934,51 @@ server.once("request", (req, res) => {
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_goaway_frame_size_error() {
+    // 会话级协议错面：超大 HEADERS 即 GOAWAY + 会话 error + close（node 真机同形）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "g.mjs",
+        r#"
+import h2 from "node:http2";
+import net from "node:net";
+const server = h2.createServer();
+server.on("session", (s) => {
+  s.on("error", (e) => console.log("sess-error", e && e.code));
+  s.on("close", () => {
+    console.log("sess-close");
+    server.close();
+  });
+});
+server.listen(0, () => {
+  const conn = net.connect({ port: server.address().port });
+  conn.write("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+  const st = Buffer.alloc(9);
+  st[3] = 0x04;
+  conn.write(st);
+  let n = 0;
+  conn.on("data", () => {
+    if (n++ > 0) return;
+    const ack = Buffer.alloc(9);
+    ack[3] = 0x04;
+    ack[4] = 0x01;
+    conn.write(ack);
+    const over = Buffer.alloc(9);
+    over.writeUIntBE(16385, 0, 3);
+    over[3] = 0x01;
+    over[4] = 0x04;
+    over.writeUInt32BE(1, 5);
+    conn.write(over);
+  });
+  conn.on("close", () => console.log("raw-close"));
+});
+"#,
+    );
+    for line in ["sess-error ERR_HTTP2_ERROR", "sess-close"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

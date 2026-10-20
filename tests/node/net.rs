@@ -873,3 +873,45 @@ setTimeout(() => { console.log("HANG"); process.exit(1); }, 8000).unref();
     assert!(!out.contains("HANG"), "out:\n{out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn net_socket_read_unshift_readable() {
+    // 嗅探面：read(n) 取缓冲、unshift 回填、到包即 readable（autoselect 口径）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "sniff.mjs",
+        r#"
+import net from "node:net";
+const server = net.createServer((socket) => {
+  const poll = () => {
+    const d = socket.read(3);
+    if (!d) {
+      socket.once("readable", poll);
+      return;
+    }
+    console.log("got", JSON.stringify(String(d)));
+    socket.unshift(d);
+    const d2 = socket.read(3);
+    console.log("got2", JSON.stringify(String(d2)));
+    socket.end("ok");
+  };
+  poll();
+  socket.on("close", () => server.close());
+});
+server.listen(0, () => {
+  const c = net.connect(server.address().port, "127.0.0.1", () => {
+    c.write("ABCDEF");
+    c.on("data", () => {});
+    c.on("end", () => { console.log("cli-end"); c.end(); });
+    c.on("close", () => console.log("cli-close"));
+  });
+});
+server.on("close", () => console.log("srv-close"));
+"#,
+    );
+    for line in ["got \"ABC\"", "got2 \"ABC\"", "cli-end", "cli-close", "srv-close"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

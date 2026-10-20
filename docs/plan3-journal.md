@@ -2767,3 +2767,17 @@ G1/G2/G3/G9 已收官。）
   session-destroy-stream-handler TIMEOUT 系 5s/轮旧码同形慢（node 在此件 abort，
   从未进 sweep）；server-stream-session-destroy 系 SAME1。
 - 黑盒三件：tunnel_basic/tunnel_factory_error/tunnel_outer_destroy_cascade 全绿。
+
+## C P1 收尾（lane/http2）：复探 + tls-face×3 + autoselect + goaway 留守
+
+- 复探（open-fix 合入后）：respond-file range/with-pipe/error-pipe-offset 三绿；
+  socket-close 绿；compat-aborted 绿。close-aborted-destroy 剩 rstCode 一处
+  （真机 hang，4.325 剃刀竞态定级，error+close 确定性绿）。
+- tls-face×3 全绿：secure_post_echo/secure_reject（错 CA 即 error+close，码面顺延
+  tls lane）/secure_big_body（256KB）；既有 secure 面同绿。
+- autoselect ✅：autoselect-protocol TIMEOUT→EXIT=0（net socket 读嗅探三件，
+  4.323）。multiple-client-error 推进到 http 层 clientError 缺口（http lane 事，
+  传输已通）。buffersize 系写背压问题（本轮外）。
+- goaway 留守：session-cleanup 3/4 转绿（sessionError 事件，4.324），仅剩 raw-close
+ （双 FIN 后无 close；gw8d 同构通而套件不通，时序敏感，另案）。
+- 黑盒：tunnel 外新添 goaway_frame_size_error + read_unshift_readable，全绿。

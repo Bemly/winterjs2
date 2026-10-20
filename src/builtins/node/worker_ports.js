@@ -335,12 +335,80 @@ export class Worker extends EventEmitter {
         (!Array.isArray(options.execArgv) || options.execArgv.some((s) => typeof s !== "string"))) {
       throw new codes.ERR_INVALID_ARG_TYPE("options.execArgv", ["string[]"], options.execArgv);
     }
+    // execArgv 内容校验（node internal/worker.js：C++ 侧 invalidExecArgv →
+    // ERR_WORKER_INVALID_EXEC_ARGV；本仓按真机探针矩阵近似：允许集外即拒，
+    // --redirect-warnings/--disable-warning 及须带值旗仅裸形拒；未知旗即拒）。
+    // 真机探针基线 node 26.8.1（约 160 旗全量对拍，见 journal）。
+    const __kWorkerExecArgvAllowed = new Set([
+      "no-deprecation", "no-warnings", "trace-deprecation", "trace-warnings",
+      "pending-deprecation", "throw-deprecation", "disable-warning", "trace-uncaught",
+      "unhandled-rejections", "inspect", "inspect-brk", "inspect-publish-uid",
+      "debug-port", "experimental-vm-modules", "experimental-strip-types",
+      "no-experimental-require-module", "experimental-require-module",
+      "preserve-symlinks", "preserve-symlinks-main", "no-network-family-autoselection",
+      "enable-network-family-autoselection", "network-family-autoselection-attempt-timeout",
+      "dns-result-order", "redirect-warnings", "trace-sync-io", "trace-tls",
+      "trace-promises", "trace-exit", "trace-env", "trace-env-js-stack",
+      "trace-env-native-stack", "frozen-intrinsics", "report-exclude-env",
+      "report-exclude-network", "report-signal", "report-uncaught-exception",
+      "heap-prof", "cpu-prof", "diagnostic-dir", "input-type", "print", "check",
+      "test", "watch", "env-file", "permission", "allow-worker", "allow-addons",
+      "allow-child-process", "allow-net", "allow-wasi", "allow-openssl-store",
+      "async-context-frame", "no-async-context-frame", "no-addons", "disable-sigusr1",
+      "use-system-ca", "no-use-system-ca", "max-http-header-size", "tls-min-v1.2",
+      "tls-max-v1.3", "use-env-proxy", "no-global-search-paths", "force-context-aware",
+      "test-udp-no-try-send", "permission-audit", "experimental-eventsource",
+      "experimental-websocket", "no-experimental-websocket", "experimental-sqlite",
+      "no-experimental-sqlite", "experimental-vfs", "experimental-worker-inspection",
+      "experimental-network-inspection", "experimental-storage-inspection",
+      "experimental-test-coverage", "experimental-addon-modules", "experimental-ffi",
+      "experimental-import-meta-resolve", "experimental-print-required-tla",
+      "experimental-quic", "experimental-stream-iter", "webstorage", "localstorage-file",
+    ]);
+    // 裸形（无 =值）即拒：装饰双形二旗 + 必须带值旗（node CLI 同款拒收）。
+    const __kWorkerExecArgvDenyBare = new Set([
+      "redirect-warnings", "disable-warning", "unhandled-rejections", "dns-result-order",
+      "report-signal", "heapsnapshot-signal", "trace-event-categories",
+      "trace-event-file-pattern",
+    ]);
+    const __workerBadExecArgv = (list) => {
+      const bad = [];
+      for (const entry of list) {
+        const eq = entry.indexOf("=");
+        const base = (eq === -1 ? entry : entry.slice(0, eq)).replace(/^--/, "");
+        if (!__kWorkerExecArgvAllowed.has(base) || (eq === -1 && __kWorkerExecArgvDenyBare.has(base))) {
+          bad.push(entry);
+        }
+      }
+      return bad;
+    };
+    if (options.execArgv !== undefined) {
+      const badExec = __workerBadExecArgv(options.execArgv);
+      if (badExec.length > 0) throw new codes.ERR_WORKER_INVALID_EXEC_ARGV(badExec);
+    }
+    // env 内 NODE_OPTIONS 同口径校验（空白切分近似；仅串形校验）。
+    if (typeof envOpt === "object" && envOpt !== null && typeof envOpt.NODE_OPTIONS === "string" &&
+        envOpt.NODE_OPTIONS !== "") {
+      const badNodeOpts = __workerBadExecArgv(envOpt.NODE_OPTIONS.split(/\s+/).filter((s) => s !== ""));
+      if (badNodeOpts.length > 0) {
+        throw new codes.ERR_WORKER_INVALID_EXEC_ARGV(badNodeOpts, "invalid NODE_OPTIONS env variable");
+      }
+    }
+    // argv（node internal/worker.js:215-218：truthy 即 validateArray + String 化；
+    // falsy 即缺省；worker 侧 process.argv 透传，eval 形补 '[worker eval]'）。
+    let argvJson = "";
+    if (options.argv) {
+      if (!Array.isArray(options.argv)) {
+        throw new codes.ERR_INVALID_ARG_TYPE("options.argv", "Array", options.argv);
+      }
+      argvJson = JSON.stringify(options.argv.map(String));
+    }
     let dataJson = "";
     if (options.workerData !== undefined) {
       dataJson = __toWire(options.workerData, options.transferList);
     }
     let ids;
-    ids = String(__wjs2_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs2_forkChild ? "1" : "0", envJson)).split(" ");
+    ids = String(__wjs2_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs2_forkChild ? "1" : "0", envJson, argvJson)).split(" ");
     this.__id = ids[0];
     this.__tid = Number(ids[1]);
     this.__exited = null;

@@ -117,6 +117,9 @@ pub struct WorkerBoot {
     pub name: Option<String>,
     /// fork 子进程（IPC 通道在，`process.send` 族不装 UNSUPPORTED 桩；10f）。
     pub is_fork: bool,
+    /// 构造 `options.argv` 已串化数组（JSON 串；空即缺省；worker 侧 process.argv
+    /// 透传，eval 形补 '[worker eval]'——process-argv 套件）。
+    pub argv_user: Vec<String>,
     pub main_inbox: tokio::sync::mpsc::UnboundedSender<WorkerEvent>,
     pub rendezvous: std::sync::mpsc::Sender<(
         tokio::sync::mpsc::UnboundedSender<WorkerEvent>,
@@ -202,6 +205,17 @@ pub unsafe extern "C" fn worker_spawn(
     } else {
         None
     };
+    // 第 7 参：argv 已串化数组（JSON；缺位/空/非法即缺省——process-argv 套件）。
+    let argv_user: Vec<String> = if frame.argc() >= 7 {
+        let v = value_to_string(&mut cx, frame.arg(6));
+        if v.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&v).unwrap_or_default()
+        }
+    } else {
+        Vec::new()
+    };
     let main_inbox = match state::with_plain(|p| p.worker_tx.clone()) {
         Some(tx) => tx,
         None => {
@@ -223,6 +237,7 @@ pub unsafe extern "C" fn worker_spawn(
         env_json: env_raw,
         name,
         is_fork,
+        argv_user,
         main_inbox: main_inbox.clone(),
         rendezvous: rendezvous_tx,
     };

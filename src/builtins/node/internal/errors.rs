@@ -413,6 +413,11 @@ E('ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET',
     'callback was already active',
   Error);
 E('ERR_WORKER_UNSUPPORTED_OPERATION', '%s is not supported in workers', TypeError);
+// worker execArgv/NODE_OPTIONS 非法旗（node internal/errors.js 逐字；真机实测
+// 双参形：缺省 'execArgv flags'，env 侧传 'invalid NODE_OPTIONS env variable'）。
+E('ERR_WORKER_INVALID_EXEC_ARGV',
+  (flags, message = 'execArgv flags') => `Initiated Worker with invalid ${message}: ${flags}`,
+  Error);
 E('ERR_USE_AFTER_CLOSE', '%s was closed', Error, HideStackFramesError);
 
 // ── Phase 9b：streams 系错误码（定义逐字自 node internal/errors.js）────────

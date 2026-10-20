@@ -132,7 +132,31 @@ fn fatal_exit(rt: &mut Runtime, global: &RootedGuard<'_, *mut JSObject>, e: Erro
 /// 求值 `source`（名 `filename`）并打印完成值；事件循环排空 timers/microtasks。
 /// `extra_args` 进 `process.argv`（Script：`[exec, filename, ...]`；Eval：`[exec, ...]`）。
 pub async fn run(source: &str, filename: &str, mode: Mode, extra_args: &[String]) -> Result<(), Error> {
-    let r = run_inner(source, filename, mode, extra_args).await;
+    // argv[0] 取真实 OS 值（spawn arg0 自举回显，spawn-argv0 套件点名），
+    // 余下按模式拼（execPath 缺失才回退）。
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "winterjs2".into());
+    let argv0 = std::env::args().next().unwrap_or_else(|| exe.clone());
+    let argv: Vec<String> = match mode {
+        Mode::Script => std::iter::once(argv0)
+            .chain(std::iter::once(filename.to_owned()))
+            .chain(extra_args.iter().cloned())
+            .collect(),
+        Mode::Eval => std::iter::once(argv0).chain(extra_args.iter().cloned()).collect(),
+    };
+    run_with_argv(source, filename, mode, argv).await
+}
+
+/// 全量 argv 求值（worker 用：argv[0]=execPath 绝对形 + 显示名 + user 透传；
+/// filename 仍为真实编译名——ESM 暂存/栈名不受影响，见 worker_spawn）。
+pub async fn run_with_argv(
+    source: &str,
+    filename: &str,
+    mode: Mode,
+    argv: Vec<String>,
+) -> Result<(), Error> {
+    let r = run_inner(source, filename, mode, &argv).await;
     // exit 优先于一切错误（哨兵被用户 catch 也照退，靠 `process_exited` 旗）。
     if let Some(code) = state::with_plain(|p| p.process_exited) {
         return Err(Error::Exit(code));
@@ -151,24 +175,12 @@ async fn run_inner(
     source: &str,
     filename: &str,
     mode: Mode,
-    extra_args: &[String],
+    argv: &[String],
 ) -> Result<(), Error> {
     tracing::info!(target: "winterjs2::runtime", filename, source_len = source.len(), ?mode, "run start");
-    // process.argv（prelude 求值前就绪；execPath 失败回退名）。
-    // argv[0] 取真实 OS 值（spawn arg0 自举回显，spawn-argv0 套件点名），
-    // 余下按模式拼（execPath 缺失才回退）。
-    let exe = std::env::current_exe()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "winterjs2".into());
-    let argv0 = std::env::args().next().unwrap_or_else(|| exe.clone());
-    let argv: Vec<String> = match mode {
-        Mode::Script => std::iter::once(argv0)
-            .chain(std::iter::once(filename.to_owned()))
-            .chain(extra_args.iter().cloned())
-            .collect(),
-        Mode::Eval => std::iter::once(argv0).chain(extra_args.iter().cloned()).collect(),
-    };
-    let init = init_session(argv)?;
+    // process.argv（prelude 求值前就绪；调用方拼装全量——run() 按 CLI 口径，
+    // run_with_argv() 按 worker 口径）。
+    let init = init_session(argv.to_vec())?;
     // 声明顺序即 drop 逆序：`rt` 若先于 `engine` drop（`?` 早退路径），Runtime
     // 的 Drop 会走引擎析构（StoreBuffer 悬垂，§4.8 SEGV）。两值在各返回点都经
     // `end_session` 泄漏；handle 本体泄漏无害（进程级单例，见 `engine_handle`）。

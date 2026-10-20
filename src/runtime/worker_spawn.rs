@@ -18,14 +18,12 @@ impl WorkerThreadSpec {
         is_eval: bool,
         boot: crate::builtins::node::worker::WorkerBoot,
     ) -> Self {
-        let exe = std::env::current_exe()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "winterjs2".into());
+        // `argv` 存 user 透传部分（full argv 由调用点拼：[exe, 显示名, ...user]，
+        // 显示名文件形取真实名、eval 形取 '[worker eval]'——process-argv 套件）。
         if is_eval {
-            WorkerThreadSpec { worker_id, file: None, code: Some(src), argv: vec![exe], boot }
+            WorkerThreadSpec { worker_id, file: None, code: Some(src), argv: boot.argv_user.clone(), boot }
         } else {
-            let argv = vec![exe, src.clone()];
-            WorkerThreadSpec { worker_id, file: Some(src), code: None, argv, boot }
+            WorkerThreadSpec { worker_id, file: Some(src), code: None, argv: boot.argv_user.clone(), boot }
         }
     }
 }
@@ -66,7 +64,9 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
                 let _ = early_rendezvous.send((park_tx, 0));
             };
             // 源码决议：文件直读；eval 串嗅探 ESM→落临时 .mjs（复用文件管线），
-            // 否则经典求值（文件名 `worker-eval-<id>.js`）。
+            // 否则经典求值（文件名 `worker-eval-<id>.js`）。argv 显示名文件形取
+            // 真实名、eval 形取 '[worker eval]'（match 会 move 走 file，先记）。
+            let spec_is_file = spec.file.is_some();
             let (source, filename, tmp): (String, String, Option<std::path::PathBuf>) =
                 match (spec.file, spec.code) {
                     (Some(path), _) => {
@@ -113,8 +113,20 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
                         return;
                     }
                 };
-            // boot 入槽（init_session 取出落地）；argv 照 file/eval 形态。
+            // boot 入槽（init_session 取出落地）；argv 全量拼装（[exe, 显示名,
+            // ...user]；显示名文件形取真实名、eval 形取 '[worker eval]'——
+            // process-argv 套件；filename 仍传真实编译名）。
             WORKER_BOOT.with(|b| *b.borrow_mut() = Some(spec.boot));
+            let exe = std::env::current_exe()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| "winterjs2".into());
+            let display = if spec_is_file {
+                filename.clone()
+            } else {
+                "[worker eval]".to_owned()
+            };
+            let mut full_argv = vec![exe, display];
+            full_argv.extend(spec.argv.clone());
             let tokio_rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(rt) => rt,
                 Err(e) => {
@@ -123,7 +135,7 @@ pub fn run_worker_thread(spec: WorkerThreadSpec) {
                 }
             };
             let outcome = tokio::task::LocalSet::new().block_on(&tokio_rt, async {
-                run(&source, &filename, Mode::Script, &spec.argv).await
+                run_with_argv(&source, &filename, Mode::Script, full_argv).await
             });
             // 退出码映射 + 临时文件清理（best effort）。
             if let Some(tmp) = tmp {

@@ -37,7 +37,9 @@ mod entry;
 mod repl;
 mod runner;
 mod serve_session;
+pub(crate) mod unhandled;
 mod worker_spawn;
+pub(crate) use unhandled::report_unhandled_rejections;
 
 pub use entry::*;
 pub use repl::*;
@@ -597,14 +599,17 @@ async fn event_loop(
         if st.entry_failed {
             break;
         }
-        // 未处理 rejection 非空即跳出（node 口径：checkpoint 末仍无处理即 fatal，
+        // 未处理 rejection 检查点（node 口径：checkpoint 末仍无处理才 fatal，
         // 不等自然排空——开着的句柄（子进程/socket）会让循环永不 idle，循环尾的
-        // report_unhandled_rejections 永不到（§4.70 姊妹案，eval/module 双路同修）；
-        // 上报路径不变，仍由本函数尾收割。tracker Handled 已在表内摘除，
-        // checkpoint 时非空 = 整轮排空后确无处理。REPL 不走此检查（逐轮收割
-        // 不退出，node REPL 同款）。
+        // report 永不到（§4.70 姊妹案，eval/module 双路同修）。
+        // 先投递后定去留（见 runtime::unhandled）：有监听/warn/none 即清表续跑，
+        // 只有致命（throw/strict 无监听）才带错直返。tracker Handled 已在表内摘除。
+        // REPL 不走此检查（逐轮收割不退出，node REPL 同款）。
         if state::unhandled_pending() > 0 {
-            break;
+            // 先投递后定去留：致命即带错直返（尾收割不再重报，避重复 warn 日志）。
+            if let Err(e) = report_unhandled_rejections(rt, global) {
+                return Err(e);
+            }
         }
         iterations += 1;
         timers_fired += st.timers;
@@ -779,49 +784,6 @@ async fn event_loop(
     tracing::info!(target: "winterjs2::runtime", iterations, timers_fired, fetches_settled, ws_settled, watches_settled, children_settled, nets_settled, workers_settled, quics_settled, napis_settled, dispatches_settled, "event loop drained");
 
     report_unhandled_rejections(rt, global)
-}
-
-/// 未处理 rejection 收尾上报（Node 式 fatal）：挂捕获 reactions → 再排空一轮。
-/// `event_loop` 尾与 `repl` 每轮共用；REPL 侧出错只打印不退出（调用方定）。
-fn report_unhandled_rejections(
-    rt: &mut Runtime,
-    global: &RootedGuard<'_, *mut JSObject>,
-) -> Result<(), Error> {
-    let unhandled = state::with_rooted(|s| {
-        s.unhandled
-            .iter()
-            .map(|h| h.get())
-            .collect::<Vec<*mut JSObject>>()
-    });
-    if !unhandled.is_empty() {
-        tracing::warn!(target: "winterjs2::runtime", count = unhandled.len(), "unhandled rejections detected");
-        let mut realm = AutoRealm::new_from_handle(rt.cx(), global.handle());
-        let (on_fulfilled, on_rejected) = state::capture_native_values();
-        for promise_obj in unhandled {
-            rooted!(&in(&mut realm) let promise = promise_obj);
-            rooted!(&in(&mut realm) let ful_obj: *mut JSObject = on_fulfilled.to_object());
-            rooted!(&in(&mut realm) let rej_obj: *mut JSObject = on_rejected.to_object());
-            // SAFETY: promise/回调均为有效 rooted 函数对象；指针直拷标记位置
-            unsafe {
-                let _ = AddPromiseReactions(
-                    (&mut realm).raw_cx(),
-                    raw_handle(promise.as_ptr()),
-                    raw_handle(ful_obj.as_ptr()),
-                    raw_handle(rej_obj.as_ptr()),
-                );
-            }
-        }
-        // SAFETY: realm 内排空捕获反应，on_rejected_native 记录 reason
-        unsafe { RunJobs((&mut realm).raw_cx()) };
-        let reasons = state::with_plain(|p| std::mem::take(&mut p.rejection_reasons));
-        if !reasons.is_empty() {
-            return Err(Error::Other(format!(
-                "unhandled rejection: {}",
-                reasons.join("; ")
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// `WINTERJS2_HANG_EXIT` 到点：打印存活句柄计数，发 process 'exit'（mustCall 核对）。

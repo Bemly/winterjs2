@@ -287,3 +287,85 @@
 - 根因：node onStreamCloseResponse 在流关闭时置 closed 并（可写已终则）发 finish；旧移植在流 finish 即转发，早了一拍。
 - 修法：流 finish 只记账，response finish 延至流 close（writableFinished 前提），socket 门加 __resClosed；destroy 路径即时 finish 不动。
 - 推广铁律：**终结事件看关闭不看完成**——finish/close 的派发点与可见性门以 node 状态机为准，不以宿主流事件时间为准。
+### 4.300 超时孤儿排空原地 rearm 全杀兄弟 job（2026-10-20，vm lane）
+
+- 症状：`vm/module.evaluate({timeout})` 与其它未决微任务配对即挂——兄弟 promise 永不落定（test-vm-module-basic test1 配 timeout 块现形；单跑各自绿）。
+- 根因：超时命中后的孤儿排空沿用旧 `rearm`（过期表项仍在，中断回调恒 false）+ 同轮 `RunJobs`——排空中每个 job 都被中止，兄弟有限 job 连带陪葬（`run_jobs` glue 逐个出队，中断把整轮清空）。
+- 修法：摘原表项 → 以短预算（1000ms）重武装 → 排空 → 清标记 → 恢复原命中毫秒供文案。有限 job 照常结算，无限逃逸 loop 到期中止。
+- 复现：`pair2`（test1 同步模块 + `while(true)` 500ms 超时模块并跑；修前 T1 永挂，修后双绿）。
+- 推广铁律：**超时排空必须限时武装**——原地 rearm 等于全杀；凡"杀孤儿"逻辑先问"兄弟 job 何去何从"。
+
+### 4.301 跨 compartment 恒等必须统一包装（2026-10-20，vm lane）
+
+- 症状：`await import()` 结果与 `mod.namespace` 同引擎对象、`===` 却 false；`e !== __err`（明明同一 rejection reason）。
+- 根因：引擎 promise 通路自动 CCW 包装，被测的另一侧（native 直返命名空间/syncIn 写 sandbox）是裸指针——同一目标两种身份。
+- 修法：新增 `jsapi_glue::wrap_value`（`JS_WrapValue` 进调用方 compartment，同域无操作），统一包 `vm_mod_ns`/`vm_set`/`vm_get`返回值；global 免包装（身份基础设施，见下）。
+- 复现：`zz-ident3`（同对象直读 vs await，修前 false/false，修后缓存统一 true）。
+- 推广铁律：**跨域值出边界一律包装**——裸指针跨域即埋恒等雷；包装走同一缓存才恒等。
+
+### 4.302 global 免包装（身份基础设施不进 CCW）（2026-10-20，vm lane）
+
+- 症状：4.301 落地后 `vm_dont_contextify` 翻红（`runInContext("this", w) === w` false）。
+- 根因：`w`（DONT_CONTEXTIFY 的 global 本体）与 `this` 求值结果，一侧 CCW 一侧裸指针——global 身份被包装破坏（bookkeeping/自指比较全认裸指针）。
+- 修法：`vm_wrap_rval`/`vm_set`/`vm_get` 凡值是已知 global（`vm_global_all`）即直通不包装。
+- 推广铁律：**身份基础设施永不包装**——global 这类被到处 `===` 的值，包装即分裂身份；包装只给普通用户值。
+
+### 4.303 `Rooted<Vec<T>>::as_ptr` 拿到的是 Vec 头（2026-10-20，vm lane）
+
+- 症状：`process.listenerCount('unhandledRejection')` 恒返回 0（监听明明存在），致事件永不投递。
+- 根因：`rooted!(&in(cx) let argv_root: Vec<JSVal> = ...)` 后 `argv_root.as_ptr()`——`RootedGuard<Vec>` 解引用到 Vec，`as_ptr` 是 Vec 头地址，不是元素区；`HandleValueArray` 指向 Vec 头三字，读到垃圾参数。
+- 修法：改 `mozjs::rooted_vec!` + `extend`（元素区连续 rooted，`as_ptr` 即元素首地址）；调用后不再变长。
+- 复现：`unh2.mjs`（修前监听恒 0，修后事件双达）。
+- 推广铁律：**动态实参走 RootedVec**——`Vec` 的 `as_ptr` 与"元素数组"只在解引用后成立，`RootedGuard<Vec>` 上直接取是取错层。
+
+### 4.304 引擎 cast 不做类型守卫（`GetModuleObject` 等见非目标即读垃圾）（2026-10-20，vm lane）
+
+- 症状：Script 动态导入直接 SEGV（`GetModuleObject` 对非模块脚本）；`GetModuleForNamespace` 对普通对象返回"命名空间"（恒等误判）。
+- 根因：这类 API 内部 `as<ModuleObject>()` 无类型检查（release 无断言），错配即读垃圾/野指针。
+- 修法：referrer 匹配改编译期定址脚本指针比对（见 4.305）；命名空间判定改逐记录 `GetModuleNamespace` 取值比对（真记录上调用恒安全）。
+- 复现：`dbg4.mjs`（Script+回调，修前 139，修后 `ns? true`）。
+- 推广铁律：**引擎 cast 前先验类型**——凡 `as<T>` 无检查的 API，只喂已验证的真对象；referrer 这类外部输入一律走自建索引，不直喂。
+
+### 4.305 引擎清模块 ScriptSlot（求值后 referrer 脚本取不到）（2026-10-20，vm lane）
+
+- 症状：已求值模块的动态导入 referrer 匹配 SEGV（`GetModuleScript` 触发 `MOZ_RELEASE_ASSERT`）。
+- 根因：`ModuleObject::onTopLevelEvaluationFinished` 清 ScriptSlot（debugger 用后即焚，源码有注）；求值后 `GetModuleScript` 必崩。
+- 修法：`VmMod.script` 编译期定址（`Box<Heap<JSScript>>` 保活，trace 同步；hook 只比地址不解引用，恒安全）。
+- 推广铁律：**引擎的"用后即焚"槽位不能做索引**——凡引擎文档注明清理的槽，宿主侧编译期自持根。
+
+### 4.306 动态 import hook 行列恒 0（2026-10-20，vm lane）
+
+- 症状：`with` 属性回调恒收 `{}`（oxc 行列定位永不命中）。
+- 根因：`HostLoadImportedModule` 的动态分支行列参数恒 0（引擎未填），与静态路径不同。
+- 修法：改按运行时 specifier 匹配源码——同字面量首命中，否则源码仅一处动态 import 即兜底，否则空；`line_col_offset` 删除。
+- 推广铁律：**hook 参数先实测再用**——引擎传参在动/静路径可能完全不同（恒 0 即"未提供"），别按名猜语义。
+
+### 4.307 vm 模块求值缺 sandbox 同步（2026-10-20，vm lane）
+
+- 症状：`test-vm-module-basic` test1 `deepStrictEqual` 红（沙箱没回写）；基线同红（误记为 importModuleDynamically 单一阻塞）。
+- 根因：`runIn*` 有 syncIn/syncOut 快照语义，`SourceTextModule.evaluate` 全无——模块写 global 后沙箱恒旧。快照模型下无活绑定，必须显式回写。
+- 修法：`__doEvaluate` 内有 context 即 `__syncIn`（前）/`__syncOut`（落定 done/failed 双路；TLA 异步落定同序）。
+- 复现：`zz-t1`（修前 `{"foo":"bar"}` 缺键，修后全等）。
+- 推广铁律：**快照语义的域，执行入口与落定点必须配对同步**——只 sync 一端即漏；模块系与 run 系同构，别各写各的。
+
+### 4.308 import `with` 非 `type` 键 SM 直接拒收（2026-10-20，vm lane）
+
+- 症状：`import("foo", { with: { key: "value" } })` 在 vm Script 内直接 reject（`Unsupported import attribute`），回调永不触发。
+- 根因：SM153 只认 `type` 键（`We only support "type"`），V8 视属性为不透明透传 linker。引擎在调用点求值期校验，hook 前即拒。
+- 修法：编译前空格化剥离含非 `type` 键的 options 子句（换行保留，行列恒等；attrs 仍从原文静态提取）；纯 `type` 子句保留（JSON 引擎面）。
+- 推广铁律：**引擎墙属性先剥离再编译**——宿主语义（V8 不透明）与引擎校验冲突时，编译文本按引擎口径裁，语义信息走 side-channel（此处置请求表/源码）保留。
+
+### 4.309 prelude 块级 function 经 Annex B 漏全局（2026-10-20，vm lane）
+
+- 症状：`test-vm-module-errors` 的 `delete globalThis.error` 抛 TypeError（全局多了个不可配置的 `error/map/mapDomain`）。
+- 根因：punycode vendored 片段包在裸 `{}` 块里，sloppy 块级函数声明经 Annex B 建全局 var 绑定，且本仓预置全局不可配置。
+- 修法：外层 `{}` 改 IIFE 包裹（算法不动，两行）。
+- 推广铁律：**vendored 块级作用域一律 IIFE 化**——裸块挡不住 Annex B，全局命名空间只许 `__wjs2_` 与标准内建。
+
+### 4.310 unhandledRejection 投递形状（2026-10-20，vm lane）
+
+- 症状：vm/主域裸 reject 直 fatal，`process.on('unhandledRejection')` 永不触发（旧 report 只在尾收割字符串）。
+- 根因：跟踪器只记 promise，reason 在收尾时才挂捕获反应取——监听事件无值可递，索性不递。
+- 修法：`runtime/unhandled.rs`：落定时 `promise_settled_value` 直读 reason 原值；有监听即 `emit`（reason, promise）后清表续跑；无监听按 `--unhandled-rejections` 模式（throw/strict fatal；warn 警告+bounded 排空继续；none 静默；warn-with-error-code 警告+exit 1）。旧捕获 natives（on_fulfilled/on_rejected/rejection_reasons）删除。
+- 缺口（promise 域另案）：warn 双警告（reason + 出处注记）/lic `rejectionHandled` 事件/node 式 `UnhandledPromiseRejection` fatal 形状未对齐。
+- 推广铁律：**运行时先投递后定去留**——检查点只看"有没有"会误杀已监听；事件投递是检查点的前置动作，不是收尾动作。

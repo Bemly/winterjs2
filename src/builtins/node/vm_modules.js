@@ -5,6 +5,22 @@
 // SyntheticModule 纯 JS（link 依赖位不可接线——引擎墙，见 __isSynthetic 注）。
 import { inspect as __vsInspect } from "node:util";
 
+// 动态导入落定帮忙（native 经 globalThis 取用；merge-note #2）。
+// 回调/async 求值 promise 落定后调对应 done native（票据 + 值 + 是否失败）。
+// 回调抛错不吞：done 侧按 rejection 结算（真机口径）。
+globalThis.__wjs2_vm_dyn_then = (resultPromise, ticket) => {
+  resultPromise.then(
+    (v) => __wjs2_vm_dyn_done(String(ticket), v, false),
+    (e) => __wjs2_vm_dyn_done(String(ticket), e, true),
+  );
+};
+globalThis.__wjs2_vm_dyn_evalThen = (evalPromise, ticket) => {
+  evalPromise.then(
+    (v) => __wjs2_vm_dyn_eval_done(String(ticket), v, false),
+    (e) => __wjs2_vm_dyn_eval_done(String(ticket), e, true),
+  );
+};
+
 // 模块标识按 context 独立计数（无 context 共用默认计数，26.8.1 实测）。
 // SourceText/Synthetic 共用同一计数器（真机同源，实测）。
 const __vmModSeqs = new Map();
@@ -82,8 +98,9 @@ function __recvArg(v) {
   if (Array.isArray(v)) return "an instance of Array";
   const t = typeof v;
   if (t === "string") return `type string ('${v}')`;
-  if (t === "function") return `function ${v.name || "anonymous"}`;
+  if (t === "function") return `function ${v.name}`;
   if (t === "object") return "an instance of Object";
+  if (t === "symbol") return `type symbol (${String(v)})`;
   return `type ${t} (${String(v)})`;
 }
 
@@ -215,7 +232,8 @@ export class SourceTextModule extends Module {
         __modErr("ERR_VM_MODULE_CACHED_DATA_REJECTED", "Cached data rejected");
       }
     }
-    // importModuleDynamically/initializeImportMeta 只校验（v1 未接线，记档）。
+    // importModuleDynamically/initializeImportMeta 校验 + 动态导入注册
+    //（merge-note #2：回调/meta/源码进 native 注册表，hook 投递用）。
     if (options.importModuleDynamically !== undefined && typeof options.importModuleDynamically !== "function") {
       __modErr("ERR_INVALID_ARG_TYPE", `The "options.importModuleDynamically" property must be of type function. Received ${__recvArg(options.importModuleDynamically)}`);
     }
@@ -223,6 +241,14 @@ export class SourceTextModule extends Module {
       __modErr("ERR_INVALID_ARG_TYPE", `The "options.initializeImportMeta" property must be of type function. Received ${__recvArg(options.initializeImportMeta)}`);
     }
     this.__id = __vmCall(() => __wjs2_vm_compile_mod(ctxId, identifier, code));
+    __vmCall(() => __wjs2_vm_dyn_reg_mod(
+      this.__id,
+      ctxId,
+      this,
+      options.importModuleDynamically,
+      options.initializeImportMeta,
+      code,
+    ));
     __vmModAutoRelease(this, this.__id);
     __vmHideFields(this);
   }
@@ -484,6 +510,21 @@ export class SourceTextModule extends Module {
       return __modStatusErr("ERR_VM_MODULE_STATUS", "Module status must be one of linked, evaluated, or errored");
     }
     this.__status = "evaluating";
+    // 沙箱同步（runIn* 同款快照语义，真机 contextify 为活绑定，此处以
+    // syncIn/syncOut 对齐可观察面：求值前 sandbox→global，求值落定 global→sandbox。
+    // 无显式 context（主域）即跳过；link 不执行代码不同步）。
+    // 模块顶层声明落环境记录不在 globalThis 上，只有显式 global 写入才回写。
+    const __syncSb = this.__context !== undefined ? this.__context : null;
+    const __syncId = this.__context !== undefined ? this.__ctxId : null;
+    if (__syncSb !== null) {
+      try {
+        __syncIn(__syncId, __syncSb);
+      } catch (e) {
+        this.__status = "errored";
+        this.__error = e;
+        return Promise.reject(e);
+      }
+    }
     // native 原样返回 completion；同步落定经内态 API 判定（`__wjs2_promise_state`
     // 内解包，跨 compartment 安全；`export then` 病态模块记档）：
     // fulfilled→同步记账；rejected→认领因（挂空处理器消运行时 unhandled，
@@ -500,11 +541,19 @@ export class SourceTextModule extends Module {
       __vmCall(() => __wjs2_vm_mod_settled(this.__id));
       this.__status = "evaluated";
       this.__ns = __vmCall(() => __wjs2_vm_mod_ns(this.__id));
+      if (__syncSb !== null) {
+        __syncOut(__syncId, __syncSb);
+      }
       return undefined;
     };
     const failed = (e) => {
       this.__status = "errored";
       this.__error = e;
+      if (__syncSb !== null) {
+        try {
+          __syncOut(__syncId, __syncSb);
+        } catch { /* 落定优先，同步失败不掩盖原错 */ }
+      }
       throw e;
     };
     if (r !== null && (typeof r === "object" || typeof r === "function") && typeof r.then === "function") {
@@ -590,6 +639,8 @@ export class SyntheticModule extends Module {
       Object.defineProperty(ns, n, { enumerable: true, configurable: true, get: () => this.__exports[n] });
     }
     this.__ns = Object.freeze(ns);
+    // 包装 + 命名空间进 native 注册（回调返回 identity 比对用，merge-note #2）。
+    __vmCall(() => __wjs2_vm_dyn_reg_ns(this, this.__ns));
     __vmHideFields(this);
   }
   get status() { this.__assertThis(); return this.__status; }
@@ -598,9 +649,8 @@ export class SyntheticModule extends Module {
   get dependencySpecifiers() { this.__assertThis(); return undefined; }
   get namespace() {
     this.__assertThis();
-    if (this.__status !== "evaluated" && this.__status !== "evaluating") {
-      __modErr("ERR_VM_MODULE_STATUS", "Module status must be evaluated");
-    }
+    // 真机口径（lib/internal/vm/module.js）：synthetic 出生即 instantiated
+    // （linked），命名空间自 linked 起可读（evaluated 前读到当前导出快照）。
     return this.__ns;
   }
   get error() {

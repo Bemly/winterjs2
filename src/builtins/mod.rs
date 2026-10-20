@@ -395,7 +395,15 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_promise_state", Some(node::vm_module::promise_state), 1),
             ("__wjs2_promise_result", Some(node::vm_module::promise_result), 1),
             // vm-triage M3：求值超时（watchdog + 中断回调）
-            ("__wjs2_vm_timeout_fired", Some(node::vm::timeout_fired), 0),
+            ("__wjs2_vm_timeout_fired", Some(node::vm_timeout::timeout_fired), 0),
+            // merge-note #2：动态导入投递（模块/函数/Script 三路注册 + run 帧 + 落定）
+            ("__wjs2_vm_dyn_reg_mod", Some(node::vm_dyn::vm_dyn_reg_mod), 6),
+            ("__wjs2_vm_dyn_reg_fn", Some(node::vm_dyn::vm_dyn_reg_fn), 5),
+            ("__wjs2_vm_dyn_reg_ns", Some(node::vm_dyn::vm_dyn_reg_ns), 2),
+            ("__wjs2_vm_dyn_run", Some(node::vm_dyn::vm_dyn_run), 7),
+            ("__wjs2_vm_dyn_run_this", Some(node::vm_dyn::vm_dyn_run_this), 6),
+            ("__wjs2_vm_dyn_done", Some(node::vm_dyn::vm_dyn_done), 3),
+            ("__wjs2_vm_dyn_eval_done", Some(node::vm_dyn::vm_dyn_eval_done), 3),
             // Phase 9f-2: worker 消息通道（端口对/投递/线程身份/环境数据）
             ("__wjs2_port_pair", Some(node::worker::port_pair), 0),
             ("__wjs2_port_attach", Some(node::worker::port_attach), 2),

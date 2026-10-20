@@ -89,6 +89,8 @@ mod util_types;
 mod v8;
 #[path = "node/vm.rs"]
 mod vm;
+#[path = "node/vm_dyn.rs"]
+mod vm_dyn;
 #[path = "node/worker.rs"]
 mod worker;
 #[path = "node/zlib.rs"]

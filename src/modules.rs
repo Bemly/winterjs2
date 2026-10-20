@@ -523,8 +523,8 @@ unsafe extern "C" fn load_hook(
     module_request: mozjs::jsapi::Handle<*mut JSObject>,
     _host_defined: mozjs::jsapi::Handle<JSVal>,
     payload: mozjs::jsapi::Handle<JSVal>,
-    _line: u32,
-    _col: mozjs::jsapi::ColumnNumberOneOrigin,
+    line: u32,
+    col: mozjs::jsapi::ColumnNumberOneOrigin,
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效
     let mut cx = unsafe { wrap_cx(cx_raw) };
@@ -546,6 +546,23 @@ unsafe extern "C" fn load_hook(
     // SAFETY: 同上；payload 只读出（是否 Promise 决定动/静路径）
     let payload_val = unsafe { *payload.ptr };
     let dynamic = payload_is_promise(cx, payload_val);
+    // vm 动态导入（merge-note #2）：referrer 为 vm 代码即进三路投递；
+    // 命中返回结算结果，未命中（None）落主 loader 路。
+    if dynamic {
+        // SAFETY: referrer/payload Handle 调用期内有效；行列逐字透传
+        let referrer_ptr = unsafe { *referrer.ptr };
+        let col_one = col._base;
+        if let Some(done) = crate::builtins::node::vm_dyn::vm_dyn_import(
+            cx,
+            referrer_ptr,
+            unsafe { *module_request.ptr },
+            payload_val,
+            line,
+            col_one,
+        ) {
+            return done;
+        }
+    }
     // SAFETY: referrer Handle 在调用期内有效
     let base = unsafe { referrer_base(*referrer.ptr) };
     tracing::debug!(target: "winterjs2::modules", spec, dynamic, "load hook");
@@ -606,6 +623,12 @@ unsafe extern "C" fn metadata_hook(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     // SAFETY: 参数 Handle 在调用期内有效
     let (record, meta) = unsafe { (*module_record.ptr, *meta_object.ptr) };
+    // vm 记录（merge-note #2）：initializeImportMeta 投递；非 vm 走主路。
+    if module_url(record).is_none()
+        && state::vm_mod_all().iter().any(|(rec, _, _, _)| *rec == record)
+    {
+        return crate::builtins::node::vm_dyn::vm_meta_dispatch(&mut cx, record, meta);
+    }
     let global = state::global();
     rooted!(&in(cx) let global_root: *mut JSObject = global);
     let mut realm = mozjs::realm::AutoRealm::new_from_handle(&mut cx, global_root.handle());

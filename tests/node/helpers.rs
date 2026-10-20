@@ -62,8 +62,8 @@ fn suite_mapper_src(suite_path: &str) -> String {
 /// （套件侧真实调用点 行:列 + 源行）/ `[mapper-expected]`（调用点上下文
 /// ±2 行节选）。返回 (是否通过, 合并输出)。
 ///
-/// 实测边界（2026-09-23，探针钉住）：`unhandledRejection` 监听拦不到
-/// （引擎自有未处理 rejection 收割先走，§4.137 路径——rejection 形失败
+/// 实测边界（2026-09-23 探针钉住，2026-10-20 vm #3 投递落地后更新）：
+/// `unhandledRejection` 监听可拦截（运行时先投递事件再定去留；无监听才 fatal，
 /// 回落引擎默认输出，位置仍骗）；`process.on('exit')` 在 fatal 路径不触发
 /// （宿主 process::exit 跳过，无兜底臂）；栈帧行号 = 物理行 + CJS 包装
 /// 前奏行数（`.js` 恒 +1，6 处实验一致——含 vendor 套件，`raw-headers`

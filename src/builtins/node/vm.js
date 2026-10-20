@@ -647,7 +647,9 @@ export function runInContext(code, contextifiedObject, options) {
   const id = __validateCtx(contextifiedObject);
   const { filename, lineOffset, columnOffset, timeout } = __runArgs(contextifiedObject, options);
   __syncIn(id, contextifiedObject);
-  const r = __vmCall(() => __wjs2_vm_run(id, String(code), filename, String(timeout)), lineOffset, columnOffset, timeout);
+  // 自由函数无 importModuleDynamically 携带位（真机口径）：mode 恒 none，
+  // vm 内 import() 即 CALLBACK_MISSING（主 loader 不回落，见 4.292）。
+  const r = __vmCall(() => __wjs2_vm_dyn_run(id, String(code), filename, String(timeout), undefined, undefined, "none"), lineOffset, columnOffset, timeout);
   __syncOut(id, contextifiedObject);
   return r;
 }
@@ -673,11 +675,36 @@ export function runInNewContext(code, contextObject, options) {
 
 export function runInThisContext(code, options) {
   const { filename, lineOffset, columnOffset, timeout } = __runArgs(null, options);
-  return __vmCall(() => __wjs2_vm_run_this(String(code), filename, String(timeout)), lineOffset, columnOffset, timeout);
+  return __vmCall(() => __wjs2_vm_dyn_run_this(String(code), filename, String(timeout), undefined, undefined, "none"), lineOffset, columnOffset, timeout);
 }
 
-export class Script {
-  constructor(code, options = {}) {
+// Script/compileFunction 的 importModuleDynamically 归一（真机口径）：
+// undefined → "none"（无回调 → 缺失错）；USE_MAIN_CONTEXT_DEFAULT_LOADER 符号 →
+// "main"（主 loader 直通）；function → "custom"；余者 TypeError（文案逐字）。
+function __dynModeOf(v) {
+  if (v === undefined) return "none";
+  if (typeof v === "function") return "custom";
+  if (v === __useMainLoader) return "main";
+  const err = new TypeError(`The "options.importModuleDynamically" property must be of type function. Received ${__recv(v)}`);
+  err.code = "ERR_INVALID_ARG_TYPE";
+  throw err;
+}
+
+// Script 绑定 run（referrer 恒等口径：回调第二个参数即 Script 本体）。
+function __scriptRunInContext(script, contextifiedObject, options) {
+  const id = __validateCtx(contextifiedObject);
+  const { filename, lineOffset, columnOffset, timeout } = __runArgs(contextifiedObject, options);
+  __syncIn(id, contextifiedObject);
+  const r = __vmCall(() => __wjs2_vm_dyn_run(id, String(script.__code), filename, String(timeout), script.__dynCb, script, script.__dynMode), lineOffset, columnOffset, timeout);
+  __syncOut(id, contextifiedObject);
+  return r;
+}
+function __scriptRunInThisContext(script, options) {
+  const { filename, lineOffset, columnOffset, timeout } = __runArgs(null, options);
+  return __vmCall(() => __wjs2_vm_dyn_run_this(String(script.__code), filename, String(timeout), script.__dynCb, script, script.__dynMode), lineOffset, columnOffset, timeout);
+}
+
+export class Script {  constructor(code, options = {}) {
     code = String(code);
     if (typeof options === "string") options = { filename: options };
     if (options === null || (typeof options !== "object" && typeof options !== "function")) {
@@ -688,6 +715,8 @@ export class Script {
     this.__code = code;
     this.__filename = __normStr(options.filename, "filename", "evalmachine.<anonymous>");
     this.__sourceMapURL = __vmSourceMapURL(code);
+    this.__dynMode = __dynModeOf(options.importModuleDynamically);
+    this.__dynCb = this.__dynMode === "custom" ? options.importModuleDynamically : undefined;
     void __normUint(options.lineOffset, "lineOffset");
     void __normUint(options.columnOffset, "columnOffset");
     void __normTimeout(options.timeout, "timeout");
@@ -717,7 +746,7 @@ export class Script {
     return options ?? {};
   }
   runInContext(contextifiedObject, options) {
-    return runInContext(this.__code, contextifiedObject, { ...this.__normOpts(options), filename: this.__filename });
+    return __scriptRunInContext(this, contextifiedObject, { ...this.__normOpts(options), filename: this.__filename });
   }
   // 真机形态：`this.runInContext(...)` 的成员访问先于实参求值——this 非对象时
   // 即报 `this.runInContext is not a function`（new-script-new-context 末块
@@ -726,7 +755,7 @@ export class Script {
     return this.runInContext(createContext(contextObject, options), options);
   }
   runInThisContext(options) {
-    return runInThisContext(this.__code, { ...this.__normOpts(options), filename: this.__filename });
+    return __scriptRunInThisContext(this, { ...this.__normOpts(options), filename: this.__filename });
   }
   createCachedData() {
     return Buffer.alloc(0);
@@ -788,6 +817,16 @@ export function compileFunction(code, params, options = {}) {
   }
   const paramsCsv = (params ?? []).join(",");
   const fn = __vmCall(() => __wjs2_vm_compile_fn(ctxId, paramsCsv, code, filename));
+  // 动态导入注册（referrer 即函数本体；包装源码与 native 求值文本字节一致，
+  // attrs 行列定位用；none/main 不带回调）。
+  const dynMode = __dynModeOf(options.importModuleDynamically);
+  __vmCall(() => __wjs2_vm_dyn_reg_fn(
+    fn,
+    ctxId === "" ? "main" : ctxId,
+    dynMode === "custom" ? options.importModuleDynamically : undefined,
+    dynMode === "main" ? "1" : "0",
+    "(function (" + paramsCsv + ") {\n" + code + "\n})",
+  ));
   if (ctxId === "") {
     for (const ext of exts) Object.assign(globalThis, ext);
   } else {

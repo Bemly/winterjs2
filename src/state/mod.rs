@@ -135,40 +135,9 @@ pub struct NetTarget {
 }
 
 /// 一个 vm 上下文的独立 global（新 compartment；run 时重进其 realm；`Box` 定址）。
-pub struct VmCtx {
-    pub id: u64,
-    pub global: Box<Heap<*mut JSObject>>,
-}
-
-// SAFETY: 只追踪 global（id 无 GC 指针）。
-unsafe impl Traceable for VmCtx {
-    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
-        self.global.trace(trc);
-    }}
-}
-
+/// 定义见 `state/vm.rs`（vm 域归位，纯搬移）。
 /// 一个 vm 模块记录（SourceTextModule 编译产物；新 compartment 归属其 ctx；
-/// `Box` 定址，见 §4.40）。状态机（linked/evaluated 一次语义）由 JS 壳 نگه，
-/// Rust 侧只记位防重复 link/evaluate；has_imports 为 true 者 v1 拒绝 link
-///（带导入的 linker 切片后续做，见 vm.rs 模块头注）。
-pub struct VmMod {
-    pub id: u64,
-    pub ctx: u64,
-    pub identifier: String,
-    pub record: Box<Heap<*mut JSObject>>,
-    pub has_imports: bool,
-    /// 静态依赖 specifier 表（`dependencySpecifiers` 面；纯数据，无 GC 指针）。
-    pub deps: Vec<String>,
-    pub linked: bool,
-    pub evaluated: bool,
-}
-
-// SAFETY: 只追踪 record（其余无 GC 指针）。
-unsafe impl Traceable for VmMod {
-    unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
-        self.record.trace(trc);
-    }}
-}
+/// `Box` 定址，见 §4.40）。定义见 `state/vm.rs`（vm 域归位，纯搬移）。
 
 // SAFETY: 只追踪 target（id 无 GC 指针）。
 unsafe impl Traceable for NetTarget {
@@ -380,8 +349,6 @@ pub struct RootedState {
     pub unhandled: Vec<Box<Heap<*mut JSObject>>>, // 未处理 rejection 的 promise（`Box` 定址）
     pub call_fn: Heap<JSVal>,                // prelude 的 __wjs2_call(cb, args)
     pub entries_fn: Heap<JSVal>,             // prelude 的 __wjs2_entries(v)
-    pub on_fulfilled: Heap<JSVal>,           // rejection 捕获用 native
-    pub on_rejected: Heap<JSVal>,
     pub entry_fulfilled: Heap<JSVal>, // 模块入口 TLA 决议捕获用 native
     pub entry_rejected: Heap<JSVal>,
     pub modules: Vec<ModuleEntry>, // URL → 已编译模块记录（循环/去重，spec 同结果）
@@ -396,6 +363,9 @@ pub struct RootedState {
     pub quic_stream_targets: Vec<QuicTarget>, // QUIC 流的 JS 目标（Close 后摘除）
     pub vm_contexts: Vec<VmCtx>, // node:vm 上下文 global（release 摘除，会话终由 OS 回收）
     pub vm_mods: Vec<VmMod>, // node:vm 模块记录（link/evaluate 后摘除，会话终由 OS 回收）
+    pub vm_dyn: Vec<VmDynEntry>, // node:vm 动态导入注册（mod/fn/script 三路，release 摘除）
+    pub vm_dyn_tickets: Vec<VmDynTicket>, // 未决动态导入（async 回调跨轮，落定即摘）
+    pub vm_dyn_ns: Vec<Box<Heap<*mut JSObject>>>, // synthetic 命名空间（回调返回 identity 比对）
     pub bc_targets: Vec<BcTarget>, // BroadcastChannel 订阅目标（unsub/close 后摘除）
     /// BC 同会话同步收信 pending（(sub_id, wire)；`receiveMessageOnPort` 同步
     /// 口 + pump 逐轮派发双消费，端口 pending 同款模型，10f）。
@@ -419,8 +389,6 @@ unsafe impl Traceable for RootedState {
         self.unhandled.trace(trc);
         self.call_fn.trace(trc);
         self.entries_fn.trace(trc);
-        self.on_fulfilled.trace(trc);
-        self.on_rejected.trace(trc);
         self.entry_fulfilled.trace(trc);
         self.entry_rejected.trace(trc);
         self.vm_last_error.trace(trc);
@@ -437,6 +405,9 @@ unsafe impl Traceable for RootedState {
         self.quic_stream_targets.trace(trc);
         self.vm_contexts.trace(trc);
         self.vm_mods.trace(trc);
+        self.vm_dyn.trace(trc);
+        self.vm_dyn_tickets.trace(trc);
+        self.vm_dyn_ns.trace(trc);
         self.bc_targets.trace(trc);
         self.fetch_callbacks.trace(trc);
         self.fetch_streams.trace(trc);
@@ -460,7 +431,6 @@ pub struct PlainState {
     pub console_counts: HashMap<String, u32>,
     pub console_times: HashMap<String, Instant>,
     pub console_indent: usize,
-    pub rejection_reasons: Vec<String>,
     /// 模块入口 TLA 决议（`entry_*_native` 记录，`runtime` 收割，与通用捕获隔离）。
     pub entry_fulfillment: Option<String>,
     pub entry_rejection: Option<String>,
@@ -600,7 +570,8 @@ pub fn global() -> *mut JSObject {
     PLAIN.with(|p| p.borrow().global)
 }
 
-/// 引擎初始化后、首段脚本前调用一次。创建跨 GC 根与 rejection 捕获 natives。
+/// 引擎初始化后、首段脚本前调用一次。创建跨 GC 根与入口决议捕获 natives
+///（入口 TLA 专用；通用 unhandled 改直读结算值，见 runtime/unhandled）。
 pub fn init(cx: &mut JSContext) {
     ROOTED.with(|r| {
         let mut slot = r.borrow_mut();
@@ -611,20 +582,6 @@ pub fn init(cx: &mut JSContext) {
         // SAFETY: cx 为引擎当前线程的活跃 context；raw 调用不触发 GC
         unsafe {
             let rcx = cx.raw_cx();
-            let on_fulfilled = JS_NewFunction(
-                rcx,
-                Some(on_fulfilled_native),
-                0,
-                0,
-                c"__wjs2_onFulfilled".as_ptr(),
-            );
-            let on_rejected = JS_NewFunction(
-                rcx,
-                Some(on_rejected_native),
-                1,
-                0,
-                c"__wjs2_onRejected".as_ptr(),
-            );
             let entry_fulfilled = JS_NewFunction(
                 rcx,
                 Some(entry_fulfilled_native),
@@ -640,16 +597,11 @@ pub fn init(cx: &mut JSContext) {
                 c"__wjs2_entryRejected".as_ptr(),
             );
             assert!(
-                !on_fulfilled.is_null()
-                    && !on_rejected.is_null()
-                    && !entry_fulfilled.is_null()
-                    && !entry_rejected.is_null(),
+                !entry_fulfilled.is_null() && !entry_rejected.is_null(),
                 "capture natives"
             );
             {
                 let s = boxed.borrow_mut();
-                s.on_fulfilled.set(ObjectValue(JS_GetFunctionObject(on_fulfilled)));
-                s.on_rejected.set(ObjectValue(JS_GetFunctionObject(on_rejected)));
                 s.entry_fulfilled.set(ObjectValue(JS_GetFunctionObject(entry_fulfilled)));
                 s.entry_rejected.set(ObjectValue(JS_GetFunctionObject(entry_rejected)));
             }
@@ -706,42 +658,7 @@ pub fn next_timer_id() -> u32 {
     })
 }
 
-// ── rejection 捕获 natives ─────────────────────────────────────────────
-
-/// SAFETY: 由引擎以有效调用帧调用（JSNative 约定）。
-unsafe extern "C" fn on_fulfilled_native(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool { unsafe {
-    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper（JS 线程单实例）
-    let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
-    let frame = Frame::from_raw(vp, argc);
-    frame.set_rval(UndefinedValue());
-    let _ = &mut cx;
-    true
-}}
-
-/// SAFETY: 同上；arg0 为 rejection reason。
-unsafe extern "C" fn on_rejected_native(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool { unsafe {
-    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
-    let mut cx = JSContext::from_ptr(std::ptr::NonNull::new_unchecked(cx_raw));
-    let frame = Frame::from_raw(vp, argc);
-    let reason = if argc > 0 { frame.arg(0) } else { UndefinedValue() };
-    let s = value_to_string(&mut cx, reason);
-    with_plain(|p| p.rejection_reasons.push(s));
-    frame.set_rval(UndefinedValue());
-    true
-}}
-
-/// 供 runtime 在事件循环收尾把捕获 natives 挂到未处理 promise 上。
-pub fn capture_native_values() -> (JSVal, JSVal) {
-    with_rooted(|s| (s.on_fulfilled.get(), s.on_rejected.get()))
-}
+// ── rejection 捕获 natives（入口 TLA 专用；通用 unhandled 改直读结算值） ──
 
 /// 供 runtime 把入口 TLA promise 的决议收割到专用槽（与通用捕获隔离）。
 pub fn entry_native_values() -> (JSVal, JSVal) {

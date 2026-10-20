@@ -2699,3 +2699,22 @@ G1/G2/G3/G9 已收官。）
   `tls_` 15/15、`https_` 12/12；custom-lookup 单发抖动复跑 5/5（load 并发 flake
   记一笔）；冒烟 5/5；双守门绿；`split-js` 未触发（tls.js 960/net 全员 <1000）。
 
+## 2026-10-20 vm merge-note #2/#3 落地（lane/vm：importModuleDynamically + unhandledRejection 投递）
+
+- 范围：R19 L-D linker 轮遗留两 merge-note。base18 vm 46/95 → 本轮 sweep（vm-dyn3 tag）SAME0 75/95 DIFF 20/TIMEOUT 0（+29 件；基本/错误/动态-import×2/命名空间/import-meta/no-callback 7 件全转绿）。
+- #2 importModuleDynamically（`src/builtins/node/vm_dyn.rs` 新文件 + `modules.rs` 双 hook 分支 + `vm.js`/`vm_modules.js` 接线 + `state/vm.rs` 注册表）：
+  三路 referrer（模块记录/compileFunction 结果/Script 帧栈）→ `Reflect.apply` 调用户回调（this undefined；spec/ref/空原型 attrs/phase 串真机序）→ 同步分类（模块记录→link+evaluate；命名空间/synthetic→`ResolvePromise` 直解；非法→`ERR_VM_MODULE_NOT_MODULE`）/async 回调→开票+JS 帮忙落定。纯 Resolve 方案（不调 `FinishLoadingImportedModule`，免 referrer 脚本跨轮定址）。
+  引擎墙记档：`with` 非 `type` 键编译期剥离（SM153 只认 `type`，V8 不透明；attrs 仍从原文取）；async 回调返 thenable（非原生 promise）按非法处理；file 主 loader 静态依赖走原路失败。
+- #2 initializeImportMeta（`metadata_hook` vm 记录分支）：无回调即空 meta（真机口径）；有回调 `Reflect.apply(undefined, [meta, module])`，返回值忽略，抛错即失败。
+- #3 unhandledRejection（`src/runtime/unhandled.rs` 新文件；旧捕获 natives 删除）：`report_unhandled_rejections` 改直读结算值；有监听即 emit（reason, promise）后清表续跑；无监听按 `--unhandled-rejections`（throw/strict fatal 旧文案；warn 警告+bounded 排空继续；none 静默；warn-with-error-code 警告+exit 1）。事件循环检查点改先投递后定去留（监听/告警/静默不清表即续跑，致命才跳出）。
+  缺口（promise 域另案）：warn 双警告/rejectionHandled 事件/node 式 fatal 形状。
+- 过程根修（三处阻塞件的真根因，非 merge-note 字面）：
+  1. punycode vendored 块级 function 经 Annex B 漏全局（`error` 非配置，致 errors 件 `delete` 崩）→ IIFE 包裹（先行单提交 9c2db89，已合 master）。
+  2. 超时孤儿排空原地 rearm 全杀兄弟 job（test1 配 timeout 块永挂；基线 stash 同现，潜伏）：摘表项+1000ms 限时武装排空（4.300）。
+  3. 模块求值缺 sandbox 同步（test1 deepStrictEqual 红；基线同红，journal 原"各剩一件"误记）：`__doEvaluate` 配 syncIn/syncOut。
+  4. 跨域恒等分裂（`ns === namespace`/`e === __err` false）：`wrap_value` 统一包装（mod_ns/vm_set/vm_get/完成值非 promise；global 免包装）（4.301/4.302）。
+- 过程坑（4.293-4.299 引擎墙系列 + 4.303-4.310）：`GetModuleObject`/`GetModuleForNamespace` 无检查 cast（Script 路 SEGV/误判）→编译期脚本定址比对；`ScriptSlot` 求值后清零（4.305）；hook 行恒 0（4.306，改 spec 匹配）；`Rooted<Vec>` as_ptr 误用（4.303，listenerCount 恒 0）；`RootedGuard<Vec>` 同类（call_method 已改 RootedVec）。
+- 验证：7 目标套件全绿（exit 0）；timeout 逃逸三件绿；新黑盒 `tests/node/vm_dyn.rs` 4 件绿（动态导入面/import-meta 面/投递面/守卫面）；既有 vm 黑盒 18/18；`builtins::unhandled_rejection_is_fatal` 绿；冒烟 5/5；`check-lines`/`check-naming` 双绿；sweep vm 75/95（余 20=预存深水 +3 回归核销见下）。
+- 回归核销：`function-declaration/getters/global-define-property` 三件 base18 绿→本轮初红（rval/同步包装漏 global 豁免），已修绿；`basic` sweep DIFF 系并行负载抖动（单跑/单件 sweep 绿，见 vm-basic1 tag）；`set_immediate_not_clamped` 计时抖动系已知负载 flake（journal 2026-09-28 有案，单跑 2/3 过）。
+- 余 20 DIFF 定性：synthetic 作依赖（引擎墙，记档）；referrer-realm（主 loader 静态回落，linker 另案）；after-evaluate×2/hasasyncgraph/hastoplevelawait（linker 求值语义另案）；其余 12（context-async/global 系/proxies/symbols/sigint×2/cached-data/low-stack 等）皆 base18 预存红（非本轮引入，见 comm 差集：仅上三件新增且已修）。
+- 构建：lane 独立 worktree（`lane/vm`，基线 707a929）+ worktree-local target；`LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib`（brew llvm 缺失，主仓 AGENTS 路径此机不可用）；错峰 -j2（load 386 时停编，降后复工，已报 parent）。

@@ -2522,3 +2522,24 @@ G1/G2/G3/G9 已收官。）
   黑盒 `tls_` 15/15（含新件）、Rust 单测 tls 10 + x509 9、builtins 41/41
   （中途 1 发 load 并发 flake，复跑双绿，4.140 口径记一笔）；冒烟 5/5；双守门绿。
 
+
+## 2026-10-20 console 余4红修法（lane/console，16/16 满绿）
+
+- 根因收敛：全局输出未走 JS 流面（Rust 直写 fd，无 `_stdout`；`isTTY` 只读；
+  无 diagnostics 发布）——count 劫持/clear/stdio-setters/diagnostics 四件同源。
+- 修法（prelude JS，零 Rust）：`console._stdout/_stderr` 可写（缺省跟安装期
+  进程流引用）+ 未改道走原生 raw（零行为变化，保 REPL CRLF）/改道走流写
+  （同步错吞，唯真栈溢出穿透，探针与模块面同式）+ log/info/debug/warn/error
+  分体（各发自家 channel；methods 套件容忍别名，diagnostics 要求分体；
+  dirxml=groupCollapsed 保持同体）+ clear（TTY+非dumb 写转义）+
+  stdio `isTTY` getter+setter（读 live、写覆盖；套件赋值不再抛）。
+- 黑盒 `console_global_routing_faces`（hijack 捕获/_stdout 定制/channel 原参/
+  clear 双态/写错吞/恢复原生；clear 期望随 TERM 分支，dumb 即静默真机同，
+  已真机实证）。
+- 验证：16 件域套件 16/16（base18 5/16；L-E 后已转绿一批，本轮收余 4）；
+  console:: 7/7；util::+stream:: 25/25；events::/diagnostics_channel::/repl::/
+  builtins::/tty::/readline:: 全绿；两目标套件 rc=0 复绿；
+  冒烟 5/5；check-lines/naming ok。
+- 守门触发拆分：`require.rs` 被顶到 1061 行 → `REQUIRE_PRELUDE` 纯字符串整体
+  搬入 `require_prelude.rs`（原位 `pub use` 重导出；require.rs 784/新文件 282，
+  纯搬移先行一提交）。

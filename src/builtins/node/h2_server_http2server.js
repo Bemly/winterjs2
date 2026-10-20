@@ -271,11 +271,14 @@ class Http2Server extends EventEmitter {
         const s = this.__sessions.get(connId);
         if (s) s.__ev("connClose", payload);
         // 注入连接：会话亡即连带 destroy 注入 socket（node socket 归会话所有；
-        // 套件自毁在先时此处即 no-op）。
+        // 套件自毁在先时此处即 no-op；流传输（tunnel）不碰外层流）。
         const adopted = this.__adopted.get(connId);
         if (adopted) {
           this.__adopted.delete(connId);
-          try { adopted.destroy(); } catch {}
+          const target = adopted && adopted.s !== undefined ? adopted.s : adopted;
+          if (!adopted.stream) {
+            try { target.destroy(); } catch {}
+          }
         }
         // 全会话已收且监听器已关 → server 'close'
         queueMicrotask(() => {
@@ -284,14 +287,20 @@ class Http2Server extends EventEmitter {
         break;
       }
       case "adoptData": {
-        // adopt 桥写出（Rust payload = "connId b64"）：落注入 socket。
+        // adopt 桥写出（Rust payload = "connId b64"）：流传输走 native data
+        // 直发（绕流写门，与客户端对称）；socket 走 write。
         const o = JSON.parse(payload);
         const raw = String(o.payload ?? "");
         const sp = raw.indexOf(" ");
         const connId = Number(raw.slice(0, sp));
-        const sock = this.__adopted.get(connId);
+        const entry = this.__adopted.get(connId);
+        const sock = entry && entry.s !== undefined ? entry.s : entry;
+        const b64 = raw.slice(sp + 1);
         if (sock && !sock.destroyed) {
-          try { sock.write(Buffer.from(__b64dec(raw.slice(sp + 1)))); } catch {}
+          try {
+            if (entry && entry.stream) __wjs2_h2_data(sock.__conn, sock.id, b64);
+            else sock.write(Buffer.from(__b64dec(b64)));
+          } catch {}
         }
         break;
       }
@@ -366,7 +375,14 @@ class Http2Server extends EventEmitter {
 // 注入连接承接（node connectionListener 口径）：socket 数据经 adopt 桥进
 // serve_conn；socket 消亡即喂 EOF（serve 收尾→connClose→会话终结）。
 function __h2AdoptConnection(server, socket) {
-  if (!socket || typeof socket.on !== "function" || !socket.__id) return;
+  if (!socket || typeof socket.on !== "function") return;
+  if (!socket.__id) {
+    // 流传输（proxy-over-h2：server.emit('connection', stream)）：h2c 会话
+    // 跑在用户 Duplex 上（CONNECT 隧道等），无 TLS。
+    if (typeof socket.write !== "function") return;
+    __h2AdoptDuplex(server, socket);
+    return;
+  }
   const listenOpts = { ...(server.__tlsOpts ?? {}) };
   if (server.__opts && server.__opts.settings !== undefined) {
     listenOpts.settings = __validateSettings(server.__opts.settings, "options.settings");
@@ -394,4 +410,23 @@ function __h2AdoptConnection(server, socket) {
   socket.once("end", () => {
     try { __wjs2_h2_adopt_close(connId); } catch {}
   });
+}
+
+// 流传输注入（proxy-over-h2）：h2c 会话跑在 Duplex 上。隧道归用户所有，
+// 会话终结不碰外层流（显式收尾负责）；记 stream 形免 connClose 连带 destroy。
+function __h2AdoptDuplex(server, stream) {
+  const listenOpts = {};
+  if (server.__opts && server.__opts.settings !== undefined) {
+    listenOpts.settings = __validateSettings(server.__opts.settings, "options.settings");
+  }
+  let connId;
+  try {
+    connId = Number(__wjs2_h2_adopt(JSON.stringify(listenOpts), "stream", server));
+  } catch { return; }
+  if (!Number.isFinite(connId)) return;
+  server.__adopted.set(connId, { s: stream, stream: true });
+  stream.__h2Adopted = connId;
+  __h2BridgeDuplex(server, stream, connId,
+    (i, b) => __wjs2_h2_adopt_data(i, b),
+    (i) => __wjs2_h2_adopt_close(i));
 }

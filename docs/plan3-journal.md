@@ -2753,3 +2753,17 @@ G1/G2/G3/G9 已收官。）
 - hasTopLevelAwait/hasAsyncGraph：oxc 静态探测（`visit_function` 不覆盖箭头→补 `visit_arrow_function_expression`，4.318）+ 构造期 `__tla` + link/instantiate 落定 `__tlaClosure`（连带依赖同循环结算，4.320；linkRequests 未实例化抛 STATUS 文案逐字）。
 - after-evaluate×2：书面偏离（4.319）——V8 按上下文分微任务队列，我方单共享队列恒排空，无"某上下文 checkpoint"概念；`createContext` 仍校验 `microtaskMode` 口径。
 - 验证：4 件中 3 转绿（referrer/hasasyncgraph/hastoplevelawait）；黑盒新 2 件（`vm_referrer_ctx_faces`/`vm_tla_faces`）+ 既有 24/24 绿；7 件旧套件 + 超时三件 + identity 三件全绿；冒烟 5/5；check-lines/naming 双绿；sweep vm-linker2：78/95（+1 dont-contextify；余 17=after-evaluate×2 偏离+synthetic 引擎墙+basic 并行抖动+13 预存红）。
+## proxy-over-h2 专项（lane/http2）：隧道架构落地转绿
+
+- 承接 P0 另案设计：服务端读 upgrade 泵 + 写改道（outbox）+ 客户端镜像 + 收尾解耦。
+- 根因终定（4.321）：service 析构 req 连带丢 upgrade 句柄 → close_notify → up_task
+  发空 EOS+RST 拆隧道；隧道字节双向困 hyper 内部，无 API 可取，只能泵接句柄。
+- 落地：serve_conn 取句柄（CONNECT）+ H2Respond-2xx 建链（泵+outbox+升级旗）+
+  Data/End 写改道 + 抑制常规空泵 + CONNECT 恒报 streaming；客户端镜像
+  （resp 取句柄+泵+写改道+跳常规体循环）+ AdoptIo 共用桥（client_adopt 三件）+
+  JS 双向桥（createConnection/stream-emit）+ CONNECT 收尾横扫。
+- 证据：proxy 套件 TIMEOUT→EXIT=0（收尾序与真机一致）；px11 隧道字节通；
+  connect-method 仍红（EOS-before-200 hyper 不升级，4.322，base19 同错）；
+  session-destroy-stream-handler TIMEOUT 系 5s/轮旧码同形慢（node 在此件 abort，
+  从未进 sweep）；server-stream-session-destroy 系 SAME1。
+- 黑盒三件：tunnel_basic/tunnel_factory_error/tunnel_outer_destroy_cascade 全绿。

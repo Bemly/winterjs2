@@ -308,6 +308,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_h2_adopt", Some(node::http2::h2_adopt), 3),
             ("__wjs2_h2_adopt_data", Some(node::http2::h2_adopt_data), 2),
             ("__wjs2_h2_adopt_close", Some(node::http2::h2_adopt_close), 1),
+            // 客户端 createConnection 桥（proxy-over-h2 套件）：Duplex 上建会话
+            ("__wjs2_h2_client_adopt", Some(node::http2::h2_client_adopt), 1),
+            ("__wjs2_h2_client_adopt_data", Some(node::http2::h2_client_adopt_data), 2),
+            ("__wjs2_h2_client_adopt_close", Some(node::http2::h2_client_adopt_close), 1),
             // Phase 9e-1a: node:crypto 增量 Hash（oneshot 复用全局 __wjs2_*）
             ("__wjs2_crypto_hash_new", Some(node::crypto::crypto_hash_new), 1),
             ("__wjs2_crypto_hash_update", Some(node::crypto::crypto_hash_update), 2),

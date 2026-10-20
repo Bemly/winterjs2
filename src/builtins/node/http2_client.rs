@@ -4,7 +4,7 @@ use mozjs::jsval::JSVal;
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 use super::http2::{BodyFeeds, BodyMsg, ChanBody, Exec, b64, b64dec, ensure_provider, h2_err_msg_rst, headers_json, report_error_static, opt_num, set_rval_str};
-use super::http2_server::SharedIo;
+use super::http2_server::{AdoptIo, SharedIo};
 use super::net::{NetCmd, NetEvent, NetKind};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -92,6 +92,92 @@ fn default_scheme() -> String {
     "http".into()
 }
 
+/// CONNECT 隧道泵·客户端（proxy-over-h2）：200 后 hyper 将流升级，后续
+/// DATA 只进 upgrade 句柄；且句柄必须持有（随 resp 析构丢弃即隧道拆除）。
+/// 读→outer `data` 事件；写←outbox（None 关写半部）；EOF/错即 `end` + 记完结。
+/// 调用方已决议隧道（upgrade Ok 才起泵），此处只做中继。
+async fn pump_client_upgrade(
+    mut upgraded: hyper::upgrade::Upgraded,
+    outbox: tokio::sync::mpsc::UnboundedReceiver<Option<Vec<u8>>>,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+    id: u64,
+    stream_id: u64,
+    open: Arc<std::sync::Mutex<HashMap<u64, bool>>>,
+) {
+    use hyper::rt::{Read as _, Write as _};
+    let send = |what: &str, payload: String| {
+        let _ = ev_tx.send(NetEvent {
+            id,
+            kind: NetKind::H2Stream { stream_id, what: what.into(), payload },
+        });
+    };
+    let mut buf = vec![0u8; 32768];
+    let mut outbox = outbox;
+    let mut read_done = false;
+    loop {
+        enum Ev {
+            Readed(Result<usize, std::io::Error>),
+            Out(Option<Option<Vec<u8>>>),
+        }
+        let ev = if read_done {
+            match outbox.recv().await {
+                Some(m) => Ev::Out(Some(m)),
+                None => break,
+            }
+        } else {
+            tokio::select! {
+                r = async {
+                    let mut readbuf = hyper::rt::ReadBuf::new(&mut buf);
+                    std::future::poll_fn(|cx| {
+                        let r = std::pin::Pin::new(&mut upgraded)
+                            .poll_read(cx, readbuf.unfilled());
+                        match r {
+                            std::task::Poll::Ready(Ok(())) => {
+                                std::task::Poll::Ready(Ok(readbuf.filled().len()))
+                            }
+                            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+                            std::task::Poll::Pending => std::task::Poll::Pending,
+                        }
+                    })
+                    .await
+                } => Ev::Readed(r),
+                m = outbox.recv() => Ev::Out(m),
+            }
+        };
+        match ev {
+            Ev::Readed(Ok(0)) | Ev::Readed(Err(_)) => {
+                read_done = true;
+                open.lock().unwrap().insert(stream_id, true);
+                send("end", String::new());
+            }
+            Ev::Readed(Ok(n)) => {
+                send("data", super::http2::b64(&buf[..n]));
+            }
+            Ev::Out(None) => break,
+            Ev::Out(Some(None)) => {
+                let _ = std::future::poll_fn(|cx| {
+                    std::pin::Pin::new(&mut upgraded).poll_shutdown(cx)
+                })
+                .await;
+            }
+            Ev::Out(Some(Some(bytes))) => {
+                let mut off = 0;
+                while off < bytes.len() {
+                    let w = std::future::poll_fn(|cx| {
+                        std::pin::Pin::new(&mut upgraded)
+                            .poll_write(cx, &bytes[off..])
+                    })
+                    .await;
+                    match w {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => off += n,
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 客户端 session 驱动（conn 与命令同 task `select!`；终结即 Close 事件）。
 /// 10f：response 事件带真 flags（END_STREAM→5）、trailers 事件、session 终结时
 /// 未完结流补 aborted（先于 close，§4.52 顺序）。
@@ -134,6 +220,11 @@ async fn drive_session<S>(
         Arc::new(std::sync::Mutex::new(HashMap::new()));
     // 上传体通道（waitTrailers 悬置流；trailer 命令回注）。
     let uploads: BodyFeeds = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    // CONNECT 隧道态（proxy-over-h2；per-session）：升级写出通道
+    // （None 即关写半部；存在即已升级，写改道凭此）。
+    let ctunnel_out: Arc<
+        tokio::sync::Mutex<HashMap<u64, tokio::sync::mpsc::UnboundedSender<Option<Vec<u8>>>>>,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     // 在途请求任务句柄（H2RespondReset → abort → hyper RST(CANCEL)）
     let stream_tasks: Arc<std::sync::Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -228,9 +319,13 @@ async fn drive_session<S>(
                         // 有体即先 Data 后 End；waitTrailers 悬置 EndPending。
                         let (utx, urx) = tokio::sync::mpsc::unbounded_channel::<BodyMsg>();
                         let mut done = req.end_stream && body.is_empty() && !req.wait_trailers;
+                        // CONNECT 隧道（proxy-over-h2）：体通道常开待隧道字节，
+                        // 永不 eager-End（node 在 end() 前不半关隧道；旧分支对空体
+                        // CONNECT 即发 End，隧道写向先死，嵌套请求出不去）。
                         // 流式上传：首块随头出线但流保持开放（done=false 且不排 End），
                         // 后续块走 H2RespondData、收尾走 H2RespondEnd；utx 必登记。
                         let streaming = req.streaming && !req.end_stream;
+                        let tunnel = req.method == "CONNECT" || req.method == "connect";
                         if streaming {
                             let _ = utx.send(BodyMsg::Data(bytes::Bytes::from(body)));
                             done = false;
@@ -245,12 +340,12 @@ async fn drive_session<S>(
                         } else if req.wait_trailers {
                             let _ = utx.send(BodyMsg::EndPending);
                             done = false;
-                        } else if !req.end_stream {
+                        } else if !req.end_stream && !tunnel {
                             // 空体但意不在随头 fin：显式 End 消息走 Data 后，
                             // 迫 hyper 分开发（END_STREAM 不随头）。
                             let _ = utx.send(BodyMsg::End(None));
                         }
-                        if req.wait_trailers || streaming {
+                        if req.wait_trailers || streaming || tunnel {
                             uploads.lock().await.insert(stream_id, utx);
                         }
                         let request = builder.body(ChanBody { rx: urx, done });
@@ -275,6 +370,8 @@ async fn drive_session<S>(
                         let ev2 = ev_tx.clone();
                         let open2 = open.clone();
                         let exact2 = exact_rst.clone();
+                        let req_method = req.method.clone();
+                        let ctunnel_out = ctunnel_out.clone();
                         open.lock().unwrap().insert(stream_id, false);
                         let mut sender = sender.clone();
                         let task = tokio::spawn(async move {
@@ -317,6 +414,30 @@ async fn drive_session<S>(
                                             payload: serde_json::json!({ "status": status, "flags": flags, "headers": head }).to_string(),
                                         },
                                     });
+                                    // CONNECT 隧道（proxy-over-h2）：200 后 hyper 将流升级，
+                                    // 后续 DATA 只进 upgrade 句柄。取句柄（&mut resp，必须
+                                    // 在 into_body 之前）并决议：Ok 即隧道（起泵+跳过常规
+                                    // 体循环——读之即空还会送虚假 end）；Err/他法走常规。
+                                    // upgrade 在 2xx/non-2xx 处理时即决议，此处 await 不挂起。
+                                    let mut resp = resp;
+                                    let is_tunnel_req =
+                                        req_method == "CONNECT" || req_method == "connect";
+                                    if is_tunnel_req {
+                                        let cup = hyper::upgrade::on(&mut resp);
+                                        match cup.await {
+                                            Ok(u) => {
+                                                let (otx, orx) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
+                                                ctunnel_out.lock().await.insert(stream_id, otx);
+                                                let ev3 = ev2.clone();
+                                                let open3 = open2.clone();
+                                                tokio::spawn(pump_client_upgrade(
+                                                    u, orx, ev3, id, stream_id, open3,
+                                                ));
+                                                return;
+                                            }
+                                            Err(_) => {}
+                                        }
+                                    }
                                     // 增量读体：DATA 到即发（close/aborted 套件：
                                     // 服务端只写不终结时客户端仍见 data）。
                                     let mut body = resp.into_body();
@@ -445,6 +566,15 @@ async fn drive_session<S>(
                     Some(NetCmd::H2RespondData { stream_id, data_b64 }) => {
                         // 流式上传后续块（cancel-while-client-reading；H2RespondData
                         // 复用：client 会话上即上传块，server 会话由 serve_conn 消费）。
+                        // 已升级隧道：改走 upgrade 写出（hyper 上传通道已死，见 4.302）。
+                        if let Some(tx) = ctunnel_out.lock().await.get(&stream_id) {
+                            if let Ok(data) = b64dec(&data_b64) {
+                                if !data.is_empty() {
+                                    let _ = tx.send(Some(data));
+                                }
+                            }
+                            continue;
+                        }
                         if let Some(tx) = uploads.lock().await.get(&stream_id) {
                             if let Ok(data) = b64dec(&data_b64) {
                                 if !data.is_empty() {
@@ -455,6 +585,11 @@ async fn drive_session<S>(
                     }
                     Some(NetCmd::H2RespondEnd { stream_id, trailers_json }) => {
                         // 流式上传收尾（end()）：trailers 有即带、无即干净 END。
+                        // 已升级隧道：关写半部（trailers 隧道无载，丢弃）。
+                        if let Some(tx) = ctunnel_out.lock().await.remove(&stream_id) {
+                            let _ = tx.send(None);
+                            continue;
+                        }
                         let trailers: Vec<(String, String)> =
                             serde_json::from_str(&trailers_json).unwrap_or_default();
                         if let Some(tx) = uploads.lock().await.remove(&stream_id) {
@@ -581,3 +716,95 @@ pub unsafe extern "C" fn h2_connect(
     true
 }
 
+
+// ── 客户端 createConnection 桥（proxy-over-h2 套件）──────────────────────────
+// node：connect(url, { createConnection }) 以用户 Duplex 为传输建会话
+// （CONNECT 隧道等）。本仓 dial 路径外增通道桥：JS 泵 Duplex 字节进出，
+// Rust 侧 drive_session 复用（AdoptIo 与服务端注入共用，见 http2_server.rs）。
+
+/// client adopt inbox 表（session_id → 入站发送端；task 退出即摘）。
+static CLIENT_ADOPT_INBOX: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
+> = std::sync::OnceLock::new();
+fn client_adopt_inbox() -> &'static std::sync::Mutex<
+    std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+> {
+    CLIENT_ADOPT_INBOX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// `__wjs2_h2_client_adopt(target)` → session id 数字串（h2c，隧道内无 TLS）。
+pub unsafe extern "C" fn h2_client_adopt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_object() {
+        report_error(&mut cx, "TypeError: h2 client adopt internals missing target");
+        return false;
+    }
+    let target = frame.arg(0);
+    ensure_provider();
+    let Some(ev_tx) = state::net_ev_tx() else {
+        report_error(&mut cx, "OperationError: net driver not installed");
+        return false;
+    };
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        report_error(&mut cx, "OperationError: no async runtime for h2 client adopt");
+        return false;
+    };
+    let (id, cmd_rx) = state::net_conn_add();
+    state::net_target_add(id, target);
+    let (in_tx, in_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    client_adopt_inbox().lock().expect("client adopt inbox").insert(id, in_tx);
+    let ev2 = ev_tx.clone();
+    handle.spawn(async move {
+        let io = AdoptIo::new(in_rx, ev2.clone(), id);
+        drive_session(io, id, ev2, cmd_rx).await;
+        client_adopt_inbox().lock().expect("client adopt inbox").remove(&id);
+    });
+    set_rval_str(&mut cx, &frame, &id.to_string());
+    true
+}
+
+/// `__wjs2_h2_client_adopt_data(sessionId, b64)`：入站字节喂 inbox。
+pub unsafe extern "C" fn h2_client_adopt_data(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: h2 client adopt data: bad args");
+        return false;
+    }
+    let (Some(sid), b64) = (opt_num(&frame, 0), value_to_string(&mut cx, frame.arg(1))) else {
+        report_error(&mut cx, "TypeError: h2 client adopt data: bad args");
+        return false;
+    };
+    if let Some(tx) = client_adopt_inbox().lock().expect("client adopt inbox").get(&(sid as u64)) {
+        use base64::Engine as _;
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+            let _ = tx.send(bytes);
+        }
+    }
+    true
+}
+
+/// `__wjs2_h2_client_adopt_close(sessionId)`：摘 inbox（读端见 EOF）。
+pub unsafe extern "C" fn h2_client_adopt_close(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(sid) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: h2 client adopt close: id must be a number");
+        return false;
+    };
+    client_adopt_inbox().lock().expect("client adopt inbox").remove(&(sid as u64));
+    true
+}

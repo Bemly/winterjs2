@@ -819,3 +819,118 @@ app.listen(0, () => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_tunnel_basic() {
+    // 正常：CONNECT 隧道上嵌套 GET 得 204，全程收尾干净（proxy-over-h2 行为面）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "t.mjs",
+        r#"
+import h2 from "node:http2";
+const server = h2.createServer();
+server.listen(0, () => {
+  const proxyClient = h2.connect(`http://localhost:${server.address().port}`);
+  const request = proxyClient.request({ ":method": "CONNECT", ":authority": "x:80" });
+  request.on("response", () => {
+    const nested = h2.connect("http://x", { createConnection: () => request });
+    nested.on("connect", () => {
+      const preq = nested.request();
+      preq.on("response", (h) => console.log("status", h[":status"]));
+      preq.on("end", () => {
+        console.log("end");
+        nested.close();
+        proxyClient.close();
+        server.close();
+      });
+      preq.end();
+    });
+  });
+});
+server.once("connect", (req, res) => {
+  res.writeHead(200);
+  server.emit("connection", res.stream);
+});
+server.once("request", (req, res) => {
+  res.writeHead(204);
+  res.end();
+});
+"#,
+    );
+    for line in ["status 204", "end"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_tunnel_factory_error() {
+    // 报错：createConnection 工厂抛错即会话 error，不崩进程。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "e.mjs",
+        r#"
+import h2 from "node:http2";
+const c = h2.connect("http://x", { createConnection: () => { throw new Error("boom"); } });
+c.on("error", (e) => {
+  console.log("sess-error", e.message);
+  process.exit(0);
+});
+"#,
+    );
+    assert!(
+        out.lines().any(|l| l == "sess-error boom"),
+        "missing factory error; out: {out}"
+    );
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_tunnel_outer_destroy_cascade() {
+    // 边界：隧道中途外层 socket 销毁，嵌套流收尾（error/close 二者之一），进程退出不挂死。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "k.mjs",
+        r#"
+import h2 from "node:http2";
+const server = h2.createServer();
+server.listen(0, () => {
+  const proxyClient = h2.connect(`http://localhost:${server.address().port}`);
+  const request = proxyClient.request({ ":method": "CONNECT", ":authority": "x:80" });
+  request.on("response", () => {
+    const nested = h2.connect("http://x", { createConnection: () => request });
+    nested.on("connect", () => {
+      const preq = nested.request();
+      preq.on("response", () => console.log("nested-resp"));
+      preq.on("error", () => console.log("nested-error"));
+      preq.on("close", () => {
+        console.log("nested-close");
+        proxyClient.close();
+        server.close();
+      });
+      preq.end();
+      setTimeout(() => request.destroy(), 300);
+    });
+  });
+});
+server.once("connect", (req, res) => {
+  res.writeHead(200);
+  server.emit("connection", res.stream);
+});
+server.once("request", (req, res) => {
+  setTimeout(() => {
+    res.writeHead(204);
+    res.end();
+  }, 2000);
+});
+"#,
+    );
+    assert!(
+        out.lines().any(|l| l == "nested-close"),
+        "missing nested close; out: {out}"
+    );
+    dir.close().unwrap();
+}

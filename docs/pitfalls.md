@@ -283,6 +283,8 @@
 - 4.318 oxc 箭头函数是独立 AST 节点（2026-10-20，vm lane）
 - 4.319 after-evaluate 跨上下文队列是引擎墙（2026-10-20，vm lane）
 - 4.320 link 连带落定的依赖也要结算闭包（2026-10-20，vm lane）
+- 4.321 upgrade 句柄丢弃即隧道拆除（2026-10-20，http2 lane）
+- 4.322 EOS-before-200 CONNECT hyper 不升级（2026-10-20，http2 lane）
 
 ## 条目
 

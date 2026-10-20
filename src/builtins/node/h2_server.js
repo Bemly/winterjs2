@@ -491,15 +491,22 @@ class Http2ServerRequest extends Readable {
     }
     const authority = __noAuth ? "" : String(info.authority ?? "");
     let phoHint = null;
+    let protocol = "";
     const reg = [];
     for (const [k, v] of __hpairs) {
       if (k === "x-wjs-pho") { phoHint = String(v).split(","); continue; }
       if (k === "x-wjs-no-authority") continue;
+      // 扩展 CONNECT（RFC 8441）：`:protocol` 只活在线上伪头区，hyper 经
+      // extensions 暴露，Rust 侧已拼入头表尾——此处摘出合成伪头。
+      if (k === ":protocol") { protocol = String(v); continue; }
       reg.push([k, v]);
     }
     const pseudo = [];
     pseudo.push([":method", method]);
-    if (method !== "CONNECT") pseudo.push([":path", String(info.path)]);
+    // 扩展 CONNECT 带 :protocol + :path（常规 CONNECT 两键皆禁；
+    // connect-method/connect-method-extended 双套件点名）。
+    if (protocol) pseudo.push([":protocol", protocol]);
+    if (method !== "CONNECT" || protocol) pseudo.push([":path", String(info.path)]);
     if (authority) pseudo.push([":authority", authority]);
     pseudo.push([":scheme", scheme]);
     let all;

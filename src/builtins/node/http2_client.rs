@@ -3,10 +3,12 @@
 use mozjs::jsval::JSVal;
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
-use super::http2::{BodyFeeds, BodyMsg, ChanBody, Exec, TokioIo, b64, b64dec, ensure_provider, h2_err_msg_rst, headers_json, report_error_static, opt_num, set_rval_str};
+use super::http2::{BodyFeeds, BodyMsg, ChanBody, Exec, b64, b64dec, ensure_provider, h2_err_msg_rst, headers_json, report_error_static, opt_num, set_rval_str};
 use super::net::{NetCmd, NetEvent, NetKind};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 // ── 客户端 ──────────────────────────────────────────────────────────────────
 
@@ -27,7 +29,7 @@ struct TlsClientOpts {
     servername: Option<String>,
 }
 
-/// 开流请求 JSON：`{method, path, scheme, authority, waitTrailers, endStream, headers: [[k,v]]}`。
+/// 开流请求 JSON：`{method, path, scheme, authority, waitTrailers, endStream, protocol, headers: [[k,v]]}`。
 #[derive(Debug, serde::Deserialize)]
 struct OpenReq {
     method: String,
@@ -43,6 +45,10 @@ struct OpenReq {
     // endafterheaders 套件）。native 不再按体空猜。
     #[serde(rename = "endStream", default)]
     end_stream: bool,
+    // 扩展 CONNECT 的 `:protocol`（RFC 8441；hyper 经 extensions 发送）。
+    // 空串 = 非扩展请求（常规 CONNECT/他法无此键）。
+    #[serde(default)]
+    protocol: String,
     // 值可为 string 或 array（set-cookie 等多值头；数组展开为多条线，
     // node 客户端同口径）。此前 String 收不了 sequence 即
     // "bad open params: invalid type: sequence"（cookies/multiheaders 套件）。
@@ -93,6 +99,9 @@ async fn drive_session<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // SETTINGS 窥探：hyper client 无 SETTINGS 回调，remoteSettings/ECP 毒化
+    // 检测靠此（connect-method-extended/cant-turn-off/too-large-headers）。
+    let io = SnoopIo::new(io, ev_tx.clone(), id);
     let hs = hyper::client::conn::http2::Builder::new(Exec).handshake::<_, ChanBody>(io);
     let (sender, conn) = match hs.await {
         Ok(t) => t,
@@ -179,6 +188,13 @@ async fn drive_session<S>(
                         let mut builder = http::Request::builder()
                             .method(req.method.as_str())
                             .uri(uri.as_str());
+                        // 扩展 CONNECT：`:protocol` 经 extensions 上线（hyper/h2
+                        // 按 RFC 8441 编成伪头；对端未开 ECP 即流错误，client 侧报）。
+                        if !req.protocol.is_empty() {
+                            builder = builder.extension(hyper::ext::Protocol::from(
+                                req.protocol.as_str(),
+                            ));
+                        }
                         for (k, v) in parsed_headers {
                             builder = builder.header(k.as_str(), v.as_str());
                         }
@@ -489,4 +505,188 @@ pub unsafe extern "C" fn h2_connect(
         }
     });
     true
+}
+
+// ── 客户端 SETTINGS 窥探（remoteSettings/goawayError 事件源）────────────
+// drive_session 用（纯搬移）。
+/// 客户端 SETTINGS 窥探（hyper client 无 SETTINGS 回调；remoteSettings 事件与
+/// ECP 1→0 协议错误检测靠此。只观察不消费：字节原样交 hyper）。
+pub(crate) struct SnoopIo<T> {
+    inner: TokioIo<T>,
+    obs: Vec<u8>,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+    id: u64,
+}
+
+impl<T> SnoopIo<T> {
+    pub(crate) fn new(
+        inner: TokioIo<T>,
+        ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+        id: u64,
+    ) -> Self {
+        Self { inner, obs: Vec::new(), ev_tx, id }
+    }
+
+    /// 新到服务端字节：按帧头切分，非 ACK 的服务端 SETTINGS 即发 remoteSettings。
+    fn observe(&mut self, fresh: &[u8]) {
+        if fresh.is_empty() {
+            return;
+        }
+        self.obs.extend_from_slice(fresh);
+        // 防御性上限：SETTINGS 只在握手/更新时出现，堆积超限即清零重来。
+        if self.obs.len() > 65536 {
+            self.obs.clear();
+            return;
+        }
+        loop {
+            if self.obs.len() < 9 {
+                break;
+            }
+            let len =
+                ((self.obs[0] as usize) << 16) | ((self.obs[1] as usize) << 8) | (self.obs[2] as usize);
+            if self.obs.len() < 9 + len {
+                break;
+            }
+            let ftype = self.obs[3];
+            let flags = self.obs[4];
+            let sid = u32::from_be_bytes([self.obs[5], self.obs[6], self.obs[7], self.obs[8]]);
+            if ftype == 0x4 && sid == 0 && flags & 0x1 == 0 {
+                let mut pairs: Vec<(u32, u32)> = Vec::new();
+                let mut i = 9;
+                while i + 6 <= 9 + len {
+                    let sid_ =
+                        ((self.obs[i] as u32) << 8) | (self.obs[i + 1] as u32);
+                    let val = u32::from_be_bytes([
+                        self.obs[i + 2],
+                        self.obs[i + 3],
+                        self.obs[i + 4],
+                        self.obs[i + 5],
+                    ]);
+                    pairs.push((sid_, val));
+                    i += 6;
+                }
+                let payload = serde_json::to_string(&pairs).unwrap_or_else(|_| "[]".into());
+                let _ = self.ev_tx.send(NetEvent {
+                    id: self.id,
+                    kind: NetKind::H2Stream {
+                        stream_id: 0,
+                        what: "remoteSettings".into(),
+                        payload,
+                    },
+                });
+            } else if ftype == 0x7 && len >= 8 {
+                // GOAWAY：last_id(4B) + code(4B)。非零码转会话级事件
+                //（too-large-headers：h2 线上 GOAWAY(ENHANCE_YOUR_CALM)，
+                // node 线上 RST_STREAM——客户端翻成流错误，见 __ev goawayError）。
+                let last_id = u32::from_be_bytes([
+                    self.obs[9],
+                    self.obs[10],
+                    self.obs[11],
+                    self.obs[12],
+                ]) & 0x7fff_ffff;
+                let code = u32::from_be_bytes([
+                    self.obs[13],
+                    self.obs[14],
+                    self.obs[15],
+                    self.obs[16],
+                ]);
+                tracing::debug!(target: "winterjs2::http2", session = self.id, last_id, code, "h2 GOAWAY observed");
+                if code != 0 {
+                    let payload = serde_json::json!({ "code": code, "lastId": last_id }).to_string();
+                    let _ = self.ev_tx.send(NetEvent {
+                        id: self.id,
+                        kind: NetKind::H2Stream {
+                            stream_id: 0,
+                            what: "goawayError".into(),
+                            payload,
+                        },
+                    });
+                }
+            }
+            self.obs.drain(..9 + len);
+        }
+    }
+}
+
+impl<T> hyper::rt::Read for SnoopIo<T>
+where
+    T: tokio::io::AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        mut buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        // SAFETY: ReadBufCursor 的未填区即合法写区（TokioIo 同款）。
+        let uninit = unsafe { buf.as_mut() };
+        let mut tbuf = tokio::io::ReadBuf::uninit(uninit);
+        futures::ready!(tokio::io::AsyncRead::poll_read(
+            Pin::new(&mut self.inner.0),
+            cx,
+            &mut tbuf
+        ))?;
+        let n = tbuf.filled().len();
+        if n > 0 {
+            let fresh: Vec<u8> = tbuf.filled().to_vec();
+            self.observe(&fresh);
+        }
+        unsafe { buf.advance(n) };
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<T> hyper::rt::Write for SnoopIo<T>
+where
+    T: tokio::io::AsyncWrite + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        tokio::io::AsyncWrite::poll_write(Pin::new(&mut self.inner.0), cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        tokio::io::AsyncWrite::poll_flush(Pin::new(&mut self.inner.0), cx)
+    }
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        tokio::io::AsyncWrite::poll_shutdown(Pin::new(&mut self.inner.0), cx)
+    }
+}
+
+// ── tokio 流 → hyper IO（hyper-util 同款 recipe；SnoopIo 底座，纯搬移）──
+/// tokio 流 → hyper IO（hyper-util 同款 recipe，本仓手写）。
+#[derive(Debug)]
+pub(crate) struct TokioIo<T>(T);
+
+impl<T> TokioIo<T> {
+    pub(crate) fn new(inner: T) -> Self {
+        Self(inner)
+    }
+}
+
+impl<T> hyper::rt::Read for TokioIo<T>
+where
+    T: tokio::io::AsyncRead + Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        mut buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        // SAFETY: ReadBufCursor 的未填区即合法写区（hyper-util 同款 unsafe 用法）
+        let uninit = unsafe { buf.as_mut() };
+        let mut tbuf = tokio::io::ReadBuf::uninit(uninit);
+        futures::ready!(tokio::io::AsyncRead::poll_read(
+            Pin::new(&mut self.get_mut().0),
+            cx,
+            &mut tbuf
+        ))?;
+        let n = tbuf.filled().len();
+        unsafe { buf.advance(n) };
+        Poll::Ready(Ok(()))
+    }
 }

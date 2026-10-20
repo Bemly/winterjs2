@@ -458,8 +458,10 @@ server.listen(0, () => {
 
 #[test]
 fn http2_compat_connect_default() {
-    // c2：CONNECT 无监听缺省 405（旧 501 误植；node onServerStream 逐字）+
-    // 有监听走 connect 事件。
+    // c2：CONNECT 缺省 405（旧 501 误植；node onServerStream 逐字）+
+    // 有监听走 connect 事件。node setupCompat 口径：compat 路由（connect/405）
+    // 只在 'request' 监听器出现过后接线——两 dummy request 监听为接线用，
+    // CONNECT 本体不走 request（connect-method 套件：纯 stream 监听不 405）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -467,6 +469,7 @@ fn http2_compat_connect_default() {
         r#"
 import http2 from "node:http2";
 const s1 = http2.createServer();
+s1.on("request", (req, res) => res.end("r"));
 s1.listen(0, () => {
   const c = http2.connect(`http://localhost:${s1.address().port}`);
   const req = c.request({ ":method": "CONNECT", ":authority": "x" });
@@ -476,6 +479,7 @@ s1.listen(0, () => {
   req.end();
 });
 const s2 = http2.createServer();
+s2.on("request", (req, res) => res.end("r"));
 s2.on("connect", (req, res) => {
   console.log("connect-ev", req.headers[":method"]);
   res.statusCode = 200;
@@ -763,5 +767,135 @@ s2.listen(0, () => {
     ] {
         assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
     }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_extended_connect_faces() {
+    // connect-method-extended：服务端 settings.enableConnectProtocol →
+    // hyper Builder 开旗 → 线上 SETTINGS{8:1} → 客户端 remoteSettings 见旗 →
+    // CONNECT+:protocol 出线 → 服务端 stream 头含 :protocol/:path → 应答收尾。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "e.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer({ settings: { enableConnectProtocol: true } });
+server.on("stream", (stream, headers) => {
+  console.log("method", headers[":method"]);
+  console.log("protocol", headers[":protocol"]);
+  console.log("path", headers[":path"]);
+  stream.respond();
+  stream.end("ok");
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  client.on("remoteSettings", (s) => {
+    console.log("ecp", s.enableConnectProtocol);
+    const req = client.request({ ":method": "CONNECT", ":protocol": "foo" });
+    req.on("end", () => console.log("end", req.rstCode));
+    req.on("close", () => { client.close(); server.close(); });
+    req.resume();
+    req.end();
+  });
+});
+"#,
+    );
+    for line in [
+        "ecp true",
+        "method CONNECT",
+        "protocol foo",
+        "path /",
+        "end 0",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_connect_protocol_off_poison() {
+    // cant-turn-off：ECP 开后关 = 连接级 PROTOCOL_ERROR（node 原样）——
+    // 服务端发坏 SETTINGS{8:0}（hyper 无 mid-connection API，直写线）；
+    // 客户端先见 1 再见 0 即会话 error + 在途流 error；服务端不再建流。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer({ settings: { enableConnectProtocol: true } });
+server.on("stream", () => console.log("BAD-STREAM"));
+server.on("session", (session) => {
+  session.settings({ enableConnectProtocol: false });
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  client.on("remoteSettings", (s) => {
+    console.log("ecp", s.enableConnectProtocol);
+    const req = client.request({ ":method": "CONNECT", ":protocol": "foo" });
+    req.on("error", (e) => console.log("req-err", e.code, e.message));
+    req.on("close", () => server.close());
+    req.resume();
+    req.end();
+  });
+  client.on("error", (e) => console.log("cli-err", e.code, e.message));
+  client.on("close", () => client.close());
+});
+"#,
+    );
+    for line in [
+        "ecp true",
+        "req-err ERR_HTTP2_ERROR Protocol error",
+        "cli-err ERR_HTTP2_ERROR Protocol error",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(!out.contains("BAD-STREAM"), "poisoned conn must not emit stream; out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_too_large_headers_faces() {
+    // too-large-headers：maxHeaderListSize/maxHeaderSize（别名）→ hyper
+    // Builder 限头表 → 超限 h2 线上 GOAWAY(ENHANCE_YOUR_CALM)，node 线上
+    // RST_STREAM——客户端翻成同码同文流错误 + rstCode 11；服务端无流。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "l.mjs",
+        r#"
+import http2 from "node:http2";
+for (const key of ["maxHeaderListSize", "maxHeaderSize"]) {
+  const server = http2.createServer({ settings: { [key]: 100 } });
+  server.on("stream", () => console.log("BAD-STREAM", key));
+  server.listen(0, () => {
+    const client = http2.connect(`http://localhost:${server.address().port}`);
+    client.on("remoteSettings", () => {
+      const req = client.request({ "foo": "a".repeat(1000) });
+      req.on("error", (e) => console.log(key, "req-err", e.code, e.message));
+      req.on("close", () => {
+        console.log(key, "rst", req.rstCode);
+        client.close();
+        server.close();
+      });
+      req.resume();
+      req.end();
+    });
+    client.on("error", () => {});
+  });
+}
+"#,
+    );
+    for line in [
+        "maxHeaderListSize req-err ERR_HTTP2_STREAM_ERROR Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+        "maxHeaderListSize rst 11",
+        "maxHeaderSize req-err ERR_HTTP2_STREAM_ERROR Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+        "maxHeaderSize rst 11",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(!out.contains("BAD-STREAM"), "oversize headers must not reach service; out: {out}");
     dir.close().unwrap();
 }

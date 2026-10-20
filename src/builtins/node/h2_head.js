@@ -327,7 +327,10 @@ const __DEFAULT_SETTINGS = {
   initialWindowSize: 65535,
   maxFrameSize: 16384,
   maxConcurrentStreams: 4294967295,
-  maxHeaderListSize: 65535,
+  // node 真机：两键皆 u32max（真机 remoteSettings/localSettings 实测；
+  // 旧 65535 系误植，too-large-headers 套件点名）。
+  maxHeaderListSize: 4294967295,
+  maxHeaderSize: 4294967295,
   enableConnectProtocol: false,
 };
 
@@ -420,6 +423,60 @@ function __mkSessionSocket(session, peerObj, localObj) {
   return sock;
 }
 
+// ── 客户端 SETTINGS 事件面（h2_client.js __ev 委托；放此处为守 1000 行门）──
+// 服务端 SETTINGS id→名（getUnpackedSettings 同表；未知 id 忽略）。
+function __decodeRemotePairs(pairs) {
+  const upd = {};
+  for (const [sid, val] of pairs) {
+    switch (Number(sid)) {
+      case 0x1: upd.headerTableSize = val; break;
+      case 0x2: upd.enablePush = val !== 0; break;
+      case 0x3: upd.maxConcurrentStreams = val; break;
+      case 0x4: upd.initialWindowSize = val; break;
+      case 0x5: upd.maxFrameSize = val; break;
+      case 0x6: upd.maxHeaderListSize = val; upd.maxHeaderSize = val; break;
+      case 0x8: upd.enableConnectProtocol = val !== 0; break;
+      default: break;
+    }
+  }
+  return upd;
+}
+// ECP 1→0 毒化（cant-turn-off）：node 客户端把 ECP 1→0 当连接错误。
+// 开流/待开流先报，再报会话错（探针序：REQ error → REQ close → CLIENT error）。
+// 返 true = 已毒化（调用方 break，不再发 remoteSettings）。
+function __maybeProtoPoison(session, upd) {
+  if (upd.enableConnectProtocol !== false || session.__sawECP1 !== true) return false;
+  const err = __h2Err("ERR_HTTP2_ERROR", "Protocol error");
+  for (const [, st] of session.__streams) {
+    st.emit("error", err);
+    st.destroy();
+  }
+  session.__streams.clear();
+  for (const pst of session.__pendingOpens.splice(0)) {
+    pst.emit("error", err);
+    pst.destroy();
+  }
+  session.emit("error", err);
+  session.destroy();
+  return true;
+}
+// GOAWAY 非零码的流级翻 mapping（too-large-headers：h2 线上 GOAWAY(11)，
+// node 线上 RST_STREAM(11)——未收应答的在途流翻成对应流错误）。
+function __goawayStreamErrors(session, inner) {
+  const code = Number(inner.code);
+  const lastId = Number(inner.lastId ?? 0);
+  if (code !== 11) return;
+  const err = __h2Err("ERR_HTTP2_STREAM_ERROR",
+    "Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM");
+  for (const [sid, st] of session.__streams) {
+    if (Number(sid) > lastId && !st.__responseReceived && !st.destroyed) {
+      st.rstCode = 11;
+      st.emit("error", err);
+      st.destroy();
+    }
+  }
+}
+
 // ── Http2Session（服务端每连接一个；'session' 事件载体）──────────────────────
 let __h2SessionSeq = 1;
 class Http2Session extends EventEmitter {
@@ -489,6 +546,26 @@ class Http2Session extends EventEmitter {
   settings(settings = {}, cb) {
     const validated = __validateSettings(settings);
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
+    // ECP 1→0（cant-turn-off）：node 把"开后关"当连接级 PROTOCOL_ERROR——
+    // 服务端发坏 SETTINGS 后会话死、客户端连接错。hyper 无 mid-connection
+    // SETTINGS API：stream_id 0 的 reset 令 Rust  waiter 在握手 SETTINGS
+    // 落线后直写坏帧（wire-faithful），连接不断（node 同形：坏帧后 socket
+    // 照开，收尾由客户端 teardown 触发）。本地会话记毒化：后续上线
+    // HEADERS 直接丢弃（对端残留 HEADERS 到达时不再建流）。
+    if (validated.enableConnectProtocol === false && this.__settings.enableConnectProtocol === true) {
+      this.__settings = __applySettings(this.__settings, validated);
+      this.__pendingSettingsAck = true;
+      this.__poisoned = true;
+      if (this.__conn) __wjs2_h2_reset(this.__conn, 0, 1);
+      setTimeout(() => {
+        this.__pendingSettingsAck = false;
+        if (!this.destroyed) {
+          this.emit("localSettings", this.__settings);
+          if (typeof cb === "function") cb();
+        }
+      }, 1);
+      return this;
+    }
     this.__pendingSettingsAck = true;
     this.__outstandingSettings++;
     if (Number.isFinite(this.__maxOutstandingSettings) &&

@@ -8,6 +8,8 @@ class ClientHttp2Stream extends Duplex {
     this.__session = session;
     this.id = id;
     this.sentHeaders = headers;
+    // node：干净关的流 rstCode 为 0（connect-method-extended 套件点名）
+    this.rstCode = 0;
     this.__ended = false;
     this.aborted = false;
     this.__opened = false;
@@ -55,6 +57,8 @@ class ClientHttp2Stream extends Duplex {
         JSON.stringify({
           method: this.sentHeaders[":method"], path: this.sentHeaders[":path"],
           scheme: this.sentHeaders[":scheme"], authority: this.sentHeaders[":authority"],
+          // 扩展 CONNECT 的 `:protocol`（RFC 8441；hyper 经 extensions 上线）
+          protocol: this.sentHeaders[":protocol"] ?? "",
           waitTrailers: this.__waitTrailers,
           // node request() 缺省：无 body 意图的方法（GET/HEAD/DELETE）END_STREAM
           // 随头出线（endafterheaders 套件）；POST 等分开发。native 不再按体空猜。
@@ -459,6 +463,24 @@ class ClientHttp2Session extends EventEmitter {
         for (const pst of this.__pendingOpens.splice(0)) pst.__openNow(null);
         this.emit("connect", this, null);
         break;
+      case "remoteSettings": {
+        // 服务端 SETTINGS（SnoopIo 线上窥探；hyper 无回调）——node 口径：
+        // 缺省全集 + 线上值覆盖；ECP 1→0 即连接级 PROTOCOL_ERROR
+        //（cant-turn-off：remoteSettings 不再发，直接走协议错误）。
+        const o = JSON.parse(payload);
+        const upd = __decodeRemotePairs(JSON.parse(o.payload ?? "[]"));
+        if (__maybeProtoPoison(this, upd)) break;
+        if (upd.enableConnectProtocol === true) this.__sawECP1 = true;
+        this.__remoteSettings = { ...this.__remoteSettings, ...upd };
+        this.emit("remoteSettings", this.__remoteSettings);
+        break;
+      }
+      case "goawayError": {
+        // 服务端 GOAWAY 非零码（too-large-headers 面，见 h2_head.js）。
+        const o = JSON.parse(payload);
+        __goawayStreamErrors(this, o.payload === undefined ? o : JSON.parse(o.payload));
+        break;
+      }
       case "response": {
         const o = JSON.parse(payload);
         const st = this.__streams.get(Number(o.streamId));

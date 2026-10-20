@@ -148,3 +148,65 @@ if (cluster.isPrimary) {
     assert!(out.contains("p-exit 0"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn cluster_listen_handle_faces() {
+    // P2：primary 传已监听 Server 柄，worker 重建 instanceof 后退出；
+    // primary 见 exit 关服即退（listen-handle-cluster-1 同形收窄）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "r.mjs",
+        r#"
+import cluster from "node:cluster";
+import net from "node:net";
+if (cluster.isPrimary) {
+  const w = cluster.fork();
+  const server = net.createServer();
+  w.on("online", () => {
+    server.listen(0, () => {
+      console.log("p-send", w.send(null, server));
+    });
+  });
+  w.on("exit", (c) => { console.log("p-exit", c); server.close(); });
+} else {
+  process.on("message", (m, server) => {
+    console.log("w-got", m, server instanceof net.Server, server.address().port > 0);
+    process.exit(0);
+  });
+}
+"#,
+    );
+    assert!(out.contains("p-send true"), "out: {out}");
+    assert!(out.contains("w-got null true true"), "out: {out}");
+    assert!(out.contains("p-exit 0"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn cluster_tcp_wrap_bind_faces() {
+    // P2：裸 TCP 柄真绑 + listen(handle) 即听（cluster-2 同形收窄；
+    // 环回仍走存根 0，非通配沿旧 -22）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "r.mjs",
+        r#"
+import { internalBinding } from "internal/test/binding";
+import net from "node:net";
+const { TCP, constants } = internalBinding("tcp_wrap");
+console.log("loop", new TCP().bind("127.0.0.1", 0));
+const h = new TCP(constants.SOCKET);
+console.log("bind", h.bind("0.0.0.0", 0));
+const server = net.createServer();
+server.listen(h, () => {
+  console.log("w-listening", server.address().port > 0);
+  server.close();
+});
+"#,
+    );
+    assert!(out.contains("loop 0"), "out: {out}");
+    assert!(out.contains("bind 0"), "out: {out}");
+    assert!(out.contains("w-listening true"), "out: {out}");
+    dir.close().unwrap();
+}

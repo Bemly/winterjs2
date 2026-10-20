@@ -269,6 +269,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_net_destroy", Some(node::net::net_destroy), 1),
             // resetAndDestroy 发 RST（对端 ECONNRESET；见 net_pumps::net_reset）。
             ("__wjs2_net_reset", Some(node::net::net_reset), 1),
+            // cluster-1 传柄：dup 监听 fd（见 net_pumps::net_dup_listen）。
+            ("__wjs2_net_dup_listen", Some(node::net::net_dup_listen), 1),
+            // cluster-2 裸柄：真绑 + 预留（见 net_pumps::net_tcp_wrap_bind）。
+            ("__wjs2_net_tcp_wrap_bind", Some(node::net::net_tcp_wrap_bind), 2),
             // 10a：ref 真计数（net/dgram 共用）
             ("__wjs2_net_ref", Some(node::net::net_ref), 1),
             ("__wjs2_net_unref", Some(node::net::net_unref), 1),

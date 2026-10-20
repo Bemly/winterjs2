@@ -240,6 +240,7 @@ const genericNodeError = hideStackFrames(function genericNodeError(message, erro
 });
 
 // ── codes（9a 按需全集；后续模块按需在此追加，保持字母序）─────────────────
+E('ERR_ARG_NOT_ITERABLE', 'Query pairs must be iterable', TypeError, HideStackFramesError);
 E('ERR_ASYNC_CALLBACK', '%s must be a function', TypeError);
 E('ERR_ASYNC_TYPE', 'Invalid name for async "type": %s', TypeError);
 E('ERR_CLOSED_MESSAGE_PORT', 'Cannot send data on closed MessagePort', Error, HideStackFramesError);
@@ -350,6 +351,7 @@ E('ERR_TLS_SNI_FROM_SERVER',
 E('ERR_TRACE_EVENTS_CATEGORY_REQUIRED', 'At least one category must be enabled', TypeError);
 E('ERR_INVALID_ASYNC_ID', 'Invalid %s value: %s', RangeError);
 E('ERR_INVALID_THIS', 'Value of "this" must be of type %s', TypeError, HideStackFramesError);
+E('ERR_INVALID_TUPLE', 'Each query pair must be an iterable [name, value] tuple', TypeError, HideStackFramesError);
 E('ERR_INVALID_URI', 'URI malformed', URIError);
 E('ERR_INVALID_URL_SCHEME', 'The URL must be of scheme %s', TypeError);
 E('ERR_INVALID_FILE_URL_HOST', 'File URL host must be "localhost" or empty on %s', TypeError);

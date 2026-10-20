@@ -178,6 +178,18 @@ function __wjs2_uspIterBrand(self) {
     throw e;
   }
 }
+function __wjs2_uspQ(s) {
+  return `'${String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+}
+function __wjs2_uspWrap(title, items, options, emptyForm) {
+  if (items.length === 0) return emptyForm;
+  const single = `${title} { ${items.join(", ")} }`;
+  const __bl = options !== null && typeof options === "object" ? options.breakLength : undefined;
+  if (typeof __bl === "number" && single.length > __bl) {
+    return `${title} {\n  ${items.join(",\n  ")} }`;
+  }
+  return single;
+}
 function __wjs2_uspIter(pairs, kind) {
   let i = 0;
   const it = {
@@ -188,6 +200,15 @@ function __wjs2_uspIter(pairs, kind) {
       return { value: kind === 0 ? k : kind === 1 ? v : [k, v], done: false };
     },
     [Symbol.iterator]() { return this; },
+    // 10f：迭代器 inspect 显示剩余项（custom-searchparams-inspect 套件逐字）。
+    [Symbol.for("nodejs.util.inspect.custom")](depth, options) {
+      __wjs2_uspIterBrand(this);
+      // 10f：depth<0 本体不再下钻（inspect 核心未拦时此处兜底，真机 '[Object]'）。
+      if (typeof depth === "number" && depth < 0) return "[Object]";
+      const rest = pairs.slice(i);
+      const items = rest.map(([k, v]) => kind === 0 ? __wjs2_uspQ(k) : kind === 1 ? __wjs2_uspQ(v) : `[ ${__wjs2_uspQ(k)}, ${__wjs2_uspQ(v)} ]`);
+      return __wjs2_uspWrap("URLSearchParams Iterator", items, options, "URLSearchParams Iterator {  }");
+    },
   };
   Object.setPrototypeOf(it, __wjs2_uspIterProto);
   return it;
@@ -209,9 +230,43 @@ globalThis.URLSearchParams = class URLSearchParams {
       // 入参串先落 FFFD（lone surrogate 的 UTF-8 编码替换；串内原生 lone
       // 进 Rust 侧 serde_json 即 "bad query pairs" 抛错，真机落 %EF%BF%BD）。
       pairs = q === "" ? [] : JSON.parse(__wjs2_usp_parse(__wjs2_uspClean(q)));
-    } else if (Array.isArray(init)) pairs = init.map((p) => [__wjs2_uspClean(p[0]), __wjs2_uspClean(p[1])]);
-    else if (typeof init === "object" && init !== null) {
-      pairs = Object.entries(init).map(([k, v]) => [__wjs2_uspClean(k), __wjs2_uspClean(v)]);
+    } else if (init !== null && (typeof init === "object" || typeof init === "function") && Symbol.iterator in Object(init)) {
+      // 10f：序列分支按 key-presence 判定（`{[Symbol.iterator]: 42}` 走
+      // 'Query pairs must be iterable'，非可调用才抛；真机逐字）。
+      // 每项须恰为二元组（多/少一律 tuple 文案；custom-searchparams 构造器套件）。
+      // （本文件惯例：手工 TypeError + code，不走 codes 注册表。）
+      if (typeof init[Symbol.iterator] !== "function") {
+        const __e = new TypeError("Query pairs must be iterable");
+        __e.code = "ERR_ARG_NOT_ITERABLE";
+        throw __e;
+      }
+      const __tupleErr = () => {
+        const __e = new TypeError("Each query pair must be an iterable [name, value] tuple");
+        __e.code = "ERR_INVALID_TUPLE";
+        return __e;
+      };
+      pairs = [];
+      for (const p of init) {
+        if (p === null || p === undefined || typeof p[Symbol.iterator] !== "function") {
+          throw __tupleErr();
+        }
+        const __pi = p[Symbol.iterator]();
+        const __k = __pi.next();
+        if (__k.done) throw __tupleErr();
+        const __v = __pi.next();
+        if (__v.done) throw __tupleErr();
+        if (!__pi.next().done) throw __tupleErr();
+        pairs.push([__wjs2_uspClean(__k.value), __wjs2_uspClean(__v.value)]);
+      }
+    } else if (typeof init === "object" && init !== null) {
+      // 10f：record 分支按 Map 收集（含 symbol 键，转换即抛；清洗后撞键
+      // 后者赢；custom-searchparams 构造器畸形键套件）。
+      const __m = new Map();
+      for (const k of Reflect.ownKeys(init)) __m.set(__wjs2_uspClean(k), __wjs2_uspClean(init[k]));
+      pairs = [...__m];
+    } else if (init !== undefined) {
+      // 10f：标量经 USVString 兜底（null→"null"/false→"false"/0→"0"，真机逐字）。
+      pairs = [[__wjs2_uspClean(init), ""]];
     } else throw new TypeError("URLSearchParams: unsupported init");
     __wjs2_uspState.set(this, { pairs, parent: null });
   }
@@ -275,6 +330,14 @@ globalThis.URLSearchParams = class URLSearchParams {
     __wjs2_uspTouch(this);
   }
   toString() { return __wjs2_usp_serialize(JSON.stringify(__wjs2_uspBrand(this).pairs)); }
+  // 10f：inspect 面（custom-searchparams-inspect 套件逐字；空形 `{}`、
+  // 迭代器另见工厂；无 receiver 即 ERR_INVALID_THIS）。
+  [Symbol.for("nodejs.util.inspect.custom")](depth, options) {
+    if (typeof depth === "number" && depth < 0) return "[Object]";
+    const pairs = __wjs2_uspBrand(this).pairs;
+    const items = pairs.map(([k, v]) => `${__wjs2_uspQ(k)} => ${__wjs2_uspQ(v)}`);
+    return __wjs2_uspWrap("URLSearchParams", items, options, "URLSearchParams {}");
+  }
   keys() { return __wjs2_uspIter(__wjs2_uspBrand(this).pairs, 0); }
   values() { return __wjs2_uspIter(__wjs2_uspBrand(this).pairs, 1); }
   entries() { return __wjs2_uspIter(__wjs2_uspBrand(this).pairs, 2); }

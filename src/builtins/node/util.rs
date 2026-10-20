@@ -57,6 +57,9 @@ const {
 } = inspectModule;
 // 10f：`inspect.defaultOptions` 与内部默认表同引用（可变活对象，真机口径）。
 inspect.defaultOptions = inspectModule.inspectDefaultOptions;
+// 10f：`inspect.custom` 即 custom inspect 符号（custom-searchparams-inspect
+// 套件经 `sp[util.inspect.custom]` 取用；与 internal/inspect 的 kCustom 同源）。
+inspect.custom = Symbol.for('nodejs.util.inspect.custom');
 
 // ── getCallSites（10f：test/common `mustNotCall` 前置；V8 CallSite 最佳努力）──
 //! 口径：解析 SpiderMonkey `fn@file:line:col` 栈（首帧自身丢弃，[0] 为调用方，

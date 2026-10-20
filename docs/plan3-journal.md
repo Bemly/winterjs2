@@ -2404,3 +2404,24 @@ G1/G2/G3/G9 已收官。）
 - open 黑盒 fs_open_arg_forms 落 tests/node/fs/basic.rs（2/3/4 参形+ENOENT+无cb）。
 - commit：9c0daf3（open三态+sendfile+finish，4文件）已推 origin lane/http2；
   adopt 桥（socket-close）随后单 commit。
+
+## 2026-10-20 HANG_EXIT变量错位一行修（sweep-bg写侧→runtime读侧对齐）
+
+- 定名（读两侧源码）：runtime 消费侧 `WINTERJS2_HANG_EXIT`
+  （src/runtime/mod.rs:582 + 单测 tests/node/process_.rs:235 用同名 +
+  `WINTERJS2_LOG` 前缀惯例）；sweep-bg.py 写侧 `WINTERJS_HANG_EXIT`
+  （设置行 + 结果 grep 行）为typo。以消费侧为准改脚本侧。
+- 修（scripts/sweep-bg.py，1 文件 3 行）：设置行
+  `WINTERJS_HANG_EXIT=` → `WINTERJS2_HANG_EXIT=`；结果 grep
+  `"WINTERJS_HANG_EXIT"` → `"WINTERJS2_HANG_EXIT"`；注释同名。
+- 构建（主仓 target/debug，load ~9，cargo -j2，50s，树干净，HEAD~1c1fd4d 时代、
+  先于 http2 lane 合入 4a93a88；验证件不走 fs.open，结论不受 open-fix 影响）+
+  冒烟 5/5 全过。
+  注：构建时 pid 43394 常驻 fixture 进程（child-process-persistent.js，
+  1h39m）在跑——relink 不影响已 exec 镜像；构建后其 lane 若新 spawn
+  才取新二进制（本次仅脚本改动，二进制行为等价）。
+- 验证（单件，test-http2-socket-close.js，WINTERJS2_HANG_EXIT=20）：
+  rc=1 + `winterjs2: event loop made no progress for 20s
+  (WINTERJS2_HANG_EXIT) — open: …net=3…` + `Mismatched … socket-close.js:46`
+  定位行——HANG 自报链（环境变量→自报→MUSTCALL 定位→sweep grep 标 HANG）
+  全通。对照：不设变量同件 32s 无输出（默认语义不变）。

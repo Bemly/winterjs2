@@ -305,7 +305,7 @@ def run_one(binary, path, cwd, env, timeout, prefix=("--run",), dump_dir=None, s
         if mm is not None:
             site = next((l for l in out_lines[mm + 1:mm + 4] if "test-" in l), "")
             # 真挂死（HANG_EXIT 自报）标 HANG；正常退出但计数不符标 MUSTCALL。
-            hung = any("WINTERJS_HANG_EXIT" in l for l in err)
+            hung = any("WINTERJS2_HANG_EXIT" in l for l in err)
             kind = "HANG" if hung else "MUSTCALL"
             pick = f"{kind} {out_lines[mm][11:60]}@" + site.split("/")[-1] if site else out_lines[mm]
         else:
@@ -389,9 +389,9 @@ def sweep_loop(st):
                     return
                 i, f = queue.pop(0)
             flags = tuple(suite_flags(os.path.join(d, f)))
-            # 挂死件提前 5s 自报（WINTERJS_HANG_EXIT：发 exit → common.mustCall 打印未触发回调的
+            # 挂死件提前 5s 自报（WINTERJS2_HANG_EXIT：发 exit → common.mustCall 打印未触发回调的
             # 创建点），TIMEOUT 变成带定位的红件；node 侧不受影响。
-            wenv2 = dict(wenv, WINTERJS_HANG_EXIT=str(max(5, int(st["timeout_s"]) - 5)))
+            wenv2 = dict(wenv, WINTERJS2_HANG_EXIT=str(max(5, int(st["timeout_s"]) - 5)))
             wrc, werr = run_one(st["wjs"], f, d, wenv2, st["timeout_s"], flags + ("--run",), dump_dir, "wjs")
             fp = os.path.join(d, f)
             try:

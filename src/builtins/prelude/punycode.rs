@@ -3,7 +3,8 @@
 pub const PUNYCODE_JS: &str = r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Punycode core shared by node:punycode and WinterJS2.punycode.
-{
+// IIFE 包裹：块级 `function` 在 sloppy 下经 Annex B 漏到 globalThis（4.290）。
+(() => {
 const maxInt = 2147483647; // aka. 0x7FFFFFFF or 2^31-1
 
 /** Bootstring parameters */
@@ -305,5 +306,5 @@ const punycode = {
     const W = globalThis.WinterJS2;
     if (W && W.punycode === undefined) W.punycode = punycode;
   } catch {}
-}
+})();
 "#;

@@ -191,9 +191,12 @@
         try { sock.ref(); } catch { /* gone */ }
       }
       const __sockOnError = (e) => {
-        // 去重：请求已销毁（自身的 destroy(err) 先发过 error）即吞，不二次
-        // 递送（max-http-headers 套件 mustCall(1) 形；二次抛会跳过 close 链即 hang）。
+        // 去重：请求已销毁（自身的 destroy(err) 先发过 error）或已错即吞，不二次
+        // 递送（max-http-headers 套件 mustCall(1) 形；二次抛会跳过 close 链即 hang；
+        // writable-finished 套件写失败双 error 形：首错走流机构 errorOrDestroy，
+        // 只置 errored 未同步 destroy，次错凭 errored 拦）。
         if (this.destroyed) return;
+        try { if (this.errored) return; } catch { /* 取值失败即继续 */ }
         if (this.listenerCount("error") === 0) throw e;
         // 已发错标记（后到的 Close 不再合成 hangup 走 destroy 幂等门）。
         this.__hadError = true;

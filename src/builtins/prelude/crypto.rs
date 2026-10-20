@@ -59,6 +59,20 @@ function __wjs2BrandErr() {
   e.code = "ERR_INVALID_THIS";
   return e;
 }
+// subtle 操作失败一律 DOMException（node 口径：op 错即 OperationError 名 +
+// 通用消息；TypeError 系保持原样，只转码为 OperationError 的；prelude 原生错
+// 无 code，按 "OperationError: " 消息前缀同判）。
+function __wjs2_subtleOp(fn) {
+  try {
+    return fn();
+  } catch (e) {
+    const msg = e !== null && (typeof e === "object" || typeof e === "function") ? String(e.message ?? e) : String(e);
+    if ((e !== null && typeof e === "object" && e.code === "OperationError") || msg.startsWith("OperationError:")) {
+      throw new DOMException("The operation failed for an operation-specific reason", "OperationError");
+    }
+    throw e;
+  }
+}
 // 非对称 usages 公私分流（node 口径：public 仅 verify/encrypt/wrapKey 系，
 // private 仅 sign/decrypt/unwrapKey/derive 系；private 为空即抛）。
 function __wjs2_splitUsages(usages) {
@@ -445,15 +459,19 @@ globalThis.crypto = {
       if (!st) throw new TypeError("encrypt: not a CryptoKey");
       __wjs2_needUsage(st, "encrypt");
       if (st.alg.name === "AES-GCM") {
-        const p = __wjs2_aesParams(algorithm);
-        const out = __wjs2_aesgcm_encrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data));
+        const out = __wjs2_subtleOp(() => {
+          const p = __wjs2_aesParams(algorithm);
+          return __wjs2_aesgcm_encrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data));
+        });
         return out.buffer;
       }
       if (st.alg.name === "RSA-OAEP") {
         if (st.kind !== "public") throw new TypeError("encrypt: not an RSA public key");
-        const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
-        const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
-        const out = __wjs2_rsa_encrypt(hash, st.material, __wjs2_dataBytes(data), label);
+        const out = __wjs2_subtleOp(() => {
+          const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
+          const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
+          return __wjs2_rsa_encrypt(hash, st.material, __wjs2_dataBytes(data), label);
+        });
         return out.buffer;
       }
       throw new TypeError("encrypt: unsupported key");
@@ -466,15 +484,19 @@ globalThis.crypto = {
       if (!st) throw new TypeError("decrypt: not a CryptoKey");
       __wjs2_needUsage(st, "decrypt");
       if (st.alg.name === "AES-GCM") {
-        const p = __wjs2_aesParams(algorithm);
-        const out = __wjs2_aesgcm_decrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data));
+        const out = __wjs2_subtleOp(() => {
+          const p = __wjs2_aesParams(algorithm);
+          return __wjs2_aesgcm_decrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data));
+        });
         return out.buffer;
       }
       if (st.alg.name === "RSA-OAEP") {
         if (st.kind !== "private") throw new TypeError("decrypt: not an RSA private key");
-        const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
-        const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
-        const out = __wjs2_rsa_decrypt(hash, st.material, __wjs2_dataBytes(data), label);
+        const out = __wjs2_subtleOp(() => {
+          const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
+          const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
+          return __wjs2_rsa_decrypt(hash, st.material, __wjs2_dataBytes(data), label);
+        });
         return out.buffer;
       }
       throw new TypeError("decrypt: unsupported key");

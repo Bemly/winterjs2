@@ -20,9 +20,7 @@ export function generateKeyPair(type, options, ...rest) {
     throw err;
   }
   // 真机口径：type/options 同步抛（callback 不背锅），见 keygen 67/86 行。
-  // options 缺省即 {}（真机实测 generateKeyPair('ed25519', cb) 直通，base16
-  // 回归；旧"async 不容 undefined"注释按 §4.65 翻转，以实测为准）。
-  if (options === undefined) options = {};
+  // options 归一全进 __genPairSync（具名族缺省即 ARG_TYPE；ed/x 系默认 {}）。
   __checkKeyPairHead(type, options);
   __checkKeyPairTypeKnown(type);
   if (typeof options === "object" && options !== null) {
@@ -31,16 +29,21 @@ export function generateKeyPair(type, options, ...rest) {
   // RSA 参数同步预检（async 口径同样同步抛，见 keygen 303 行）。
   if ((type === "rsa" || type === "rsa-pss") && typeof options === "object" && options !== null) {
     __checkRsaKeyOptions(options);
+    if (type === "rsa-pss") __checkRsaPssKeyOptions(options);
   }
   // DSA 参数同步预检（同上，见 keygen.js 399 行）。
   if (type === "dsa" && typeof options === "object" && options !== null) {
     __checkDsaKeyOptions(options);
   }
+  // DH 参数同步预检（全量校验；同上，见 keygen 549/557 行；async 亦同步抛）。
+  if (type === "dh" && typeof options === "object" && options !== null) {
+    __checkDhArgs(options);
+  }
   queueMicrotask(() => {
     try {
       // 单次生成再分发编码：公钥私钥必须同对（双调 __genPairSync 即对不上，
       // x-JWK 错配/RSA 解密失败/DSA 双倍慢超时同源，crypto3 keygen-async 簇）。
-      const out = __applyEncoding(__genPairSync(type, options ?? {}), pubEnc, privEnc);
+      const out = __applyEncoding(__genPairSync(type, options), pubEnc, privEnc);
       cb(null, out.publicKey, out.privateKey);
     } catch (e) {
       cb(e);
@@ -103,6 +106,7 @@ function __derToRawSig(der, size) {
   return out;
 }
 function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
+  __checkSignVerifyOptions(padding, saltLength, dsaEncoding);
   const dataB = __cryptBytes(data, "data");
   const kt = keyObj.__keyType;
   if (kt === "ed448") {
@@ -163,20 +167,18 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
       throw err;
     }
     __checkPssPadding(kt, padding);
-    // SHA-1/MD5 走手写 v1.5（digest 0.10 版本面）；SHA-2 走既有 natives
+    __checkRsaOpPadding(kt, padding);
+    // SHA-1/MD5 走手写 v1.5（digest 0.10 版本面；PSS 模式除外）；SHA-2/PSS 走既有 natives
     // 10f crypto六轮：PSS 的 SHA-1 走 sha1_010 底座（MD5 仍不支持，无 0.10 可引）。
-    if (hash === "SHA-1" || hash === "MD5") {
-      if (kt === "rsa-pss") {
-        if (hash === "MD5") {
-          const err = new Error("RSA-PSS with MD5 not supported");
-          err.code = "ERR_NOT_SUPPORTED";
-          throw err;
-        }
-      } else {
-        return __cryptCall(() => __wjs2_node_rsa_v15_sign(keyObj.__material, dataB, hash));
-      }
+    const pss = kt === "rsa-pss" || padding === 6;
+    if ((hash === "SHA-1" || hash === "MD5") && !pss) {
+      return __cryptCall(() => __wjs2_node_rsa_v15_sign(keyObj.__material, dataB, hash));
     }
-    const pss = kt === "rsa-pss";
+    if (hash === "MD5") {
+      const err = new Error("RSA-PSS with MD5 not supported");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
     if (pss) {
       // 10f crypto六轮：rsa-pss 键约束执行（真机 26 逐项）——params 缺席的键
       // 无约束全放行；saltLength 为下限（小即 PSS_SALTLEN_TOO_SMALL），
@@ -185,10 +187,13 @@ function __signCore(alg, data, keyObj, dsaEncoding, saltLength, padding) {
       const det = keyObj.__detail ?? {};
       const defSalt = { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash] ?? 32;
       // 缺省 salt 取键约束值（真机实测：sha512_20 键缺省签出 salt 20，
-      // 非摘要长 64；无约束键走摘要长）。
+      // 非摘要长 64；无约束键走摘要长）；显式值经 special 消解 + max 门。
+      const detMod = typeof det.modulusLength === "number" ? det.modulusLength : null;
+      const matDet = detMod === null ? __rsaDetailsFromMaterial("private", keyObj.__material) : null;
+      const maxSalt = (detMod !== null ? detMod : (matDet !== null ? matDet.modulusLength : 0)) / 8 - defSalt - 2;
       const salt = saltLength === undefined
         ? (typeof det.saltLength === "number" ? det.saltLength : defSalt)
-        : Number(saltLength);
+        : __resolvePssSalt(saltLength, defSalt, maxSalt);
       if (typeof det.saltLength === "number" && salt < det.saltLength) {
         const err = new Error("error:1C8000AC:Provider routines::pss saltlen too small");
         err.code = "ERR_OSSL_PSS_SALTLEN_TOO_SMALL";
@@ -258,16 +263,76 @@ function __osslKeytypeError() {
   err.code = "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE";
   throw err;
 }
+// OSSL 形 JS 错误（`error:HEX:library::reason`；library/reason 经 `=`
+// 赋值，原型链 setter 透传；opensslErrorStack 永不触碰）。
+function __invalidSignOption(name, value) {
+  const err = new TypeError(`The property 'options.${name}' is invalid. Received ${__inspectRecv(value)}`);
+  err.code = "ERR_INVALID_ARG_VALUE";
+  return err;
+}
+// 签验选项通用门（真机口径，sign-verify 套件 padding/saltLength/dsaEncoding
+// 行钉住）：与键型无关，先于操作门；padding 非整数、saltLength 非 int32、
+// dsaEncoding 非 der/ieee-p1363 即 invalid。
+function __checkSignVerifyOptions(padding, saltLength, dsaEncoding) {
+  if (padding !== undefined && (typeof padding !== "number" || !Number.isInteger(padding))) {
+    throw __invalidSignOption("padding", padding);
+  }
+  if (saltLength !== undefined && (typeof saltLength !== "number" || !Number.isInteger(saltLength) || saltLength < -2147483648 || saltLength > 2147483647)) {
+    throw __invalidSignOption("saltLength", saltLength);
+  }
+  if (dsaEncoding !== undefined && dsaEncoding !== "der" && dsaEncoding !== "ieee-p1363") {
+    throw __invalidSignOption("dsaEncoding", dsaEncoding);
+  }
+}
+function __osslOpErr(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  const m = message.match(/^error:[0-9A-Fa-f]+:([^:]*):(.*)$/);
+  if (m) {
+    err.library = m[1];
+    err.reason = m[2].replace(/^:/, "");
+  }
+  return err;
+}
+// rsa 签验 padding 门（真机口径）：rsa 键 padding 仅容 undefined/1（v1.5）/6
+//（PSS，走 PSS 核）；余者（OAEP 等）即 ILLEGAL_OR_UNSUPPORTED_PADDING_MODE
+//（sign-verify 套件 OAEP 行钉住）。
+function __checkRsaOpPadding(kt, padding) {
+  if (padding === 3) {
+    throw __osslOpErr("ERR_OSSL_INVALID_PADDING_MODE",
+      "error:1C8000A8:Provider routines::invalid padding mode");
+  }
+  if (kt === "rsa" && padding !== undefined && padding !== 1 && padding !== 6 && padding !== -1 && padding !== 5) {
+    throw __osslOpErr("ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE",
+      "error:1C8000A5:Provider routines::illegal or unsupported padding mode");
+  }
+}
 // rsa-pss 显式非 PSS padding 即非法（keygen-rsa-pss 套件；真机
 // ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE；RSA 键可 PSS padding 不限）。
-function __checkPssPadding(kt, padding) {
-  if (kt === "rsa-pss" && padding !== undefined && padding !== 6) {
-    const err = new Error("error:1C8000A5:Provider routines::illegal or unsupported padding mode");
-    err.code = "ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE";
-    throw err;
+// PSS saltLength resolution (node semantics, pinned by pss probes):
+// -1 means digest length; -2/-3/-4 mean max usable; other negatives mean
+// INVALID_SALT_LENGTH; explicit over max means DATA_TOO_LARGE.
+function __resolvePssSalt(saltLength, hLen, maxSalt) {
+  let eff;
+  if (saltLength === -1) eff = hLen;
+  else if (saltLength === -2 || saltLength === -3 || saltLength === -4) eff = maxSalt;
+  else if (saltLength < 0) {
+    throw __osslOpErr("ERR_OSSL_INVALID_SALT_LENGTH",
+      "error:1C800070:Provider routines::invalid salt length");
+  } else eff = saltLength + 0;
+  if (eff > maxSalt) {
+    throw __osslOpErr("ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE",
+      "error:0200006E:rsa routines::data too large for key size");
+  }
+  return eff;
+}
+function __checkPssPadding(kt, padding) {  if (kt === "rsa-pss" && padding !== undefined && padding !== 6) {
+    throw __osslOpErr("ERR_OSSL_ILLEGAL_OR_UNSUPPORTED_PADDING_MODE",
+      "error:1C8000A5:Provider routines::illegal or unsupported padding mode");
   }
 }
 function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) {
+  __checkSignVerifyOptions(padding, saltLength, dsaEncoding);
   const dataB = __cryptBytes(data, "data");
   const sigB = __cryptBytes(sig, "signature");
   const kt = keyObj.__keyType;
@@ -333,29 +398,40 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
   const pubDer = keyObj.__kind === "private" ? __derivePublic(keyObj).__material : keyObj.__material;
   if (kt === "rsa" || kt === "rsa-pss") {
     __checkPssPadding(kt, padding);
+    __checkRsaOpPadding(kt, padding);
     // 10f crypto二轮：签名长短 != 钥长即 false，不抛（空签名套件点名）。
     const det = __rsaDetailsFromMaterial("public", pubDer);
     if (det !== null && sigB.length !== det.modulusLength / 8) return false;
-    if (hash === "SHA-1" || hash === "MD5") {
-      if (kt === "rsa-pss") {
-        // 10f crypto六轮：SHA-1 走底座，MD5 维持不支持（同 sign 侧）。
-        if (hash === "MD5") {
-          const err = new Error("RSA-PSS with MD5 not supported");
-          err.code = "ERR_NOT_SUPPORTED";
-          throw err;
-        }
-      } else {
-        return __cryptCall(() => __wjs2_node_rsa_v15_verify(pubDer, sigB, dataB, hash));
-      }
+    const pss = kt === "rsa-pss" || padding === 6;
+    if ((hash === "SHA-1" || hash === "MD5") && !pss) {
+      return __cryptCall(() => __wjs2_node_rsa_v15_verify(pubDer, sigB, dataB, hash));
     }
-    const pss = kt === "rsa-pss";
+    if (hash === "MD5") {
+      // 10f crypto六轮：SHA-1 走底座，MD5 维持不支持（同 sign 侧）。
+      const err = new Error("RSA-PSS with MD5 not supported");
+      err.code = "ERR_NOT_SUPPORTED";
+      throw err;
+    }
     if (pss) {
       const defSalt = { "SHA-1": 20, "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash] ?? 32;
       // 缺省 salt 取键约束值（同 sign 侧；真机实测 sign/verify 双缺省互通）。
       const vdet0 = keyObj.__detail ?? {};
-      const salt = saltLength === undefined
-        ? (typeof vdet0.saltLength === "number" ? vdet0.saltLength : defSalt)
-        : Number(saltLength);
+      // 验签侧：超 max 即 false 不抛（pss 探针钉死），非法值仍抛；
+      // AUTO（-2 全长/-4 摘要封顶）逐 salt 试探（与 OpenSSL auto 恢复同真值）。
+      const vMaxSalt = (det !== null ? det.modulusLength : 0) / 8 - defSalt - 2;
+      const vAutoCap = saltLength === -4 ? Math.min(vMaxSalt, defSalt) : vMaxSalt;
+      const vAuto = saltLength === -2 || saltLength === -4;
+      let salt;
+      if (saltLength === undefined) {
+        salt = (typeof vdet0.saltLength === "number" ? vdet0.saltLength : defSalt);
+      } else if (!vAuto) {
+        try {
+          salt = __resolvePssSalt(saltLength, defSalt, vMaxSalt);
+        } catch (e) {
+          if (e !== null && typeof e === "object" && e.code === "ERR_OSSL_RSA_DATA_TOO_LARGE_FOR_KEY_SIZE") return false;
+          throw e;
+        }
+      }
       // 10f crypto六轮：验签侧 MGF1 自动切换（同 sign 侧；验不过回 false 不抛）。
       const vdet = keyObj.__detail ?? {};
       const vmgf = typeof vdet.mgf1HashAlgorithm === "string" ? __normHashName(vdet.mgf1HashAlgorithm) : null;
@@ -368,8 +444,24 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
           return false;
         }
         const mHash = __dgstBytes(hash, dataB);
+        if (vAuto) {
+          for (let s = 0; s <= vAutoCap; s++) {
+            try {
+              if (__emsaPssVerify(hash, vmgf, det.modulusLength - 1, mHash, em, s)) return true;
+            } catch {}
+          }
+          return false;
+        }
         return __emsaPssVerify(hash, vmgf, det.modulusLength - 1, mHash, em,
           saltLength === undefined ? undefined : salt);
+      }
+      if (vAuto) {
+        // native salt 上限 512（超限为结构错；真机大键长 salt 另案记档）。
+        const vCap = Math.min(vAutoCap, 512);
+        for (let s = 0; s <= vCap; s++) {
+          if (__cryptCall(() => __wjs2_pss_verify(hash, s, pubDer, sigB, dataB))) return true;
+        }
+        return false;
       }
       return __cryptCall(() => __wjs2_pss_verify(hash, salt, pubDer, sigB, dataB));
     }
@@ -398,21 +490,76 @@ function __verifyCore(alg, data, keyObj, sig, dsaEncoding, saltLength, padding) 
   err.code = "ERR_NOT_SUPPORTED";
   throw err;
 }
+// node 口径（C++ 键解析/错误构造在错误对象上 `=` 赋值 library——原型链用户
+// setter 透传；sign 两件 'bye, bye' 套件钉住）：仅当链上存在 library setter
+// 才赋值（抛 setter 错）；余者无痕（成功路径/无 setter 全不碰，valid-key 探针
+// 钉住；opensslErrorStack 永不 `=` 触碰，case2 钉住）。
+function __fireKeyLibrarySetter(e) {
+  if (e === null || (typeof e !== "object" && typeof e !== "function")) return;
+  try {
+    let o = e;
+    let fire = false;
+    while (o !== null) {
+      const d = Object.getOwnPropertyDescriptor(o, "library");
+      if (d !== undefined) {
+        fire = typeof d.set === "function";
+        break;
+      }
+      o = Object.getPrototypeOf(o);
+    }
+    if (fire) e.library = e.library;
+  } catch (se) {
+    throw se;
+  }
+}
 function __keyArg(key, what) {
   if (__isKeyObject(key)) return key;
   if (typeof key === "string" || key instanceof Uint8Array || key instanceof ArrayBuffer || ArrayBuffer.isView(key)) {
-    try { return createPrivateKey(key); } catch { return createPublicKey(key); }
+    try {
+      return createPrivateKey(key);
+    } catch (e) {
+      __fireKeyLibrarySetter(e);
+      try {
+        return createPublicKey(key);
+      } catch (e2) {
+        __fireKeyLibrarySetter(e2);
+        throw e2;
+      }
+    }
   }
   if (typeof key === "object" && key !== null) {
     const inner = key.key ?? key;
     if (__isKeyObject(inner)) return inner;
-    try { return createPrivateKey(key); } catch { return createPublicKey(key); }
+    // 真机口径（preparePrivateKey：无 .key 即 ARG_TYPE；sign-verify 套件钉住）；
+    // 裸 JWK/空对象不直认（与真机一致，裸 JWK 须经 {key, format} 包装）。
+    if (key.key === undefined || key.key === null) {
+      const err = new TypeError(`The "${what}" argument must be a KeyObject or key material`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    try {
+      return createPrivateKey(key);
+    } catch (e) {
+      __fireKeyLibrarySetter(e);
+      try {
+        return createPublicKey(key);
+      } catch (e2) {
+        __fireKeyLibrarySetter(e2);
+        throw e2;
+      }
+    }
   }
   const err = new TypeError(`The "${what}" argument must be a KeyObject or key material`);
   err.code = "ERR_INVALID_ARG_TYPE";
   throw err;
 }
 export function sign(alg, data, key, callback) {
+  // 真机口径：null/undefined 键即 SIGN_KEY_REQUIRED（sign-verify 395 行钉住）。
+  if (key === null || key === undefined) {
+    const err = new Error("No key provided to sign");
+    err.code = "ERR_CRYPTO_SIGN_KEY_REQUIRED";
+    throw err;
+  }
   // 10f crypto二轮：callback 异步形（真机口径；同步核复用）。
   if (typeof callback === "function") {
     queueMicrotask(() => {
@@ -435,12 +582,20 @@ export function verify(alg, data, key, signature, callback) {
     });
     return undefined;
   }
+  // 真机口径：签名先验（key 解析前；sign-verify 套件 441 行钉住）。
+  const sigB0 = __cryptBytes(signature, "signature");
   const k = __keyArg(key, "key");
   const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
-  return __verifyCore(alg, data, k, signature, opts.dsaEncoding, opts.saltLength, opts.padding);
+  return __verifyCore(alg, data, k, sigB0, opts.dsaEncoding, opts.saltLength, opts.padding);
 }
 class SignImpl {
   constructor(alg, options) {
+    // 真机口径：算法须字符串（sign-verify 套件 407 行钉住；ed25519 仍走后门）。
+    if (typeof alg !== "string") {
+      const err = new TypeError(`The "algorithm" argument must be of type string.${__argTypeHelper(alg)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
     if (alg !== null && __normHashName(alg) === undefined && alg !== "ed25519") {
       const err = new Error("Invalid digest");
       err.code = "ERR_CRYPTO_INVALID_DIGEST";
@@ -458,29 +613,56 @@ class SignImpl {
     this.__parts.push(__cryptBytes(data, "data", enc));
     return this;
   }
+  // 真机口径：Sign/Verify 具流形（write/update 追加，end 写末块；sign-verify
+  // 套件 s1stream.end 行钉住）。
+  write(data, enc) { return this.update(data, enc); }
+  end(data, enc) {
+    if (data !== undefined) this.update(data, enc);
+    return this;
+  }
+  // 流兼容垫片（sign-verify 套件 _write 行钉住；同步校验先于回调）。
+  _write(data, enc, cb) {
+    this.update(data, enc);
+    if (typeof cb === "function") cb();
+  }
   sign(key, ...rest) {
+    if (key === null || key === undefined) {
+      const err = new Error("No key provided to sign");
+      err.code = "ERR_CRYPTO_SIGN_KEY_REQUIRED";
+      throw err;
+    }
     // 10f crypto二轮：rest 串 = 输出编码（真机口径；dsaEncoding/saltLength 只收
     // key-options 对象）；key-options 整体透传（passphrase 同）。
+    // 显式 null 不被 ?? 洗掉（真机口径：null 即 invalid，sign-verify 套件钉住）。
+    const pickSignOpt = (a, b) => (a !== undefined ? a : b);
     let outputEncoding, dsaEncoding, saltLength;
     for (const r of rest) {
       if (typeof r === "string") outputEncoding = r;
       else if (typeof r === "number") saltLength = r;
-      else if (r && typeof r === "object") { dsaEncoding = r.dsaEncoding ?? dsaEncoding; saltLength = r.saltLength ?? saltLength; }
+      else if (r && typeof r === "object") { dsaEncoding = pickSignOpt(r.dsaEncoding, dsaEncoding); saltLength = pickSignOpt(r.saltLength, saltLength); }
     }
     const flat = __joinParts(this.__parts);
     if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key) && !ArrayBuffer.isView(key)) {
       const k = __keyArg(key, "key");
-      const out = __signCore(this.__alg, flat, k, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength, key.padding);
+      const out = __signCore(this.__alg, flat, k, pickSignOpt(key.dsaEncoding, dsaEncoding), pickSignOpt(key.saltLength, saltLength), key.padding);
       const buf = Buffer.from(out);
-      return outputEncoding === undefined ? buf : buf.toString(outputEncoding);
+      // node 口径（encode）：缺省/'buffer'（严格大小写）即回 Buffer。
+      if (outputEncoding === undefined || outputEncoding === "buffer") return buf;
+      return buf.toString(outputEncoding);
     }
     const out = __signCore(this.__alg, flat, __keyArg(key, "key"), dsaEncoding, saltLength, undefined);
     const buf = Buffer.from(out);
-    return outputEncoding === undefined ? buf : buf.toString(outputEncoding);
+    if (outputEncoding === undefined || outputEncoding === "buffer") return buf;
+    return buf.toString(outputEncoding);
   }
 }
 class VerifyImpl {
   constructor(alg, options) {
+    if (typeof alg !== "string") {
+      const err = new TypeError(`The "algorithm" argument must be of type string.${__argTypeHelper(alg)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
     if (alg !== null && __normHashName(alg) === undefined && alg !== "ed25519") {
       const err = new Error("Invalid digest");
       err.code = "ERR_CRYPTO_INVALID_DIGEST";
@@ -498,19 +680,33 @@ class VerifyImpl {
     this.__parts.push(__cryptBytes(data, "data", enc));
     return this;
   }
+  // 真机口径：同 Sign（流形 write/end）。
+  write(data, enc) { return this.update(data, enc); }
+  end(data, enc) {
+    if (data !== undefined) this.update(data, enc);
+    return this;
+  }
+  // 流兼容垫片（sign-verify 套件 _write 行钉住；同步校验先于回调）。
+  _write(data, enc, cb) {
+    this.update(data, enc);
+    if (typeof cb === "function") cb();
+  }
   verify(key, signature, ...rest) {
     // 10f crypto二轮：rest 串 = 签名编码（真机口径；余同 sign）。
+    // 显式 null 不被 ?? 洗掉（同 sign）。
+    const pickVerifyOpt = (a, b) => (a !== undefined ? a : b);
     let signatureEncoding, dsaEncoding, saltLength;
     for (const r of rest) {
       if (typeof r === "string") signatureEncoding = r;
       else if (typeof r === "number") saltLength = r;
-      else if (r && typeof r === "object") { dsaEncoding = r.dsaEncoding ?? dsaEncoding; saltLength = r.saltLength ?? saltLength; }
+      else if (r && typeof r === "object") { dsaEncoding = pickVerifyOpt(r.dsaEncoding, dsaEncoding); saltLength = pickVerifyOpt(r.saltLength, saltLength); }
     }
     const flat = __joinParts(this.__parts);
-    const sigB = signatureEncoding !== undefined ? Buffer.from(String(signature), signatureEncoding) : signature;
+    // 真机口径：签名先验（key 解析前；sign-verify 套件 441 行钉住）。
+    const sigB = signatureEncoding !== undefined ? Buffer.from(String(signature), signatureEncoding) : __cryptBytes(signature, "signature");
     if (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key) && !ArrayBuffer.isView(key)) {
       const k = __keyArg(key, "key");
-      return __verifyCore(this.__alg, flat, k, sigB, key.dsaEncoding ?? dsaEncoding, key.saltLength ?? saltLength, key.padding);
+      return __verifyCore(this.__alg, flat, k, sigB, pickVerifyOpt(key.dsaEncoding, dsaEncoding), pickVerifyOpt(key.saltLength, saltLength), key.padding);
     }
     return __verifyCore(this.__alg, flat, __keyArg(key, "key"), sigB, dsaEncoding, saltLength, undefined);
   }
@@ -622,233 +818,3 @@ function __emsaPssVerify(msgName, mgfName, emBits, mHash, em, wantSaltLen) {
   const h2 = __dgstBytes(msgName, Buffer.concat([Buffer.alloc(8), Buffer.from(mHash), Buffer.from(salt)]));
   return Buffer.from(h).equals(Buffer.from(h2));
 }
-function __rsaCrypt(key, data, isPublic, isEncrypt) {
-  let k = __keyArg(key, "key");
-  // 10f crypto二轮：public 方向遇私钥即派生公钥（`publicEncrypt(privPem)` 真机口径）。
-  if (isPublic && k.type === "private") k = __derivePublic(k);
-  // rsa-pss 禁加解密（keygen-rsa-pss 套件：'operation not supported for this keytype'）。
-  if (k.__keyType === "rsa-pss") __osslKeytypeError();
-  const opts = (typeof key === "object" && key !== null && !(key instanceof Uint8Array) && !__isKeyObject(key)) ? key : {};
-  // 10f crypto二轮：默认 padding 按方向（加解密 OAEP=4；签式 v1.5=1，真机口径）。
-  const padding = opts.padding ?? (isEncrypt === isPublic ? 4 : 1);
-  // 10f crypto二轮：key 对象带 encoding 时字符串 data 同解码（真机实证口径）。
-  const dataB = (typeof data === "string" && typeof opts.encoding === "string")
-    ? Buffer.from(data, opts.encoding)
-    : __cryptBytes(data, "data");
-  if (padding === 4) {
-    // 10f crypto二轮：oaepHash/oaepLabel 校验（真机逐字，dsa 套件点名）。
-    const __recvAny = (v) => {
-      if (v === null || v === undefined) return String(v);
-      const t = typeof v;
-      if (t === "object" || t === "function") return `an instance of ${v.constructor?.name ?? "Object"}`;
-      let s;
-      try { s = (t === "string") ? `'${v}'` : String(v); } catch { s = t; }
-      return `type ${t} (${s})`;
-    };
-    if (opts.oaepHash !== undefined && typeof opts.oaepHash !== "string") {
-      const err = new TypeError(
-        `The "key.oaepHash" property must be of type string. Received ${__recvAny(opts.oaepHash)}`);
-      err.code = "ERR_INVALID_ARG_TYPE";
-      throw err;
-    }
-    const hashFlat = opts.oaepHash ?? "sha1";
-    const hash = __normHashName(hashFlat);
-    if (hash === undefined) {
-      const err = new Error("Invalid digest used");
-      err.code = "ERR_OSSL_EVP_INVALID_DIGEST";
-      throw err;
-    }
-    if (hash === "MD5") {
-      const err = new Error(`Unsupported OAEP hash ${opts.oaepHash}`);
-      err.code = "ERR_NOT_SUPPORTED";
-      throw err;
-    }
-    let label = null;
-    if (opts.oaepLabel !== undefined) {
-      const ol = opts.oaepLabel;
-      if (!(typeof ol === "string" || ol instanceof Uint8Array ||
-            ol instanceof ArrayBuffer || ArrayBuffer.isView(ol))) {
-        const err = new TypeError(
-          `The "key.oaepLabel" property must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received ${__recvAny(ol)}`);
-        err.code = "ERR_INVALID_ARG_TYPE";
-        throw err;
-      }
-      label = __cryptBytes(ol, "label");
-    }
-    // 10f crypto二轮：mgf1Hash（真机口径；缺省跟随 oaepHash；未知即 INVALID_DIGEST）。
-    let mgfHash = hash;
-    if (opts.mgf1Hash !== undefined) {
-      if (typeof opts.mgf1Hash !== "string") {
-        const err = new TypeError(
-          `The "key.mgf1Hash" property must be of type string. Received ${__recvAny(opts.mgf1Hash)}`);
-        err.code = "ERR_INVALID_ARG_TYPE";
-        throw err;
-      }
-      const mg = __normHashName(opts.mgf1Hash);
-      if (mg === undefined || __OAEP_HLEN[mg] === undefined) {
-        const err = new Error("Invalid digest used");
-        err.code = "ERR_OSSL_EVP_INVALID_DIGEST";
-        throw err;
-      }
-      mgfHash = mg;
-    }
-    // 混合哈希（mgf ≠ oaep）走 JS 编解码 + 裸 RSA（真机互操作另行交叉验证，见注释）。
-    const mixedHash = mgfHash !== hash;
-    // SHA-1 走手写 OAEP（digest 0.10 版本面，见 Rust 侧记）；SHA-2 走既有 natives
-    if (isPublic && isEncrypt) {
-      // 10f crypto二轮：混合哈希走 JS 编解码 + 裸 RSA（mgf1Hash 套件）。
-      if (mixedHash) {
-        const det = __rsaDetailsFromMaterial(k.type, k.__material);
-        if (det !== null && __OAEP_HLEN[hash] !== undefined) {
-          const em = __oaepMixedEncode(hash, mgfHash, det.modulusLength / 8, dataB, label);
-          return Buffer.from(__cryptCall(() => __wjs2_rsa_raw(k.__material, em, 0)));
-        }
-      }
-      if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep(k.__material, dataB, label, 1)));
-      }
-      return Buffer.from(__cryptCall(() => __wjs2_rsa_encrypt(hash, k.__material, dataB, label)));
-    }
-    if (!isPublic && !isEncrypt) {
-      // 10f crypto二轮：混合哈希解码（同上）。
-      if (mixedHash) {
-        const det = __rsaDetailsFromMaterial(k.type, k.__material);
-        if (det !== null && __OAEP_HLEN[hash] !== undefined) {
-          const em = Buffer.from(__cryptCall(() => __wjs2_rsa_raw(k.__material, dataB, 1)));
-          return __oaepMixedDecode(hash, mgfHash, det.modulusLength / 8, em, label);
-        }
-      }
-      if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep(k.__material, dataB, label, 0)));
-      }
-      return Buffer.from(__cryptCall(() => __wjs2_rsa_decrypt(hash, k.__material, dataB, label)));
-    }
-    // 10f crypto二轮：私钥加密（OAEP-SHA1 反向 native；SHA-2 系另案）。
-    if (!isPublic && isEncrypt) {
-      if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep_flip(k.__material, dataB, label, 1)));
-      }
-      const err = new Error("RSA privateEncrypt not supported");
-      err.code = "ERR_NOT_SUPPORTED";
-      throw err;
-    }
-    // 10f crypto二轮：公钥解密（同上）。
-    if (isPublic && !isEncrypt) {
-      if (hash === "SHA-1") {
-        return Buffer.from(__cryptCall(() => __wjs2_node_rsa_oaep_flip(k.__material, dataB, label, 0)));
-      }
-      const err = new Error("RSA publicDecrypt not supported");
-      err.code = "ERR_NOT_SUPPORTED";
-      throw err;
-    }
-  }
-  if (padding === 1) {
-    if (isPublic && isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs2_rsa_encrypt_v15(k.__material, dataB)));
-    }
-    if (!isPublic && !isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs2_rsa_decrypt_v15(k.__material, dataB)));
-    }
-    // 10f crypto二轮：v1.5 反向 native。
-    if (!isPublic && isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs2_rsa_v15_flip(k.__material, dataB, 1)));
-    }
-    if (isPublic && !isEncrypt) {
-      return Buffer.from(__cryptCall(() => __wjs2_rsa_v15_flip(k.__material, dataB, 0)));
-    }
-  }
-  // 10f crypto二轮：NO_PADDING 裸运算（3；私钥 d 次幂/公钥 e 次幂）。
-  if (padding === 3) {
-    return Buffer.from(__cryptCall(() => __wjs2_rsa_raw(k.__material, dataB, isPublic ? 0 : 1)));
-  }
-  const err = new Error(`Unsupported RSA padding ${padding} for this operation`);
-  err.code = "ERR_NOT_SUPPORTED";
-  throw err;
-}
-export function publicEncrypt(key, data) { return __rsaCrypt(key, data, true, true); }
-export function privateDecrypt(key, data) { return __rsaCrypt(key, data, false, false); }
-export function privateEncrypt(key, data) { return __rsaCrypt(key, data, false, true); }
-export function publicDecrypt(key, data) { return __rsaCrypt(key, data, true, false); }
-
-class ECDHImpl {
-  constructor(curve) {
-    this.__curve = __normCurve(curve);
-    if (this.__curve !== "P-256" && this.__curve !== "P-384" && this.__curve !== "P-521" && this.__curve !== "secp256k1") {
-      const err = new Error(`ECDH curve ${curve} not supported (P-256/384/521/secp256k1)`);
-      err.code = "ERR_NOT_SUPPORTED";
-      throw err;
-    }
-    this.__priv = null;
-    this.__pub = null;
-  }
-  generateKeys() {
-    this.__priv = __cryptCall(() => __wjs2_ec_generate(this.__curve));
-    this.__pub = __cryptCall(() => __wjs2_ec_public(this.__curve, this.__priv));
-    return this.getPublicKey();
-  }
-  getPublicKey(encoding, format) {
-    if (this.__pub === null) {
-      const err = new Error("ECDH keys not generated");
-      err.code = "ERR_CRYPTO_INVALID_STATE";
-      throw err;
-    }
-    const parts = JSON.parse(__cryptCall(() => __wjs2_ec_jwk_pub(this.__curve, this.__pub)));
-    const x = __b64urlDec(parts.x), y = __b64urlDec(parts.y);
-    const raw = new Uint8Array(1 + x.length + y.length);
-    raw[0] = 4; raw.set(x, 1); raw.set(y, 1 + x.length);
-    if (format === "der" || format === "pem") return this.__pubToDer(format);
-    if (encoding === undefined) return Buffer.from(raw);
-    return Buffer.from(raw).toString(encoding);
-  }
-  __pubToDer(format) {
-    if (format === "der") return Buffer.from(this.__pub);
-    return __pemEncode("PUBLIC KEY", this.__pub);
-  }
-  getPrivateKey(encoding) {
-    if (this.__priv === null) {
-      const err = new Error("ECDH keys not generated");
-      err.code = "ERR_CRYPTO_INVALID_STATE";
-      throw err;
-    }
-    const size = __curveSize(this.__curve);
-    const parts = JSON.parse(__cryptCall(() => __wjs2_ec_jwk(this.__curve, this.__priv, this.__pub)));
-    const d = __b64urlDec(parts.d);
-    const out = new Uint8Array(size);
-    out.set(d, size - d.length);
-    if (encoding === undefined) return Buffer.from(out);
-    return Buffer.from(out).toString(encoding);
-  }
-  setPrivateKey(priv) {
-    const scalar = __cryptBytes(priv, "private key");
-    this.__priv = __cryptCall(() => __wjs2_ec_import_priv(this.__curve, scalar));
-    this.__pub = __cryptCall(() => __wjs2_ec_public(this.__curve, this.__priv));
-    return this;
-  }
-  computeSecret(peer, inputEncoding, outputEncoding) {
-    if (this.__priv === null) {
-      const err = new Error("ECDH keys not generated");
-      err.code = "ERR_CRYPTO_INVALID_STATE";
-      throw err;
-    }
-    let peerB = (typeof peer === "string") ? __cryptBytes(peer, "peer", inputEncoding) : __cryptBytes(peer, "peer");
-    let peerDer;
-    if (peerB.length > 0 && peerB[0] === 4) {
-      // 裸非压缩点 → 经 import 转 SPKI
-      const size = (peerB.length - 1) / 2;
-      peerDer = __cryptCall(() => __wjs2_ec_import_pub(this.__curve, peerB.slice(1, 1 + size), peerB.slice(1 + size)));
-    } else {
-      peerDer = peerB;
-    }
-    const secret = __cryptCall(() => __wjs2_ecdh_derive(this.__curve, this.__priv, peerDer));
-    if (outputEncoding === undefined) return Buffer.from(secret);
-    return Buffer.from(secret).toString(outputEncoding);
-  }
-}
-export function createECDH(curve, format) { return new ECDHImpl(curve); }
-
-// 10f crypto首轮：真机 `crypto.ECDH(...)` 可无 new 调用（无废弃警告）。
-function ECDH(...args) { return new ECDHImpl(...args); }
-Object.setPrototypeOf(ECDH, ECDHImpl);
-ECDH.prototype = ECDHImpl.prototype;
-ECDH.prototype.constructor = ECDH;
-

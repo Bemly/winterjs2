@@ -71,7 +71,7 @@ const x = createDiffieHellmanGroup("modp14"); x.generateKeys();
 const y = createDiffieHellmanGroup("modp14"); y.generateKeys();
 const sx = x.computeSecret(y.getPublicKey());
 console.log("dh", sx.equals(y.computeSecret(x.getPublicKey())) && sx.length === 256);
-console.log("dhprime", x.getPrime().length === 256 && x.verifyError() === 0);
+console.log("dhprime", x.getPrime().length === 256 && x.verifyError === 0);
 "#,
     );
     assert!(out.contains("oaep true"), "out: {out}");
@@ -97,11 +97,12 @@ try { generateKeyPairSync("dsa", {}); console.log("dsa", false); } catch (e) { c
 try { createECDH("secp256k1"); console.log("k1", true); } catch (e) { console.log("k1", false); }
 // 10f crypto二轮翻转（真机口径）：modp1 已支持（768B 素数），旧拒绝系伪语义。
 console.log("modp1", createDiffieHellmanGroup("modp1").getPrime("buffer").length === 96);
-try { createDiffieHellmanGroup("modp99"); } catch (e) { console.log("modp99", e.code === "ERR_NOT_SUPPORTED"); }
-// 10f crypto首轮翻转（真机口径）：数值位长形同步生成素数（旧 ERR_NOT_SUPPORTED 系伪语义）。
-console.log("dhsize", createDiffieHellman(512).getPrime("buffer").length === 64);
+try { createDiffieHellmanGroup("modp99"); } catch (e) { console.log("modp99", e.code === "ERR_CRYPTO_UNKNOWN_DH_GROUP"); }
+// 真机口径：数值位长形 <512 即 ARG_VALUE（paramgen 下限；256/511 行钉住），
+// 安全素数生成慢（debug 分钟级），单元侧仅断言校验门（成功态走 sweep/探针）。
+try { createDiffieHellman(256); console.log("dhsize-small", false); } catch (e) { console.log("dhsize-small", e.code === "ERR_INVALID_ARG_VALUE"); }
 const p = generatePrimeSync(64, { checks: 3 });
-console.log("gen", p.length === 8 && checkPrimeSync(p, { checks: 3 }) === true);
+console.log("gen", p.byteLength === 8 && checkPrimeSync(p, { checks: 3 }) === true);
 try { console.log("bigint", typeof generatePrimeSync(64, { bigint: true }) === "bigint"); } catch (e) { console.log("bigint", false); }
 try { sign("nope", Buffer.from("m"), generateKeyPairSync("ed25519").privateKey); } catch (e) { console.log("edalg", e.code === "ERR_CRYPTO_INVALID_DIGEST"); }
 "#,
@@ -112,10 +113,47 @@ try { sign("nope", Buffer.from("m"), generateKeyPairSync("ed25519").privateKey);
     assert!(out.contains("k1 true"), "out: {out}");
     assert!(out.contains("modp1 true"), "out: {out}");
     assert!(out.contains("modp99 true"), "out: {out}");
-    assert!(out.contains("dhsize true"), "out: {out}");
+    assert!(out.contains("dhsize-small true"), "out: {out}");
     assert!(out.contains("gen true"), "out: {out}");
     assert!(out.contains("bigint true"), "out: {out}");
     assert!(out.contains("edalg true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn crypto_dh_verify_flags() {
+    // 修小 dh-curves 件（真机逐项钉死）：位掩码或组合、BAD_GENERATOR 门限、
+    // INVALID_KEYLEN 分级、keyEncoding 顺延、常量值。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import crypto, { createDiffieHellman, createDiffieHellmanGroup, generateKeyPairSync } from "node:crypto";
+console.log("consts", crypto.constants.DH_CHECK_P_NOT_PRIME === 1 && crypto.constants.DH_CHECK_P_NOT_SAFE_PRIME === 2 && crypto.constants.DH_UNABLE_TO_CHECK_GENERATOR === 4 && crypto.constants.DH_NOT_SUITABLE_GENERATOR === 8);
+console.log("f17", createDiffieHellman(Buffer.from("11", "hex"), 2).verifyError === 130);
+console.log("f23g23", createDiffieHellman(Buffer.from("17", "hex"), 23).verifyError === 136);
+console.log("f23g2", createDiffieHellman(Buffer.from("17", "hex"), 2).verifyError === 128);
+try { createDiffieHellman(Buffer.from("17", "hex"), 1); console.log("badgen", false); } catch (e) { console.log("badgen", e.code === "ERR_OSSL_DH_BAD_GENERATOR"); }
+const g = createDiffieHellmanGroup("modp14");
+g.generateKeys();
+console.log("gverr", g.verifyError === 0);
+try { g.computeSecret(""); console.log("small", false); } catch (e) { console.log("small", e.code === "ERR_CRYPTO_INVALID_KEYLEN" && e.message === "Supplied key is too small"); }
+try { g.computeSecret(g.getPrime()); console.log("large", false); } catch (e) { console.log("large", e.code === "ERR_CRYPTO_INVALID_KEYLEN" && e.message === "Supplied key is too large"); }
+const p1 = g.getPrime("buffer");
+const dh2 = createDiffieHellman(p1, "buffer");
+console.log("keyenc", dh2.verifyError === 0 && dh2.getPrime("buffer").equals(p1));
+console.log("bufcase", (() => { try { g.getPrime("BUFFER"); return false; } catch (e) { return e.code === "ERR_UNKNOWN_ENCODING"; } })());
+try { generateKeyPairSync("dh"); console.log("dhnoopt", false); } catch (e) { console.log("dhnoopt", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { generateKeyPairSync("dh", { group: "nope" }); console.log("dhgrp", false); } catch (e) { console.log("dhgrp", e.code === "ERR_CRYPTO_UNKNOWN_DH_GROUP" && e.message === "Unknown DH group"); }
+try { generateKeyPairSync("dh", {}); console.log("dhmiss", false); } catch (e) { console.log("dhmiss", e.code === "ERR_MISSING_OPTION"); }
+const dhkp = generateKeyPairSync("dh", { group: "modp14" });
+console.log("dhdet", JSON.stringify(dhkp.publicKey.asymmetricKeyDetails) === "{}");
+"#,
+    );
+    for tag in ["consts", "f17", "f23g23", "f23g2", "badgen", "gverr", "small", "large", "keyenc", "bufcase", "dhnoopt", "dhgrp", "dhmiss", "dhdet"] {
+        assert!(out.contains(&format!("{tag} true")), "out: {out}");
+    }
     dir.close().unwrap();
 }
 

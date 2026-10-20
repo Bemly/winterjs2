@@ -39,6 +39,10 @@ class AsymmetricKeyObject extends KeyObject {
         s.keyType === "x448" || s.keyType === "ed448") {
       return {};
     }
+    // DH 系（真机口径：空对象，非 undefined）。
+    if (s.keyType === "dh") {
+      return {};
+    }
     // PQC 系（pqc-keygen-ml-dsa 套件 deepStrictEqual 口径）：ml/slh 一律 {}。
     if (s.keyType.startsWith("ml-kem-") || s.keyType.startsWith("ml-dsa-") ||
         s.keyType.startsWith("slh-dsa-")) {

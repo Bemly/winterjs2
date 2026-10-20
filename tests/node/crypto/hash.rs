@@ -90,6 +90,67 @@ console.log("tse", timingSafeEqual(Buffer.from([1, 2]), Buffer.from([1, 2])) ===
 }
 
 #[test]
+fn crypto_random_assertsize() {
+    // 真机 assertSize 口径（random 套件钉死）：浮点截断、NaN 越界、SAB 填充、
+    // 伪随机别名描述符（enumerable 假）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { randomBytes, randomFillSync } from "node:crypto";
+console.log("trunc", randomBytes(101.2).length === 101);
+try { randomBytes(NaN); console.log("nan", false); } catch (e) { console.log("nan", e.code === "ERR_OUT_OF_RANGE" && /Received NaN$/.test(e.message)); }
+const sab = new SharedArrayBuffer(8);
+randomFillSync(sab);
+console.log("sab", sab.byteLength === 8);
+import c from "node:crypto";
+console.log("alias-shape", ["pseudoRandomBytes", "prng", "rng"].every((f) => {
+  const dd = Object.getOwnPropertyDescriptor(c, f);
+  return dd && dd.configurable === true && dd.enumerable === false;
+}));
+try { randomBytes("4"); console.log("strsize", false); } catch (e) { console.log("strsize", e.code === "ERR_INVALID_ARG_TYPE" && /Received type string \('4'\)/.test(e.message)); }
+"#,
+    );
+    assert!(out.contains("trunc true"), "out: {out}");
+    assert!(out.contains("nan true"), "out: {out}");
+    assert!(out.contains("sab true"), "out: {out}");
+    assert!(out.contains("alias-shape true"), "out: {out}");
+    assert!(out.contains("strsize true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn crypto_oneshot_pbkdf2_prime_codes() {
+    // 修小校验码件（oneshot/pbkdf2/prime 套件行钉死）：options 形、ARG_TYPE
+    // helper、整数/越界码、ArrayBuffer 回shape。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { hash, pbkdf2Sync, generatePrimeSync, checkPrimeSync } from "node:crypto";
+try { hash("sha256", "x", 0); console.log("hnum", false); } catch (e) { console.log("hnum", e.code === "ERR_INVALID_ARG_TYPE"); }
+console.log("hobj", hash("sha256", "abc", { outputEncoding: "hex" }).slice(0, 8) === "ba7816bf");
+console.log("hbuf", Buffer.isBuffer(hash("sha256", "abc", "BUFFER")));
+try { hash("sha256", "x", "nope"); console.log("hbad", false); } catch (e) { console.log("hbad", e.code === "ERR_INVALID_ARG_VALUE"); }
+try { pbkdf2Sync("p", "s", "1", 32, "sha256"); console.log("itstr", false); } catch (e) { console.log("itstr", e.code === "ERR_INVALID_ARG_TYPE" && /Received type string \('1'\)/.test(e.message)); }
+try { pbkdf2Sync("p", "s", 1.5, 32, "sha256"); console.log("itfloat", false); } catch (e) { console.log("itfloat", e.code === "ERR_OUT_OF_RANGE" && /must be an integer/.test(e.message)); }
+try { pbkdf2Sync("p", "s", 1, -1, "sha256"); console.log("kneg", false); } catch (e) { console.log("kneg", e.code === "ERR_OUT_OF_RANGE" && /must be >= 0/.test(e.message)); }
+const gp = generatePrimeSync(32);
+console.log("pbuf", gp instanceof ArrayBuffer && gp.byteLength === 4 && checkPrimeSync(gp) === true);
+try { generatePrimeSync(32, { add: 2n ** 64n }); console.log("addhuge", false); } catch (e) { console.log("addhuge", e.code === "ERR_OUT_OF_RANGE" && e.message === "invalid options.add"); }
+try { checkPrimeSync(13); console.log("cpnum", false); } catch (e) { console.log("cpnum", e.code === "ERR_INVALID_ARG_TYPE"); }
+try { checkPrimeSync(-5n); console.log("cpneg", false); } catch (e) { console.log("cpneg", e.code === "ERR_OUT_OF_RANGE" && /Received -5n$/.test(e.message)); }
+"#,
+    );
+    for tag in ["hnum", "hobj", "hbuf", "hbad", "itstr", "itfloat", "kneg", "pbuf", "addhuge", "cpnum", "cpneg"] {
+        assert!(out.contains(&format!("{tag} true")), "out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn crypto_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

@@ -180,7 +180,10 @@ pub unsafe extern "C" fn prime_check(
     true
 }
 
-/// `__wjs2_prime_gen(bitsNum, checksNum, safeNum)` → 素数 Uint8Array（定长）。
+/// `__wjs2_prime_gen(bitsNum, checksNum, safeNum[, addU8[, remU8]])` →
+/// 素数 Uint8Array（定长）。add/rem 约束（node random.js 口径）：
+/// 候选 ≡ rem (mod add)，类内拒绝采样（均匀）；单候选类确定性命中
+///（(4,15,13)→13）；空类收敛失败（真机此处 hang，本仓报错，套件未覆盖）。
 pub unsafe extern "C" fn prime_gen(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -194,8 +197,8 @@ pub unsafe extern "C" fn prime_gen(
         return false;
     }
     let bits = frame.arg(0).to_number() as usize;
-    if bits < 32 || bits > 4096 {
-        report_error(&mut cx, "ERR_OUT_OF_RANGE: prime bit length out of range (32..4096)");
+    if bits < 2 || bits > 4096 {
+        report_error(&mut cx, "ERR_OUT_OF_RANGE: prime bit length out of range (2..4096)");
         return false;
     }
     let checks = if frame.argc() > 1 && frame.arg(1).is_number() {
@@ -204,28 +207,99 @@ pub unsafe extern "C" fn prime_gen(
         64
     };
     let safe = frame.argc() > 2 && frame.arg(2).is_number() && frame.arg(2).to_number() != 0.0;
+    // add/rem 约束（JS 侧已做 add<2^bits、rem<add 预检；此处只做解析 + 零保护）。
+    let mut add: Option<rsa::BigUint> = None;
+    let mut rem: Option<rsa::BigUint> = None;
+    if frame.argc() > 3 && !frame.arg(3).is_undefined() && !frame.arg(3).is_null() {
+        let Some(b) = view_bytes(&mut cx, frame.arg(3), "prime add") else {
+            return false;
+        };
+        let a = rsa::BigUint::from_bytes_be(&b);
+        if a != rsa::BigUint::from(0u32) {
+            add = Some(a);
+        }
+    }
+    if frame.argc() > 4 && !frame.arg(4).is_undefined() && !frame.arg(4).is_null() {
+        let Some(b) = view_bytes(&mut cx, frame.arg(4), "prime rem") else {
+            return false;
+        };
+        rem = Some(rsa::BigUint::from_bytes_be(&b));
+    }
     let len = bits.div_ceil(8);
+    let try_prime = |n: &rsa::BigUint| -> bool {
+        if !is_prime(n, checks) {
+            return false;
+        }
+        if safe {
+            let half = (n - rsa::BigUint::from(1u32)) >> 1usize;
+            if !is_prime(&half, checks) {
+                return false;
+            }
+        }
+        true
+    };
+    if let Some(add) = add {
+        let rem = rem.unwrap_or(if safe {
+            rsa::BigUint::from(3u32)
+        } else {
+            rsa::BigUint::from(1u32)
+        });
+        let one = rsa::BigUint::from(1u32);
+        let base = &one << (bits - 1);
+        let top = (&one << bits) - &one;
+        // lo = [2^(bits-1), 2^bits) 内最小 ≡rem(mod add) 元（全加式，无下溢）。
+        let bmod = &base % &add;
+        let rmod = &rem % &add;
+        let lo = &base + ((&rmod + &add - &bmod) % &add);
+        if lo > top {
+            report_error(&mut cx, "OperationError: prime generation failed to converge");
+            return false;
+        }
+        let count = (&top - &lo) / &add + &one;
+        let count_bytes = count.to_bytes_be();
+        let klen = count_bytes.len().max(1);
+        for _ in 0..(bits as u64 * 1000 + 1000) {
+            let mut kb = vec![0u8; klen];
+            if getrandom::fill(&mut kb).is_err() {
+                report_error(&mut cx, "OperationError: cannot get random values");
+                return false;
+            }
+            let k = rsa::BigUint::from_bytes_be(&kb) % &count;
+            let n = &lo + &k * &add;
+            if try_prime(&n) {
+                return set_rval_bytes(&mut cx, &frame, &pad_be(&n.to_bytes_be(), len));
+            }
+        }
+        report_error(&mut cx, "OperationError: prime generation failed to converge");
+        return false;
+    }
     let mut cand = vec![0u8; len];
+    // 顶两位按 OpenSSL BN_RAND_TOP_TWO 置位（顶字节整字节即 0xC0；3 位即 7，
+    // prime 套件 generatePrimeSync(3)===7n 行钉住；旧单顶位记档修）。
+    let top_bits = bits % 8;
     for _ in 0..(bits as u64 * 1000 + 1000) {
         if getrandom::fill(&mut cand).is_err() {
             report_error(&mut cx, "OperationError: cannot get random values");
             return false;
         }
-        // 顶位置位（定长）+ 奇数
-        cand[0] |= 0x80;
+        if top_bits == 0 {
+            cand[0] |= 0xC0;
+        } else if top_bits == 1 {
+            cand[0] &= 0x01;
+            cand[0] |= 0x01;
+            if len > 1 {
+                cand[1] |= 0x80;
+            }
+        } else {
+            cand[0] &= (1u8 << top_bits) - 1;
+            cand[0] |= 0b11 << (top_bits - 2);
+        }
         let last = cand.len() - 1;
         cand[last] |= 1;
         let n = rsa::BigUint::from_bytes_be(&cand);
-        if !is_prime(&n, checks) {
-            continue;
+        if try_prime(&n) {
+            return set_rval_bytes(&mut cx, &frame, &pad_be(&n.to_bytes_be(), len));
         }
-        if safe {
-            let half = (&n - rsa::BigUint::from(1u32)) >> 1usize;
-            if !is_prime(&half, checks) {
-                continue;
-            }
-        }
-        return set_rval_bytes(&mut cx, &frame, &pad_be(&n.to_bytes_be(), len));
     }
     report_error(&mut cx, "OperationError: prime generation failed to converge");
     false

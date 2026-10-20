@@ -74,9 +74,8 @@ export const constants = {
   RSA_PSS_SALTLEN_DIGEST: -1, RSA_PSS_SALTLEN_MAX_SIGN: -2, RSA_PSS_SALTLEN_AUTO: -2,
   RSA_PSS_SALTLEN_AUTO_DIGEST_MAX: -2,
   POINT_CONVERSION_COMPRESSED: 2, POINT_CONVERSION_UNCOMPRESSED: 4, POINT_CONVERSION_HYBRID: 6,
-  DH_CHECK_P_NOT_PRIME: 2, DH_CHECK_P_NOT_SAFE_PRIME: 4,
-  DH_UNABLE_TO_CHECK_GENERATOR: 8, DH_NOT_SUITABLE_GENERATOR: 16,
-  DH_CHECK_Q_NOT_PRIME: 1, DH_CHECK_INVALID_Q_VALUE: 32, DH_CHECK_INVALID_J_VALUE: 64,
+  DH_CHECK_P_NOT_PRIME: 1, DH_CHECK_P_NOT_SAFE_PRIME: 2,
+  DH_UNABLE_TO_CHECK_GENERATOR: 4, DH_NOT_SUITABLE_GENERATOR: 8,
   defaultCipherList: "ECDHE+AESGCM:ECDHE+CHACHA20",
 };
 export function getFips() { return 0; }
@@ -89,7 +88,7 @@ export function secureHeapUsed() { return { total: 0, min: 0, max: 0, used: 0 };
 const __KDF_HASHES = ["sha1", "sha256", "sha384", "sha512", "md5"];
 function __kdfHash(digest) {
   if (typeof digest !== "string") {
-    const err = new TypeError(`The "digest" argument must be of type string. Received type ${typeof digest}`);
+    const err = new TypeError(`The "digest" argument must be of type string.${__argTypeHelper(digest)}`);
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
@@ -97,24 +96,66 @@ function __kdfHash(digest) {
   const table = { "sha1": "SHA-1", "sha256": "SHA-256", "sha384": "SHA-384", "sha512": "SHA-512", "md5": "MD5" };
   const norm = table[flat];
   if (norm === undefined) {
-    const err = new Error(`Invalid digest: ${digest}`);
+    // 真机口径：ERR_CRYPTO_INVALID_DIGEST 系 TypeError（pbkdf2 套件 md55 行钉住）。
+    const err = new TypeError(`Invalid digest: ${digest}`);
     err.code = "ERR_CRYPTO_INVALID_DIGEST";
     throw err;
   }
   return norm;
 }
-export function pbkdf2Sync(password, salt, iterations, keylen, digest) {
-  const it = Number(iterations);
-  if (!Number.isInteger(it) || it < 1 || it > 2147483647) {
+function __pbkdf2Args(password, salt, iterations, keylen, digest) {
+  // node 口径（pbkdf2.js check）：digest→password→salt→iterations→keylen 序；
+  // validateInt32 双件：非数即 ARG_TYPE（helper 尾缀），非整数即
+  // OUT_OF_RANGE-integer，越界即 OUT_OF_RANGE-range。
+  const h = __kdfHash(digest);
+  const pw = __cryptBytes(password, "password");
+  const sa = __cryptBytes(salt, "salt");
+  if (typeof iterations !== "number") {
+    const err = new TypeError(`The "iterations" argument must be of type number.${__argTypeHelper(iterations)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (typeof keylen !== "number") {
+    const err = new TypeError(`The "keylen" argument must be of type number.${__argTypeHelper(keylen)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const it = iterations;
+  if (!Number.isInteger(it)) {
+    const err = new RangeError(`The value of "iterations" is out of range. It must be an integer. Received ${iterations}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (it < 1 || it > 2147483647) {
     const err = new RangeError(`The value of "iterations" is out of range. It must be >= 1 && <= 2147483647. Received ${iterations}`);
     err.code = "ERR_OUT_OF_RANGE";
     throw err;
   }
-  const out = __cryptCall(() => __wjs2_kdf_pbkdf2(
-    __kdfHash(digest), __cryptBytes(password, "password"), __cryptBytes(salt, "salt"), it, Number(keylen)));
+  if (!Number.isInteger(keylen)) {
+    const err = new RangeError(`The value of "keylen" is out of range. It must be an integer. Received ${keylen}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (keylen < 0 || keylen > 2147483647) {
+    const err = new RangeError(`The value of "keylen" is out of range. It must be >= 0 && <= 2147483647. Received ${keylen}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  return [h, pw, sa, it, keylen];
+}
+export function pbkdf2Sync(password, salt, iterations, keylen, digest) {
+  const [h, pw, sa, it, kl] = __pbkdf2Args(password, salt, iterations, keylen, digest);
+  const out = __cryptCall(() => __wjs2_kdf_pbkdf2(h, pw, sa, it, kl));
   return Buffer.from(out);
 }
 export function pbkdf2(password, salt, iterations, keylen, digest, callback) {
+  // node 口径：digest 省略顺延（digest 为函数即回调）；参数全同步校验通过才排队
+  //（pbkdf2 套件 mustNotCall 行钉住），仅 KDF 本体异步。
+  if (typeof digest === "function") {
+    callback = digest;
+    digest = undefined;
+  }
+  const args = __pbkdf2Args(password, salt, iterations, keylen, digest);
   if (typeof callback !== "function") {
     const err = new TypeError("pbkdf2 requires a callback for async form");
     err.code = "ERR_INVALID_ARG_TYPE";
@@ -122,7 +163,7 @@ export function pbkdf2(password, salt, iterations, keylen, digest, callback) {
   }
   queueMicrotask(() => {
     try {
-      callback(null, pbkdf2Sync(password, salt, iterations, keylen, digest));
+      callback(null, Buffer.from(__cryptCall(() => __wjs2_kdf_pbkdf2(args[0], args[1], args[2], args[3], args[4]))));
     } catch (e) {
       callback(e);
     }

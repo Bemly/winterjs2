@@ -320,9 +320,12 @@ try { createCipheriv("aes-128-ecb", ek); console.log("ecb-ivundef", "NO-THROW");
 catch (e) { console.log("ecb-ivundef", e.code); }
 try { createCipheriv("aes-128-ecb", Buffer.alloc(17), null); console.log("ecb-keylen", "NO-THROW"); }
 catch (e) { console.log("ecb-keylen", e.code); }
-// DH 数值形 + prime buffer 形
-const dh1 = createDiffieHellman(256);
-console.log("dh-num", dh1.getPrime("buffer").length === 32);
+// DH 数值形（<512 即 ARG_VALUE，paramgen 下限）+ 小素数/prime buffer 形
+//（真机口径；大位长安全素数生成慢，单元侧用小素数覆盖形态）。
+try { createDiffieHellman(256); console.log("dh-num-small", false); }
+catch (e) { console.log("dh-num-small", e.code === "ERR_INVALID_ARG_VALUE"); }
+const dh1 = createDiffieHellman(Buffer.from("17", "hex"));
+console.log("dh-num", dh1.getPrime("buffer").length === 1 && dh1.verifyError === 128);
 const dh2 = crypto.DiffieHellman(dh1.getPrime("buffer"), "buffer");
 console.log("cw-dh", dh2 instanceof crypto.DiffieHellman);
 // 'buffer' 编码与二次 digest 形态
@@ -370,6 +373,7 @@ setTimeout(() => console.log("dep-warn", warns.includes("DEP0179"), warns.includ
     assert!(out.contains("ecb-ivbad ERR_CRYPTO_INVALID_IV"), "out: {out}");
     assert!(out.contains("ecb-ivundef ERR_INVALID_ARG_TYPE"), "out: {out}");
     assert!(out.contains("ecb-keylen ERR_CRYPTO_INVALID_KEYLEN"), "out: {out}");
+    assert!(out.contains("dh-num-small true"), "out: {out}");
     assert!(out.contains("dh-num true"), "out: {out}");
     assert!(out.contains("bufenc true"), "out: {out}");
     assert!(out.contains("bufenc2 true"), "out: {out}");

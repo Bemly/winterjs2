@@ -3030,3 +3030,47 @@ G1/G2/G3/G9 已收官。）
 - Top10（base19d 差额）：http2-107、tls-94、fs-45、http-41、crypto-40、
   worker-32、webcrypto-22、diagnostics-21、cluster-21、vm-17。
   （child 13 掉出 Top10；net 93% 守住。）
+## 2026-10-21 crypto 修小9落地（lane/console；前任残留接盘 + 纠偏，b6cbb55 批次）
+
+> 范围：定级表修小 9 项（oneshot/pbkdf2/prime/keygen/random/dh-buffer/dh-curves/aes-tag/DEP0031/sign-verify/sec-level）。
+> 动作：残留 diff 逐 hunk 审查（9 改 +1 新文件皆在定级表内；无 secrets；命名守门过），
+> 铁律 4.43（lock digest 双轨 0.10.7+0.11.3、sha2 双轨、rsa 0.9.10、hmac 0.13 确认，
+> 无新依赖）先查；4.54/4.135 逐件真机（node 26.8.1）双向钉死。
+> 前任残留 6 处纠偏（真机实测为准翻转，均在定级表意图内）：
+> 1. DH 常量错位（2/4/8/16→1/2/4/8；Q/J 常量 node 无，删）。
+> 2. verifyError 单值早返→或组合（130/136/137/139 全表钉死；p=2 偶数判 1；
+>    q 仅素数 p 查；<512 置 128；g≥p-1 置 8）。
+> 3. BAD_GENERATOR：g≥p 抛→g≤1 抛（crypto_dh.cc 实测）+ OSSL3 限 `bits(p)≥512 && g≥p` 才抛。
+> 4. buffer 编码大小写不敏感→严格（DH/ECDH encode 仅精确 'buffer'/falsy 回 Buffer）。
+> 5. sign library 预触碰→错误构造期 `=` 赋值（valid-key+setter 不抛、errorStack 永不碰，sv5 探针钉死）。
+> 6. 未知 DH 组码/文案（ERR_NOT_SUPPORTED+后缀→ERR_CRYPTO_UNKNOWN_DH_GROUP/'Unknown DH group'）。
+> 新增对齐（同批意图内）：hash options 对象形 + XOF length、random assertSize（截断/NaN/SAB/pseudoRandomBytes/prng/rng 描述符）、pbkdf2/checkPrime/generatePrime/randomFill 同步校验、DH（keyEncoding 顺延/number 形安全素数+512 门/INVALID_KEYLEN 分级/generateKeys 编码/prime ArrayBuffer/64MB 门）、keygen（dh/rsa-pss/ec 全校验）、sign-verify（padding/saltLength/dsaEncoding 门、PSS salt 消解+verify AUTO 试探、RSA padding 门、key null 门）、ECDH（format/压缩点/setPublicKey 校验+DER 存/存对检查/INVALID_PUBLIC_KEY/未初始化文案/DEP0031 warn-once）、subtleOp DOMException 名、AES-GCM params 包进 subtleOp。
+> 证据（本机二进制，--run 直跑 node-test 文件）：
+> - 绿：random、oneshot-hash、pbkdf2、prime、dh-curves、ecdh-setpublickey-deprecation、sec-level、webcrypto-aes-decrypt-tag-too-small（8 件）。
+> - keygen：校验全部通过，转慢 RSA-4096 生成（单次 ~44s debug；文件十余次，本地后台求正确性，sweep 25s 必 TIMEOUT，属环境性能墙，非语义红）。
+> - sign-verify：修小断言全过；剩 EdDSA-context 段（559 行起，eddsa-variants 修中面，需 ed25519-ctx/ed448 原生 + RFC8032 向量，未动）。
+> - test-crypto-dh.js：18 行 number-form 需 1024-bit 安全素数（OpenSSL 实测安全素数；我方 naive 搜索 ~12min debug，sweep 必 TIMEOUT）。已按真机实现（safe:true + 全校验门），正确性经小尺寸/群组探针逐项验证；要翻绿需快速素数底座（openssl crate=新依赖待批，或固定参数表=语义偏离待批），提请 parent 定夺。
+> - 黑盒：tests/node/crypto 29/29 绿（含新增 assertSize/options/prime/DH-flag 三件）；冒烟 5/5；check-naming + check-lines 双守门绿（含 split-js 切 crypto_sign_rsacrypt.js）。
+> - 备注：中途遇 SpiderMonkey bundle 解析惊魂，实为构建竞态 stale 二进制（V8 过 + 重编即好）；教训：改 JS 后先验二进制新鲜度（mtime + strings 标记）再二分，记 4.328。
+## 2026-10-21 diagnostics_channel 域定级（base19d Top10，21红=修2+偏离18+另案1）
+
+- 范围：base19d diagnostics n=35 绿=14，红 21（DIFF 19 + TIMEOUT 3→
+  实为 DIFF 21 行：http2×18 + bind-store + promise-run-stores + udp）。
+  Bun 🟡（缺 bounded/多数组内置通道，本仓已超 Bun，无门控）。
+- 修 2（待 P0 开码，另行确认分支）：
+  ① bind-store（base19b 绿→19c 红，真回归）：CJS `'use strict'` 前导
+  （首行/注释后皆然）被忽略，strict 函数 this 装箱成 globalThis
+  （mustCall 链 `this===undefined` 断言炸；最小复现已备：
+  require 的 CJS 对比 node undef/object）。疑凶 vm lane CJS-goal
+  改工（638ee7f/3b6e624 一带），修面 loader。
+  ② udp（昔日绿）：dgram 零插桩，Socket 创建未 publish `udp.socket`
+  通道（mustCall 0 次）。修面 dgram 加一处 publish。
+- 偏离 18（http2×18，http2 lane）：`http2.client/server.stream.*` 需
+  server push（测试断言 push 流头）+ 通道插桩双条件；本仓 push 按
+  R16b B1 bound 禁用（现报 PUSH_DISABLED，旧表 TIMEOUT，同根）。
+  随 push 特性解禁顺带点名，不单开。
+- 另案 1：promise-run-stores（ALS 跨 await/microtask 传播不支持，
+  async_hooks.rs 既有记档，现象未变）。
+- 附带好消息：parity 旧表其余偏离/⏭️行（child-process/http×2/net/
+  module×4/memory-leak/web-locks/promise-unhandled/gc×2）在 base19d
+  均已绿（插桩陆续落地），无需回头。

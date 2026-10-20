@@ -59,6 +59,14 @@ function __checkKeyPairHead(type, options) {
     err.code = "ERR_INVALID_ARG_TYPE";
     throw err;
   }
+  // node 口径：具名族（rsa/rsa-pss/dsa/ec/dh）缺 options 即抛
+  //（keygen 79 行；ed/x25519/x448/ed448 免检走默认 {}）。
+  // __KEYPAIR_NEEDS_OPTS 定义在后，同模块调用时已初始化。
+  if (options === undefined && __KEYPAIR_NEEDS_OPTS.has(type)) {
+    const err = new TypeError(`The "options" argument must be of type object. Received undefined`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
 }
 // `inspect` 近似（真机 util.inspect 口径：串单引号、空数组 `[]`、
 // 空对象 `{}`；非空复合体的空格排版差异另案记档）。
@@ -136,6 +144,11 @@ const __KEY_ENC_TYPES = {
 };
 function __checkKeyPairEncs(keyType, options, publicEncoding, privateEncoding) {
   const sets = __KEY_ENC_TYPES[keyType];
+  // 相容门先行（集合归属之前；已知编码错配即 INCOMPATIBLE，未知编码走 invalid）。
+  for (const [enc, kind] of [[options.publicKeyEncoding, "public"], [options.privateKeyEncoding, "private"], [publicEncoding, "public"], [privateEncoding, "private"]]) {
+    const t = enc !== undefined && enc !== null && typeof enc === "object" ? enc.type : undefined;
+    if (typeof t === "string" && (t === "pkcs1" || t === "sec1")) __checkKeyEncCompatible(keyType, kind, t);
+  }
   __checkKeyEncoding("options.publicKeyEncoding", options.publicKeyEncoding, sets && sets.pub);
   __checkKeyEncoding("options.privateKeyEncoding", options.privateKeyEncoding, sets && sets.priv);
   __checkKeyEncoding("options.publicKeyEncoding", publicEncoding, sets && sets.pub);
@@ -186,9 +199,21 @@ function __checkKeyPairEncs(keyType, options, publicEncoding, privateEncoding) {
       }
     }
   }
+  // DER + cipher 仅 pkcs8 私钥可用（真机口径；keygen 771 行钉住；生成前拦截）。
+  for (const e of [options.publicKeyEncoding, options.privateKeyEncoding, publicEncoding, privateEncoding]) {
+    if (e !== undefined && e !== null && typeof e === "object" && !Array.isArray(e) &&
+        e.format === "der" && e.cipher !== undefined && (e.type === "pkcs1" || e.type === "sec1")) {
+      const err = new Error(`The selected key encoding ${e.type} does not support encryption.`);
+      err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+      throw err;
+    }
+  }
 }
 const __KEYPAIR_TYPES = new Set(["rsa", "rsa-pss", "ec", "ed25519", "x25519", "x448", "ed448",
-  "dsa", "ml-kem-512", "ml-kem-768", "ml-kem-1024", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]);
+  "dsa", "dh", "ml-kem-512", "ml-kem-768", "ml-kem-1024", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"]);
+// node 口径（keygen.js createJob）：具名曲线/密钥对族除 ed/x 系裸跑外一律要
+// options 对象（undefined 即 ARG_TYPE；ed25519/ed448/x25519/x448 走默认分支免检）。
+const __KEYPAIR_NEEDS_OPTS = new Set(["rsa", "rsa-pss", "ec", "dsa", "dh"]);
 function __checkKeyPairTypeKnown(type) {
   if (!__KEYPAIR_TYPES.has(type)) {
     const err = new TypeError(`The argument 'type' must be a supported key type. Received '${type}'`);
@@ -247,6 +272,51 @@ function __checkRsaKeyOptions(options) {
   }
   return { bits, e: Number(e) };
 }
+// rsa-pss 扩展参数校验（真机 keygen.js 口径）：hashAlgorithm 须字符串；
+// saltLength 须 [0, 2^31-1] 整数；async 亦同步抛（keygen 663/679 行钉住）。
+function __checkRsaPssKeyOptions(options) {
+  for (const prop of ["hashAlgorithm", "mgf1HashAlgorithm"]) {
+    const v = options[prop];
+    if (v !== undefined && typeof v !== "string") {
+      const err = new TypeError(
+        `The "options.${prop}" property must be of type string.${__argTypeHelper(v)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+  }
+  // 摘要名有效性（真机口径；keygen 829 行钉住）：hashAlgorithm 走 __kdfHash
+  //（'Invalid digest: X'），mgf1 走专文案（'Invalid MGF1 digest: X'）。
+  if (options.hashAlgorithm !== undefined) __kdfHash(options.hashAlgorithm);
+  if (options.mgf1HashAlgorithm !== undefined) {
+    try {
+      __kdfHash(options.mgf1HashAlgorithm);
+    } catch {
+      const err = new TypeError(`Invalid MGF1 digest: ${options.mgf1HashAlgorithm}`);
+      err.code = "ERR_CRYPTO_INVALID_DIGEST";
+      throw err;
+    }
+  }
+  const sl = options.saltLength;
+  if (sl === undefined) return;
+  if (typeof sl !== "number") {
+    const err = new TypeError(
+      `The "options.saltLength" property must be of type number.${__argTypeHelper(sl)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  if (!Number.isInteger(sl)) {
+    const err = new RangeError(
+      `The value of "options.saltLength" is out of range. It must be an integer. Received ${__inspectRecv(sl)}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+  if (sl < 0 || sl > 2147483647) {
+    const err = new RangeError(
+      `The value of "options.saltLength" is out of range. It must be >= 0 && <= 2147483647. Received ${sl}`);
+    err.code = "ERR_OUT_OF_RANGE";
+    throw err;
+  }
+}
 // DSA 参数校验（真机 keygen.js 口径：modulusLength 必为 uint32 无缺省；
 // divisorLength 缺省 -1（按 modulus 取），显式值走 int32 ≥ 0）。
 function __checkDsaKeyOptions(options) {
@@ -291,11 +361,27 @@ function __checkDsaKeyOptions(options) {
   }
   return { bits, div };
 }
+// 编码-键型相容门（真机口径：相容先于集合归属判定；keygen 728 行钉住）。
+// pkcs1 仅 RSA 系可用；私钥 sec1 仅 EC 可用；与导出侧同文案。
+function __checkKeyEncCompatible(keyType, kind, t) {
+  if (t === "pkcs1" && keyType !== "rsa" && keyType !== "rsa-pss") {
+    const err = new Error("The selected key encoding pkcs1 can only be used for RSA keys.");
+    err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+    throw err;
+  }
+  if (t === "sec1" && kind === "private" && keyType !== "ec") {
+    const err = new Error("The selected key encoding sec1 can only be used for EC keys.");
+    err.code = "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS";
+    throw err;
+  }
+}
 function __genPairSync(type, options) {
-  options = options ?? {};
+  // 头检查先行（缺 options 即抛，见上；默认 {} 在后）。
   __checkKeyPairHead(type, options);
+  options = options ?? {};
   if (type === "rsa" || type === "rsa-pss") {
     const { bits, e } = __checkRsaKeyOptions(options);
+    if (type === "rsa-pss") __checkRsaPssKeyOptions(options);
     const privDer = __cryptCall(() => __wjs2_rsa_generate(bits, e));
     const pubDer = __cryptCall(() => __wjs2_rsa_public(privDer));
     const kt = type === "rsa-pss" ? "rsa-pss" : "rsa";
@@ -340,6 +426,13 @@ function __genPairSync(type, options) {
     // node 口径（keygen-invalid-parameter-encoding-ec 套件）：未知曲线 + jwk
     // 编码即 ERR_CRYPTO_JWK_UNSUPPORTED_CURVE（plain Error），非 jwk 仍走
     // INVALID_CURVE（本机底座造不出该曲线）。
+    // node 口径（keygen 套件 493 行钉住）：namedCurve 非串即 ARG_TYPE
+    //（helper 尾缀），先于曲线名查表。
+    if (typeof options.namedCurve !== "string") {
+      const err = new TypeError(`The "options.namedCurve" property must be of type string.${__argTypeHelper(options.namedCurve)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
     let curve = null;
     try {
       curve = __normCurve(options.namedCurve);
@@ -389,6 +482,26 @@ function __genPairSync(type, options) {
     pub.__detail = priv.__detail;
     return { privateKey: priv, publicKey: pub };
   }
+  if (type === "dh") {
+    // node 口径（keygen.js dh 段）：group/prime/primeLength/generator 互斥组；
+    // primeLength 即生成安全素数参（generator 缺省 2；组复用既有 modp 表）。
+    // 校验全同步（async 亦同步抛，keygen 549/557 行钉住），仅素数生成可异步。
+    const a = __checkDhArgs(options);
+    const primeFinal = a.primeBuf !== null ? a.primeBuf
+      : Buffer.from(generatePrimeSync(a.primeLength, { safe: true }));
+    const r = JSON.parse(__cryptCall(() => __wjs2_dh_genkey(primeFinal, a.genNum, primeFinal.length)));
+    const priv = new PrivateKeyObject("private", "dh", Buffer.from(JSON.stringify({
+      p: primeFinal.toString("base64"), g: a.genNum,
+      y: r.pub, x: r.priv,
+    })));
+    priv.__detail = { primeLength: primeFinal.length * 8 };
+    const pub = new PublicKeyObject("public", "dh", Buffer.from(JSON.stringify({
+      p: primeFinal.toString("base64"), g: a.genNum, y: r.pub,
+    })));
+    pub.__detail = priv.__detail;
+    return { privateKey: priv, publicKey: pub };
+  }
+
   if (type === "ml-kem-512" || type === "ml-kem-768" || type === "ml-kem-1024") {
     // 9i-4：FIPS 203 PQ KEM（真机 generateKey 不收 ml-kem，此处 generateKeyPair 专属）。
     const parts = JSON.parse(__cryptCall(() => __wjs2_mlkem_gen(type)));
@@ -408,6 +521,85 @@ function __genPairSync(type, options) {
   const err = new TypeError(`The argument 'type' must be a supported key type. Received '${type}'`);
   err.code = "ERR_INVALID_ARG_VALUE";
   throw err;
+}
+// DH 参数校验（keygen.js dh 段；sync/async 共用，全同步执行）：
+// 返回 { primeBuf|null, primeLength|0, genNum }；primeLength>0 时调用方再生成安全素数。
+function __checkDhArgs(o) {
+    const pairErr = (a, b) => {
+      const err = new TypeError(`Option "${a}" cannot be used in combination with option "${b}"`);
+      err.code = "ERR_INCOMPATIBLE_OPTION_PAIR";
+      throw err;
+    };
+    const has = (v) => v !== undefined && v !== null;
+    const normGen = (g) => {
+      // node 口径：validateInt32(generator,'options.generator',0)，缺省 2。
+      if (g === undefined || g === null) return 2;
+      if (typeof g !== "number") {
+        const err = new TypeError(`The "options.generator" argument must be of type number.${__argTypeHelper(g)}`);
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      if (!Number.isInteger(g)) {
+        const err = new RangeError(`The value of "options.generator" is out of range. It must be an integer. Received ${g}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+      if (g < 0 || g > 2147483647) {
+        const err = new RangeError(`The value of "options.generator" is out of range. It must be >= 0 && <= 2147483647. Received ${g}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+      return g + 0;
+    };
+    let primeBuf, genNum;
+    if (has(o.group)) {
+      if (has(o.prime)) pairErr("group", "prime");
+      if (has(o.primeLength)) pairErr("group", "primeLength");
+      if (has(o.generator)) pairErr("group", "generator");
+      if (typeof o.group !== "string") {
+        const err = new TypeError(`The "options.group" argument must be of type string.${__argTypeHelper(o.group)}`);
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      const hex = __DH_GROUPS[String(o.group).toLowerCase()];
+      if (hex === undefined) {
+        // 真机口径（keygen.js/Group 共用）：码 ERR_CRYPTO_UNKNOWN_DH_GROUP，
+        // 消息无名后缀（keygen 558 行钉住）。
+        const err = new Error("Unknown DH group");
+        err.code = "ERR_CRYPTO_UNKNOWN_DH_GROUP";
+        throw err;
+      }
+      primeBuf = Buffer.from(hex, "hex");
+      genNum = 2;
+    } else if (has(o.prime)) {
+      if (has(o.primeLength)) pairErr("prime", "primeLength");
+      primeBuf = __cryptBytes(o.prime, "options.prime");
+      genNum = normGen(o.generator);
+    } else if (has(o.primeLength)) {
+      // node 口径：validateInt32(primeLength,'options.primeLength',0)。
+      if (typeof o.primeLength !== "number") {
+        const err = new TypeError(`The "options.primeLength" argument must be of type number.${__argTypeHelper(o.primeLength)}`);
+        err.code = "ERR_INVALID_ARG_TYPE";
+        throw err;
+      }
+      if (!Number.isInteger(o.primeLength)) {
+        const err = new RangeError(`The value of "options.primeLength" is out of range. It must be an integer. Received ${o.primeLength}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+      if (o.primeLength < 0 || o.primeLength > 2147483647) {
+        const err = new RangeError(`The value of "options.primeLength" is out of range. It must be >= 0 && <= 2147483647. Received ${o.primeLength}`);
+        err.code = "ERR_OUT_OF_RANGE";
+        throw err;
+      }
+      genNum = normGen(o.generator);
+      primeBuf = null;
+    } else {
+      const err = new TypeError("At least one of the group, prime, or primeLength options is required");
+      err.code = "ERR_MISSING_OPTION";
+      throw err;
+    }
+    return { primeBuf, primeLength: has(o.primeLength) ? o.primeLength : 0, genNum };
 }
 function __applyEncoding(pair, publicEncoding, privateEncoding) {
   const out = {};

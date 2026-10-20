@@ -575,7 +575,9 @@ export function exec(command, opts, cb) {
 // 原函数在 executor **外**调用——同步校验抛错不被 Promise 吞（abortcontroller
 // 套件 assert.throws 直调 promisify(exec) 形）。
 function __customPromiseExec(orig) {
-  return function (...args) {
+  // node 原文 `assignFunctionName(orig.name, function ...)`：custom 与原同名
+  //（exec/execFile；test-util-promisify-custom-names 点名）。
+  const wrapped = function (...args) {
     let res;
     let rej;
     const promise = new Promise((resolve, reject) => { res = resolve; rej = reject; });
@@ -590,6 +592,10 @@ function __customPromiseExec(orig) {
     });
     return promise;
   };
+  try {
+    Object.defineProperty(wrapped, 'name', { value: orig.name, configurable: true });
+  } catch {}
+  return wrapped;
 }
 Object.defineProperty(exec, Symbol.for("nodejs.util.promisify.custom"), {
   value: __customPromiseExec(exec),

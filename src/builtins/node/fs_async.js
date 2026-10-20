@@ -454,9 +454,11 @@ export function exists(p, cb) {
   __fsDefer(() => cb(existsSync(p)));
 }
 // promisify(fs.exists) → boolean（node：回调非 err-first，走 custom promisified）。
-exists[Symbol.for("nodejs.util.promisify.custom")] = function (path) {
-  // 内层引外层导出（不得命名内函数——遮蔽后自递归，promisified 套件现形）。
-  return new Promise((resolve) => exists(path, resolve));
+// node 原文 `function exists(path)` 正名；内层经捕获引用（命名函数表达式名在
+// 内部作用域遮蔽外层，裸调会自递归——旧匿名函数即为避此，改捕获后正名）。
+const __existsOrig = exists;
+exists[Symbol.for("nodejs.util.promisify.custom")] = function exists(path) {
+  return new Promise((resolve) => __existsOrig(path, resolve));
 };
 // 回调 read/write 全形态（10f，node lib/fs.js read()/write() 同构）：
 // read(fd, cb) / read(fd, params, cb) / read(fd, buffer, options, cb) /

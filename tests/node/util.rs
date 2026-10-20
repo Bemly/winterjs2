@@ -560,7 +560,9 @@ console.log("sleep-oor:" + t(() => internalUtil.sleep(-1)));
 console.log("pending-len:" + (internalUtil.pendingDeprecate(function (a, b) {}).length === 2));
 function origFn() {}
 origFn[promisify.custom] = () => {};
-console.log("prom-name:" + promisify(origFn).name);
+// 真机口径：custom 原样返回不改名，匿名 custom 名即 ''（test-util-promisify-custom-names
+// 轮撤除回填 fallback；各域 custom 已在定义处正名）。
+console.log("prom-name:" + JSON.stringify(promisify(origFn).name));
 let depCode = "";
 process.on("warning", (w) => { depCode = w.code; });
 const p = promisify(async () => 1);
@@ -590,8 +592,73 @@ console.log("dep0174:" + depCode);
         "sleep-argtype:TypeError:ERR_INVALID_ARG_TYPE",
         "sleep-oor:RangeError:ERR_OUT_OF_RANGE",
         "pending-len:true",
-        "prom-name:origFn",
+        "prom-name:\"\"",
         "dep0174:DEP0174",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn util_promisify_custom_names_faces() {
+    // 正常：test-util-promisify-custom-names.mjs 全量名断言（exists/question/
+    // finished/eos 别名/pipeline/setImmediate/setTimeout/exec/execFile/connect，
+    // 真机实测钉值）+ custom 恒等（promisify(finished)===stream/promises.finished）；
+    // 报错：custom 非函数抛 ERR_INVALID_ARG_TYPE（真机口径）；
+    // 边界：反复 promisify 同一对象恒等、原函数名不被改写（旧 fallback 曾全局
+    // 改名污染 custom，回归钉死）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("p.mjs");
+    file.write_str(
+        r#"import { promisify } from "node:util";
+import assert from "node:assert";
+import fs from "node:fs";
+import readline from "node:readline";
+import stream from "node:stream";
+import timers from "node:timers";
+import child_process from "node:child_process";
+import * as promises from "node:stream/promises";
+import http2 from "node:http2";
+const names = [
+  ["exists", promisify(fs.exists).name],
+  ["question", promisify(readline.Interface.prototype.question).name],
+  ["finished", promisify(stream.finished).name],
+  ["pipeline", promisify(stream.pipeline).name],
+  ["setImmediate", promisify(timers.setImmediate).name],
+  ["setTimeout", promisify(timers.setTimeout).name],
+  ["exec", promisify(child_process.exec).name],
+  ["execFile", promisify(child_process.execFile).name],
+  ["connect", promisify(http2.connect).name],
+];
+for (const [want, got] of names) assert.strictEqual(got, want);
+console.log("names ok");
+assert.strictEqual(promisify(stream.finished), promises.finished);
+assert.strictEqual(promisify(stream.finished), promisify(stream.finished));
+console.log("identity ok");
+console.log("unmutated", stream.finished.name, promises.finished.name);
+try { promisify(Object.assign(function f(cb) { cb(null); }, { [promisify.custom]: 42 })); }
+catch (e) { console.log("badcustom", e.code); }
+console.log("exec-arity", child_process.execFile.name, child_process.exec.name);
+"#,
+    )
+    .unwrap();
+    let out = winterjs2()
+        .args(["--run", file.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "names ok",
+        "identity ok",
+        "unmutated eos finished",
+        "badcustom ERR_INVALID_ARG_TYPE",
+        "exec-arity execFile exec",
     ] {
         assert!(out.contains(want), "missing {want}, out: {out}");
     }

@@ -49,13 +49,22 @@ export function generateKeyPair(type, options, ...rest) {
 }
 // promisify 定制（keygen-promisify 套件）：默认 promisify 只取首个成功参，
 // 真机以 { publicKey, privateKey } 双键决议。
-generateKeyPair[Symbol.for("nodejs.util.promisify.custom")] = (type, options, ...rest) =>
-  new Promise((resolve, reject) => {
-    generateKeyPair(type, options, ...rest, (err, publicKey, privateKey) => {
-      if (err) reject(err);
-      else resolve({ publicKey, privateKey });
+// custom 正名 'generateKeyPair'（test-util-promisify-custom-names 不点名此件，
+// 但 util promisify 已不再回填改名——匿名箭头 name '' 会使 promisify 件名空，
+// custom 共享污染同前；仿 assignFunctionName 只改名不绑名，内层裸调仍指外层）。
+generateKeyPair[Symbol.for("nodejs.util.promisify.custom")] = (() => {
+  const __genPairCustom = (type, options, ...rest) =>
+    new Promise((resolve, reject) => {
+      generateKeyPair(type, options, ...rest, (err, publicKey, privateKey) => {
+        if (err) reject(err);
+        else resolve({ publicKey, privateKey });
+      });
     });
-  });
+  try {
+    Object.defineProperty(__genPairCustom, 'name', { value: 'generateKeyPair', configurable: true });
+  } catch {}
+  return __genPairCustom;
+})();
 // DER 编解码（ECDSA der 签名用）
 function __derLen(n) {
   if (n < 128) return new Uint8Array([n]);

@@ -211,14 +211,11 @@ function promisify(original) {
   if (original[kCustomPromisifiedSymbol]) {
     const fn = original[kCustomPromisifiedSymbol];
     validateFunction(fn, 'util.promisify.custom');
-  // 真机口径：custom 实现与原同名（node 各域 custom 均正名定义）。
-  // 本仓个别 custom 为匿名函数（fs.exists/child exec 系，他域文件不碰），此处回填
-  // 原名——已正名即 no-op，他域在定义处补正名后此兜底恒不触发。
-    try {
-      if (fn.name !== original.name) {
-        Object.defineProperty(fn, 'name', { value: original.name, configurable: true });
-      }
-    } catch {}
+    // 真机口径（node lib/internal/util.js 原文）：custom 实现原样返回，不改名——
+    // 各域 custom 在定义处已正名（fs.exists/exec/execFile/connect/finished 等），
+    // eos 取 promises.finished 即 'finished'（stream.finished 名 'eos' 与之不同，
+    // 正是 test-util-promisify-custom-names 套件点名处）。曾在此回填原名，
+    // 把 'finished' 改成 'eos'，错改全局共享 custom，2026-10-20 撤除。
     return Object.defineProperty(fn, kCustomPromisifiedSymbol, {
       __proto__: null, value: fn, enumerable: false, writable: false, configurable: true,
     });

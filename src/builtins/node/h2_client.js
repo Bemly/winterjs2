@@ -800,17 +800,18 @@ export function connect(authority, options, listener) {
   return session;
 }
 
-// node internal/http2/core.js 原文口径：connect 的 promisify 定制——
-// 'error' 即 reject（connect 监听到即摘 error 监听后 resolve）。
-connect[Symbol.for("nodejs.util.promisify.custom")] = function (authority, options) {
-  return new Promise((resolve, reject) => {
-    const server = connect(authority, options, () => {
-      server.removeListener("error", reject);
-      return resolve(server);
+// node core 原文 `assignFunctionName('connect', ...)`：只正名不绑名（命名函数
+// 表达式会遮蔽外层 `connect` 致自递归；test-util-promisify-custom-names 点名）。
+connect[Symbol.for("nodejs.util.promisify.custom")] = Object.defineProperty(
+  function (authority, options) {
+    return new Promise((resolve, reject) => {
+      const server = connect(authority, options, () => {
+        server.removeListener("error", reject);
+        return resolve(server);
+      });
+      server.once("error", reject);
     });
-    server.once("error", reject);
-  });
-};
+  }, 'name', { value: 'connect', configurable: true });
 
 // connect(options.signal)：abort → 会话 ABORT_ERR 销毁（AbortSignal 套件）
 function wireSessionSignal(session, options) {

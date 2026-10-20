@@ -1561,3 +1561,169 @@ G1/G2/G3/G9 已收官。）
 - wave-2 5 道 + wave-3 5 道全部合入 master 并 push（0c44143），每道均经黑盒+冒烟+守门验证。
 - L-C 中途取消：5 个已提交按原样合入（socket-close TIMEOUT 未解、respond-file 另起），半截 WIP（respondfile 重构+eprintln 调试）已弃，未入库。
 - 现场：工作区干净、`git status` 空、4 个 lane worktree+分支已删（磁盘 100G），node-test 检出干净。下会话开工按 AGENTS 开工顺序即可。
+
+## 2026-10-20 B-bound 拍板清单待批（只读整理，不改 plan3 §0.4 状态表）
+
+> 任务4 产出：供用户一票拍板。口径：base18（3574→3528 件，SAME0 2284/DIFF 925/TIMEOUT 116，
+> journal:1406-1421）下 http2 171 红 = TIMEOUT 52 / push 17 / diagnostics 9 / compat-shell 12 /
+> tls 7 / frame 6 / other-core 68（journal:1505-1508；plan3 §0.4 R16b 行）。
+> A 已否决（hyper 底座 + C 壳已 98/256，重写风险收益不成比，journal:1506）。
+> 下列 B 拟 bound 件用户可一票推翻；TIMEOUT 另列逐件 time-box 复判，不在本次 bound 内。
+> Bun 口径：范围 `docs/bun-scope.txt`（http2 278 / tls 201 / diagnostics 44 行，含 http2-diagnostics 20 件），
+> 语义 `docs/bun-compat.md` + `docs/bun-parity.md`（http2/tls/diagnostics 三节）。
+> 现象列 DIFF = wjs=1 快败、TIMEOUT = wjs=142 挂死（base18 `~/wjs-data/sweep/base18/results.log`）。
+
+### B1 push 系 17 件 → 建议 bound
+
+- 套件（8 http2 DIFF + 9 diagnostics DIFF 连带）：`test-http2-client-data-end` /
+  `test-http2-compat-serverresponse-createpushresponse` / `test-http2-options-max-reserved-streams` /
+  `test-http2-respond-file-push` / `test-http2-server-push-disabled` /
+  `test-http2-server-push-stream-errors-args` / `test-http2-server-push-stream-head` /
+  `test-http2-server-push-stream`（8，现象全 DIFF：`ERR_HTTP2_PUSH_DISABLED` / Missing expected exception /
+  `push is undefined`，base18 results.log `PUSH_DISABLED` 计 14 中 http2 占 5 + 报错形 3）+
+  `test-diagnostics-channel-http2-client-stream-{close,created,finish,start}`（4）+
+  `test-diagnostics-channel-http2-server-stream-{close,created-start-timing,created,finish,start}`（5）
+  （9，现象 DIFF `PUSH_DISABLED` 连带——diagnostics 探针建会话即撞 push 门）。
+- 根因：协议已死 + 底座不可达——Web 已无 push 消费端，hyper 服务端无 push API（journal:1196-1210 双分支 scope；
+  1582 P1 聚类 push 8；1827 base16 附录 push 6；1527/1535/1544 push 成功路 bound 三轮一致）。
+- 已试修法：createPushResponse 错误双路径已 exact（PUSH_DISABLED 文案 + INVALID_STREAM 门，journal:1527、
+  1366-1380 C 轮 write-head-after-close 双杀）；服务端 push 成功路未做（hyper 无 API 可接）。
+- 偏离理由一句话：Web 已死特性且 hyper 无服务端 push 原语，重做需换 h2 直驱约 1 周而 A 已否决。
+- 对标 Bun：`docs/bun-compat.md:70` http2 行注记“无 push（Web 已死）”即本仓口径——Bun http2 纵标 🟢，
+  push 面亦非 Bun 高度必需（Bun 自带清单 http2 278 件中 push 8 件占比小；真机复核可补，但不影响 bound 判定）。
+- 证据：journal:1196-1210（A/B 分支与拍板线）、journal:1246-1254（B+C 建议）、journal:1527/1535/1544
+  （三轮 push 成功路 bound）、journal:1550（拟稿）、base18 results.log（`PUSH_DISABLED` 14 行）。
+
+### B2 ALTSVC / ORIGIN 2 件 → 建议 bound
+
+- 套件：`test-http2-altsvc.js`（TIMEOUT wjs=142）、`test-http2-origin.js`（TIMEOUT wjs=142）。
+- 根因：底座不可达——hyper/h2 均无 ALTSVC/ORIGIN 帧级 API（journal:1199-1206 “不覆盖：ALTSVC/ORIGIN（h2 无此帧，仍偏离）”；
+  journal:1551 拟稿）。
+- 已试修法：未开轮（P1 首轮即定性为底座不可达面，journal:254 P1 行“ALTSVC/ORIGIN 帧”；C 轮明确界外，journal:1386-1390）。
+- 偏离理由一句话：连 h2 直驱（A 分支）都无此帧，JS 层无任何可接钩子。
+- 对标 Bun：Bun http2 🟢未见 ALTSVC/ORIGIN 专项实现主张；属协议边角，Bun 大概率同缺（待 Bun 真机复核，不阻塞 bound）。
+- 证据：journal:1196-1198（现状锚点 ALTSVC-ORIGIN 2）、journal:1246（base16 ALTSVC-ORIGIN 2）、
+  journal:1389、journal:1551、base18 results.log（上列 2 行 TIMEOUT）。
+
+### B3 帧错映射 6 件（goaway / 窗口溢出 / SETTINGS 内省）→ 建议 bound
+
+- 套件（DIFF 6，base18）：`test-http2-goaway-opaquedata`（STREAM_CANCEL）/
+  `test-http2-session-cleanup-on-nghttp2-goaway`（MUSTCALL noop 0）/
+  `test-http2-window-size`（INVALID_SETTING_VALUE initialWindowSize undefined）/
+  `test-http2-window-update-overflow`（MUSTCALL noop 0）/
+  `test-http2-session-settings`（strictly equal，对端 SETTINGS 内省无钩）/
+  `test-http2-too-many-settings`（strictly equal）；关联 `test-http2-max-settings`（TIMEOUT，
+  归 TIMEOUT 另列）、`test-http2-invalid-last-stream-id`（internal/http2/core 缺失，属另案 internal 面）、
+  `test-http2-max-invalid-frames`（DESTROYED，流控竞速边角）。
+- 根因：底座不可达——hyper/h2 内部记账（GOAWAY opaque data、窗口溢出计数、远端 SETTINGS 表）无 JS 钩
+  （journal:1200-1204 “GOAWAY/窗口/RST 码映射”仅 A 分支可达且预算 1 周；journal:1552 拟稿“内部记账无 JS 钩”）。
+- 已试修法：C 轮仅修壳面（GOAWAY drain 递延杀 + stream 序，journal:1535 L-C）；帧级错码映射未开轮
+  （P1 即列“原始帧协议错映射”，plan3 §0.4 P1 行）。
+- 偏离理由一句话：错码/计数器藏在 hyper 内部，JS 层只能看到归一化错误，重做等于换底座。
+- 对标 Bun：Bun http2 🟢无帧错映射专项主张；属 nghttp2 行为口径，Bun（JSC 栈）数字亦不可比，大概率同缺或同偏离。
+- 证据：journal:254（P1 余件“原始帧协议错映射”）、journal:1196-1204、journal:1246-1253（帧流控映射 19）、
+  journal:1395 前 C 轮余件行、journal:1552、base18 results.log（上列 6 行 DIFF）。
+
+### B4 diagnostics-channel http2 系 9 件 → 建议 bound（infra 另案号待编）
+
+- 套件（DIFF 9，非 push 污染的真插桩缺口）：client body ×5
+  `test-diagnostics-channel-http2-client-stream-body-{multiple-buffers-and-strings,multiple-buffers,no-chunks,single-buffer,single-string}`
+ （MUSTCALL 未触发）+ client `…-close-error` / `…-error`（AbortError ABORT_ERR）+
+  server `…-server-stream-{close-error,error}`（MUSTCALL 未触发）；另 9 件 push 污染已计入 B1，
+  合计即 bun-scope 内 http2-diagnostics 18 件全数（`grep diagnostics-channel-http2 docs/bun-scope.txt` 20 件含命名差 2）。
+- 根因：infra——本仓 http2 收发路径无 `diagnostics_channel.publish` 插桩面（journal:1553；
+  bun-parity diagnostics 节 337-354 行逐件“需 http2 插桩”🟡偏离）。
+- 已试修法：未开轮（P1 即列 diagnostics 另案 infra；C 轮界外；wave-2/3 未排期）。
+- 偏离理由一句话：插桩面需在每条收发路径逐点 publish，属独立 infra 专项，不随 http2 壳轮附带做。
+- 对标 Bun：`docs/bun-compat.md:48` diagnostics Bun 🟡（缺 bounded/多数组内置通道）——Bun 自身插桩亦薄；
+  bun-parity 335-354 行本仓记 🟡偏离即对等口径，bound 后与 Bun 同档。
+- 证据：journal:1553（拟稿）、`docs/bun-parity.md:337-354`（18 件逐件“需 http2 插桩”）、
+  journal:1505（R16b diagnostics 9）、base18 results.log（上列 9 行 DIFF）。
+
+### B5 tls 7 件（http2-over-tls）→ 建议 bound（随 P2-tls，不单开轮）
+
+- 套件（DIFF 4 + TIMEOUT 3）：DIFF `test-http2-alpn`（NO_APPLICATION_PROTOCOL）/
+  `test-http2-create-client-secure-session`（strictly equal）/ `test-http2-https-fallback` /
+  `test-http2-https-fallback-http-server-options`（UnsupportedCertVersion 握手失败）+
+  TIMEOUT `test-http2-connect-tls-with-delay` / `test-http2-multistream-destroy-on-read-tls` /
+  `test-http2-tls-disconnect`（wjs=142）。
+- 根因：引擎边界 + 底座——rustls 与 OpenSSL 行为差（v1 证书/ALPN 无交集 alert/握手失败文案），
+  SecureContext 面随 P2-tls 深化（journal:254 P1“tls 面随 P2-tls 一并”；journal:1395-1401 ALPN 静态协商；
+  journal:1498 H1 余 TLS verify/SNI 簇 8 件随 P2-tls）。
+- 已试修法：P2-tls-b 包裹引擎 + accept 重排 + TlsCleanEof（journal:288-331，wrap 簇 19/24）；
+  tls 轮 ALPN 静态协商 + SAN 整形 + X509 PEM（journal:1395-1404）；H1 双派发修（journal:1485-1497）；
+  ALPNCallback 明确另案（rustls 无 select-callback API，journal:1400-1401）。
+- 偏离理由一句话：http2-over-tls 红即 tls 引擎差，非 http2 壳可修，归 P2-tls 统一收口。
+- 对标 Bun：`docs/bun-compat.md:53/75` https/tls 双 🟡（https 无 SNI 回调；tls 无 psk/OCSP/resume，
+  无 SecureContext/getPeerCertificate 记档）——本 7 件与 Bun 缺口同族，bound 后对等。
+- 证据：journal:254、journal:1395-1404、journal:1485-1508（H1 余件 + R16b 定级）、journal:1554、
+  base18 results.log（上列 7 行）。
+
+### B5 附 tls 域同族 bound 候选（随 P2-tls，不单计数）→ 建议 bound
+
+- 套件：`test-tls-psk-*`（2，握手 AccessDenied）/ `test-tls-dhe`（internal/crypto/util 缺失，internal 面）/
+  `test-tls-client-renegotiation-13`（TIMEOUT）/ `test-tls-disable-renegotiation`（Missing expected exception）/
+  `test-tls-ocsp-callback` / `test-tls-{invalid,legacy,multi,pfx-authorizationerror,https-pfx}-pfx*`（5，`loadPKCS12() not implemented`）/
+  `test-tls-client-resume*` / `test-tls-ticket`（resume/ticket 无对应物）/
+  `test-tls-alpn-server-client`（ALPNCallback 面）。
+- 根因：引擎边界——rustls 无 psk/DHE/renegotiation/OCSP/PKCS12/resume 对应物（journal:1499
+  “pfx-loadPKCS12 未实现（bound 候选，随 ALPNCallback/DHE）”；journal:1554）。
+- 已试修法：SecureContext/configSecureContext 逐字移植已做（journal:281 P2 首批 +23）；上列面未开轮。
+- 偏离理由一句话：rustls 能力墙，非 JS 可补。
+- 对标 Bun：bun-compat tls 🟡“无 psk/OCSP/resume”原文即同缺证据；DHE/renegotiation/pfx 同族。
+- 证据：journal:1498-1499、journal:1554、base18 results.log（上列各行）。
+
+### B6 SNI raw（含 https-verify sni-N）→ 建议 bound（引擎墙）
+
+- 套件：`test-tls-sni-option` / `test-tls-sni-server-client` / `test-tls-sni-servername` /
+  `test-tls-snicallback-error`（Missing expected exception）/ `test-tls-empty-sni-context` /
+  `test-tls-error-servername`（ARG_TYPE 文案差）/ `test-https-agent-sni`（bad servername `sni.2` invalid dns name）
+  + wave-1 sni.N 系 + wave-2 L-A sni-N + wave-3 L-A SNI 双件（addContext 未下沉）。
+- 根因：引擎边界——rustls-pki-types 无 raw-SNI（DnsName 无非校验构造，全数字尾标签即拒；
+  journal:1526、1533、1555）；SNI 双件另因 addContext 未下沉 Rust resolver（journal:1542）。
+- 已试修法：https-verify lane 裁决先于冲刷 + servername `''` 形 + verifyErr 补回（journal:1526 转绿
+  checkServerIdentity）；tls-strict lane CN 回落/自签双判（journal:1533 15/15）；B-3 lane CSI 族搬移
+  + 链锚补齐（journal:1542 转绿 2）；raw-SNI 三轮一致记 bound 未强攻。
+- 偏离理由一句话：非校验 SNI 名在 rustls 类型层即非法，JS 层无构造点。
+- 对标 Bun：bun-compat https 🟡“无 SNI 回调等”原文即同缺证据。
+- 证据：journal:1526（webpki 拒全数字尾标签，rustls 无 raw-SNI，引擎墙）、journal:1533（sni-N 记 bound）、
+  journal:1542（SNI 双件记引擎墙）、journal:1555、base18 results.log（`test-tls-sni*` 4 + empty-sni +
+  error-servername + `test-https-agent-sni` 各行）。
+
+### B7 R18/R19 各 lane bound / 另案记档（本次一并拍板确认，不单开轮）
+
+- wave-2 L-C interim ×4（`test-http2-info-headers` / `compat-write-information` /
+  `compat-serverresponse-{close,flushheaders}` TIMEOUT 含）→ 建议 bound：一句话 hyper 单 HEADERS 无 interim 1xx API
+  （journal:1527、1535）。early-hints ×2（`compat-write-early-hints{,-invalid-argument-value}` 码形已 exact，
+  卡 `__ev` 抛错到 uncaughtException 的 runtime 投递）→ 建议 bound（同上两行）。
+- wave-2 L-D vm-triage 余件（linker/membrane/每-context 队列/宿主 import/SM 文案/TLA 无 API/跨域）→
+  建议 bound（引擎墙，journal:1536）；L-E whatwg 9 红（7 internal-tree/infra + canparse V8 内禀 +
+  custom-inspect 需 prelude+url-crate 双动）→ 建议 bound（journal:1537）；console/util triage 表
+  （ignoreErrors 簇 4 + inspect-core 缺口 + 5 小校验）→ 续啃/另案按表（journal:1537）。
+- wave-3 L-D synthetic 命名依赖（缺 CreateNamedSyntheticModule/SetSyntheticModuleExport）→ 建议 bound
+  （引擎墙，journal:1545）；basic/errors 各剩一件（importModuleDynamically/initializeImportMeta，需
+  modules/loader 配合）→ 续啃（同行）。L-E formatTime/promisify-custom-names/getcallsites/dotenv/
+  util-format null-proto → 续啃或 bound 按行（journal:1546；null-proto 记 inspect bound）。
+- worker 专项：SAB 真共享 + WASM Module 跨线程 + `Atomics.wait`（errors-timeout 红，worker 线程抛
+  waiting is not allowed + SAB 跨线程缺失）→ 建议 bound（引擎墙，journal:1476-1479、1514、1556）。
+- 范围外（不做）：V8 内禀（%PrepareFunctionFor…/--allow-natives-syntax）、internal/* 树
+  （--expose-internals 剥离）、sea/wasi（journal:1557；plan3 §4 维持否决）。
+
+### 非 bound 件另列（TIMEOUT + C 续啃，不在本次 bound 拍板内）
+
+- TIMEOUT 52（R16b 口径；base18 实测 http2 TIMEOUT 50，差 2 系 C2/C3 已绿 7 的过程差）→
+  不建议 bound，逐件 time-box 复判另轮。L-C 全表定级（journal:1535）：
+  7 已绿 / 1 runtime（uncaughtException 投递）/ 3 node 自红 / 24 hyper-bound / 15 actionable-shell
+  待 wave-3；wave-3 后 `socket-close` TIMEOUT 未解、`respond-file×3` 另起（journal:1544、1562）。
+  明细以 `~/wjs-data/sweep/base18/results.log`（`TIMEOUT wjs=142 test-http2-*` 50 行，另 diagnostics 系全 DIFF
+  不在 TIMEOUT 内）为准，另轮按“单件 run1.sh 复判 → hyper-bound 即归 B / shell 可达即归 C”逐件销账。
+- compat-shell 12 + other-core 68（含 C 壳可达面约 40）→ 建议续啃（C2/C3 轮已证可达：
+  C 轮 13 件 journal:1381-1385、C2 10/18 journal:1527、C3 多件 journal:1535/1544；余 15 actionable-shell
+  见上）。`test-http2-compat-serverrequest-trailers`（wjs=0 node=1 翻转）属 node 自红，不计我方欠账。
+
+### 拍板选项（用户一票）
+
+- [ ] A：B1–B6 全 bound + B7 确认，TIMEOUT/C 续啃另轮（推荐；A 重写已否决，C 壳继续）。
+- [ ] B：一票推翻其中某件（请点名件名，被点名件回 C 队列按 time-box 另轮）。
+- [ ] C：全不 bound，B 件回 C 队列（需另批约 1 周 + h2 直驱预算，A 分支 journal:1199-1206）。
+

@@ -291,24 +291,17 @@ pub unsafe extern "C" fn tls_connect(
         .unwrap_or_default();
     let target = frame.arg(3);
     ensure_provider();
-    // node TLSSocket 口径：rejectUnauthorized:false 仍跑校验（错误捕获、连接存活、
-    // authorized=false）；true 维持 WebPki 硬失败（握手错 → ERR_TLS_HANDSHAKE 面）。
-    let rejected = opts.reject_unauthorized.unwrap_or(true);
-    let (mut cfg, caught) = if rejected {
-        match client_config(opts.ca_pem.as_deref(), true) {
-            Ok(c) => (c, None),
-            Err(e) => {
-                report_error(&mut cx, &e);
-                return false;
-            }
-        }
-    } else {
-        match crate::builtins::node::tls_wrap::capture_client_config(opts.ca_pem.as_deref()) {
-            Ok((c, h)) => (c, Some(h)),
-            Err(e) => {
-                report_error(&mut cx, &e);
-                return false;
-            }
+    // node 口径：链错与名错分离——链错（unknown issuer/过期等）握手照旧失败由 JS
+    // 按 `rejectUnauthorized` 处置；名错（SAN/CN 不匹配）永不中止握手、只走 JS
+    // `checkServerIdentity` 定夺。rustls 合并校验，故恒用捕获式 verifier：
+    // 名失配记哨兵（见 tls_wrap::NAME_MISMATCH_SENTINEL），JS 侧重跑身份校验。
+    let (mut cfg, caught) = match crate::builtins::node::tls_wrap::capture_client_config(
+        opts.ca_pem.as_deref(),
+    ) {
+        Ok((c, h)) => (c, Some(h)),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
         }
     };
     // node exports.connect：ALPNProtocols 经 convertALPNProtocols 落 wire 形（JS 侧
@@ -324,7 +317,10 @@ pub unsafe extern "C" fn tls_connect(
     };
     let cmd_rx = state::net_socket_add(id, target);
     set_rval_str(&mut cx, &frame, &id.to_string());
-    let servername = opts.servername.unwrap_or_else(|| host.clone());
+    let servername = opts
+        .servername
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| host.clone());
     handle.spawn(async move {
         let tcp = match crate::builtins::node::net_pumps::tcp_connect_resolved(host.as_str(), port as u16, None).await {
             Ok(s) => {

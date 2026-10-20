@@ -42,6 +42,8 @@ const ClientRequest = withClientRequest(
     servername: extra.servername,
     ca: extra.ca,
     rejectUnauthorized: extra.rejectUnauthorized,
+    // node 口径：显式 undefined 即缺席（connect 内有缺省；显式传 undefined 反而触校验门）。
+    ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
   }),
   FLAVOR,
 );
@@ -57,7 +59,40 @@ Agent.prototype.__openSocket = (host, port, extra) => tls.connect({
   servername: extra.servername,
   ca: extra.ca,
   rejectUnauthorized: extra.rejectUnauthorized,
+  ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
 });
+// node internal/http/agent.js normalizeServerName 口径：显式 servername（含 '')
+// 恒赢；缺席即取请求 Host 头（去端口/方括号；IP 即 ''——SNI 禁 IP）。
+function __httpsServerName(options, req) {
+  if (!options.servername && options.servername !== "") {
+    let sn = options.host;
+    try {
+      const hh = req.getHeader("host");
+      if (hh !== undefined && hh !== null && hh !== "") {
+        const s = String(Array.isArray(hh) ? hh[0] : hh);
+        if (s[0] === "[") { const i = s.indexOf("]"); sn = i === -1 ? s : s.substring(1, i); }
+        else sn = s.split(":")[0];
+      }
+    } catch { /* 取头失败即回落 host */ }
+    options.servername = (typeof sn === "string" && (sn.includes(":") || /^[\d.]+$/.test(sn))) ? "" : sn;
+  }
+}
+Agent.prototype.createSocket = function (req, options, cb) {
+  __httpsServerName(options, req);
+  return BaseAgent.prototype.createSocket.call(this, req, options, cb);
+};
+// node lib/https.js 口径：createConnection(port[, host][, options]) 变参归一；
+// 单对象形直传、多参形拷贝（mustNotMutate 语义），位置 port/host 恒赢。
+Agent.prototype.createConnection = function (...args) {
+  let options;
+  if (args[0] !== null && typeof args[0] === "object") options = args[0];
+  else if (args[1] !== null && typeof args[1] === "object") options = { ...args[1] };
+  else if (args[2] === null || typeof args[2] !== "object") options = {};
+  else options = { ...args[2] };
+  if (typeof args[0] === "number") options.port = args[0];
+  if (typeof args[1] === "string") options.host = args[1];
+  return BaseAgent.prototype.createConnection.call(this, options);
+};
 Agent.prototype.__defaultPort = 443;
 // https 键位在 http 基础上加 TLS 会话面字段（node lib/https.js 口径；pfx/cert
 // 等进键——不同证书不同池位，agent-getname 套件逐字段对拍）。

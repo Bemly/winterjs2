@@ -169,6 +169,22 @@ struct CaptureVerifier {
     caught: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
+/// 主机名失配哨兵（node 口径：证书链错由 OpenSSL 在握手期硬失败，
+/// 主机名从不在握手期判定、只走 JS `checkServerIdentity`；rustls 把两类错合在一起，
+/// 此处把纯失配（链已过、名不对）记哨兵、JS 侧重跑 `checkServerIdentity` 定夺——
+/// 通过即放行（CN 回落等），失败即抛 node 形错；其余错原文捕获照旧）。
+pub(crate) const NAME_MISMATCH_SENTINEL: &str = "__wjs2_name_mismatch__";
+
+fn is_name_mismatch(e: &rustls::Error) -> bool {
+    matches!(
+        e,
+        rustls::Error::InvalidCertificate(
+            rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. }
+        )
+    )
+}
+
 impl rustls::client::danger::ServerCertVerifier for CaptureVerifier {
     fn verify_server_cert(
         &self,
@@ -185,7 +201,11 @@ impl rustls::client::danger::ServerCertVerifier for CaptureVerifier {
             Ok(v) => Ok(v),
             Err(e) => {
                 if let Ok(mut slot) = self.caught.lock() {
-                    *slot = Some(e.to_string());
+                    *slot = Some(if is_name_mismatch(&e) {
+                        NAME_MISMATCH_SENTINEL.to_string()
+                    } else {
+                        e.to_string()
+                    });
                 }
                 Ok(rustls::client::danger::ServerCertVerified::assertion())
             }

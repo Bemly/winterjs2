@@ -2086,6 +2086,122 @@ G1/G2/G3/G9 已收官。）
   19:39 即会停下。
 - 复现：base19（旧二进制含未提交 open 重写，堆栈 bundle 行号为证）。
 - 铁律：**sweep 基线构建只认干净树**（status 非空不构建、不起 sweep）。
+## 2026-10-20 W9 新区落地验证（lane/whatwg，worktree-local 构建）
+
+- 迁移：基线 707a929 已含 806b5eb（W9 四文件在树），工作区干净零移植。
+- 错峰：首编与 4 lane 全量重编撞车（load 384），当即 kill 全并行任务待回落；
+  load 19 后 `cargo build -j2`（Xcode libclang）5m56s 编完，已报协调。
+- 验证（worktree-local 二进制）：W9 套件 + 相邻 searchparams-inspect/properties/
+  parsing/global 全绿 rc=0；`--test builtins` 41/41；冒烟 5/5；`check-lines: ok`
+ （最大 1000 src/state/mod.rs）+ `check-naming: ok`（本区干净，无并行脏文件）。
+
+## 2026-10-20 whatwg31逐件定级（自主定级，不问拍板）
+
+> 方法：`docs/bun-scope.txt` `^test-whatwg-` 55 行全量双跑（新区二进制复用零新构建；
+> 53 件在 `~/node-test` 检出，2 件检出无件见末）。base18 40 红 − 前段已定级 9
+> （W1–W8 bound + W9 续啃落地）= 31 件逐件 node 真机对照，默认对齐 node+bun 自行定级。
+> 结论先行：31 件当前双绿（抽查 9 件 node/wjs 双 0/0 + 55 件全量 wjs 复跑仅 8 红），
+> 定级=已对齐（SAME0），下按簇记 Node 一句话 + Bun 行号 + 修法出处。
+
+- E1 encoding ×5（fatal-streaming/api-invalid-label/fatal/utf16-surrogates/singlebyte）→ 已对齐。
+  Node：`TextDecoder(label,{fatal,ignoreBOM})` 按 encoding 标非法标签抛错/fatal 抛
+  `ERR_ENCODING_INVALID_ENCODED_DATA`（`lib/internal/encoding.js` + WPT 语料）。
+  Bun：Web 通用面推定有（`bun-compat.md:63` url 🟢同族；`bun-parity.md` 无 encoding 缺口行）。
+  修法出处：wave-1（fatal 文案/ASCII-trim/NUL 安全/大写规范，journal:1525）+
+  L-E encoding-singlebyte 29→57（journal:1537/1546）。双跑 0/0。
+- E2 events ×3（passive/signal/this-of-listener）→ 已对齐。
+  Node：`addEventListener` 非函数监听 warn 而非抛（passive 门）/signal 校验/
+  监听器 this 恒收 EventTarget（`lib/internal/event_target.js`）。
+  Bun：events 🟢（`bun-compat.md:50`）。修法出处：wave-1
+  （null-flatten/被动门/signal 校验/handleEager，journal:1525）。双跑 0/0。
+- S1 streams ×5（bad-buffers-and-views/byob/compression/webstreams-encoding/
+  transform-cancel-write-race）→ 已对齐。
+  Node：BYOB 视图空/坏参抛 `ERR_INVALID_*` + `ReadableByteStream` pull 续进/close 后可用 +
+  `CompressionStream` 枚举校验（`lib/internal/webstreams/*.js`）。
+  Bun：stream 🟢（`bun-compat.md:59`）。修法出处：wave-1
+  （BYOB coded 错误/start 竞速/pull 续进/close 后可用，journal:1525）+ webstreams 轮
+  （`bun-parity.md:1292-1308`）。双跑 0/0（byob/compression 抽查）。
+- U1 url ×6（custom-global/parsing/properties/setters/tostringtag/invalidthis）→ 已对齐。
+  Node：URL 全局属性形态/解析抛 `ERR_INVALID_URL`/`ERR_MISSING_ARGS`/属性可枚举顺序/
+  setter 转换先行/非法接收者品牌错（`lib/internal/url.js`）。
+  Bun：url 🟢（`bun-compat.md:63`）。修法出处：wave-1（USP 品牌/缺参/lone-surrogate
+  FFFD/双问号/迭代器品牌+tag，journal:1525）+ fix-forward USP 归一（journal:1538）+
+  W9 inspect（本 lane）。双跑 0/0（parsing/setters/invalidthis 抽查）。
+- U2 searchparams ×12（append/delete/entries/foreach/get/getall/has/keys/set/
+  stringifier/values/constructor/custom-searchparams）→ 已对齐。
+  Node：`URLSearchParams` 增删改查 + 迭代器三形 + 构造器三形（`lib/internal/url.js`
+  searchparams 族）。Bun：url 🟢同上。修法出处：wave-1（MIME 全 fixture 952 对拍 +
+  TES/TDS 缺失补齐，journal:1525）+ fix-forward（序列 key-presence/定长二元组/record
+  含 symbol 键/Map 去重，journal:1538）。双跑 0/0（全量 wjs rc）。
+- 前段 8 bound（readablebytestream/adapters×5/coverage/canparse）维持，不在 31 内，
+  见上段 W1–W8。
+- 检出无件 ×2（`test-whatwg-url-custom-domainto` / `test-whatwg-url-toascii`）→ 记档
+  非欠账：Bun 快照有、node-main 检出无（`ls test/parallel` 零命中），系上游更名/删除，
+  双边无法跑，不计红。
+
+## 2026-10-20 tls P2-tls 下一簇探针（只探针+定级，不写码）
+
+> 范围：`docs/bun-scope.txt` tls 201 行（`^test-tls-` 186 + 关联行；另 `^test-https-` 76 不在内）。
+> 基线：base18 tls 红 101（DIFF 76 + TIMEOUT 25，`~/wjs-data/sweep/base18/results.log`）。
+> 探针：`~/wjs-data/probe/tls-next/p{1,2,3,4,5}-*.js`（node v26.8.1 vs 本区二进制；
+> 回环短连 + 8s GUARD，无新构建）。Bun 口径：`docs/bun-compat.md:53` https 🟡
+> （无 SNI 回调等）/ `:75` tls 🟡（无 psk/OCSP/resume）。
+
+- P1 SecureContext：node 空构造/键证构造真，`ticketKeys` 门在选项形
+  （47→`ERR_INVALID_ARG_VALUE` 48 字节，48 经；`setTicketKeys` 非 SecureContext 方法，
+  双边同 `not a function`）；pfx 糊串 node 报 `not enough data`，wjs 报
+  `ERR_METHOD_NOT_IMPLEMENTED`（loadPKCS12 未实现，bound 维持）。
+  wjs 与 node 逐行同形（`empty/keycert/ticket48-47/pfx/SecureContext` 六行全对）。
+- P2 getPeerCertificate：node 精简 19 键（含 asn1Curve/bits/exponent/ext_key_usage/
+  modulus/nistCurve/pubkey + raw），wjs 12 键（缺上列 7 公钥材料键），余
+  subject/issuer/raw/auth 逐字同形（含 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`）。
+  → 下簇 N1（见下）。
+- P3 ALPN：交集双边同 `a`（服务端偏好序；wjs 连服务端侧 `server-alpn=a` 亦对），
+  无交集双边同 `ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL`。静态面已对齐；
+  `ALPNCallback` 选项面 bound 维持（rustls 无 select-callback，journal:1400-1401）。
+- P4 verify（CSI 6 格）：双边逐格同形（unfqdn/IP/通配 OK，deep 通配/有 SAN 忽略 CN
+  报 `ERR_TLS_CERT_ALTNAME_INVALID`，无 SAN 回落 CN OK）——B-3 移植确认。
+- P5 SNI：`addContext` 双边行为分歧——node `_contexts` 2（通配正则对），wjs 0
+  （未下沉，引擎墙 bound 维持，journal:1542）；无 SNI 时 node `servername=false`，
+  wjs 回落 `"127.0.0.1"` → 下簇 N2（见下）。
+
+### 定级表（101 红去向，自主定级）
+
+- 下簇续啃 N1 getPeerCertificate 补 7 键（asn1Curve/bits/exponent/ext_key_usage/
+  modulus/nistCurve/pubkey）：需 DER-SPKI 解析（`x509-parser` 候选，新依赖按规
+  审批后再开码；验收=19 键逐字 + `peer-certificate/multi-keys` 转绿）。
+- 下簇续啃 N2 无 SNI 时 `servername=false`（JS 面小修：SNI 缺席不再回落 host；
+  验收=`empty-sni-context` + `https-agent-sni` 相关断言；wave-1 `''` 形已铺路）。
+- bound 维持：pfx-loadPKCS12 ×5 / psk ×2 / DHE / renegotiation ×2 / OCSP /
+  resume ×3 + ticket / ALPNCallback / SNI-raw + addContext 未下沉
+  （rustls 能力墙，`bun-compat.md:53/75` 同缺为证）。
+- 另案（net/stream 面，随建模）：socket-close/destroy/default-options/
+  streamwrap-buffersize（Duplex EOF 面）/client-destroy-soon（readable 流量）/
+  async-wrap ca 链。
+- 另轮 time-box（本次未探针，TIMEOUT 25）：cli min/max-version 系 ×6 /
+  cert-chains-concat 系 ×2 / handshake/secure-session/interleave 等散件，
+  按“单件 run1.sh 复判 → 版本墙即归 B”逐件销账，不在下簇内。
+
+## 2026-10-20 N2 无SNI→false 落地（JS 小修，零新轮子）
+
+- 根因（node `lib/internal/tls/wrap.js:649/1064-65/1201-1203`）：`servername` 初值 null，
+  仅显式选项经 `setServername` 置名；finishInit 时 null 即取 `handle.getServername()`，
+  未发 SNI 即 false（C++ 无名回 false），永不回灌 host。旧码直拨面 Rust 回落
+  host 致客户端 IP 直连自见 `"127.0.0.1"`（P5 探针）。
+- 修法（`src/builtins/node/tls.js`，纯 JS）：`__sniSent` 实发旗（直拨/包裹双路 wire
+  置名点）+ `__applyTlsInfo` 仅实发才收 info 名、无收客户端亦置 false（服务端行为不动）+
+  `__sniHost` 回落 helper（7 处 CSI/报错 host 由 `??` 改串形判定，false 不再透入 CSI）+
+  `setServername` 补 Received 后缀（invalidArgTypeHelper 口径）+ 服务端禁签发
+  `ERR_TLS_SNI_FROM_SERVER`（wrap.js:1239-1246 口径）。
+- 切片先行：`tls.js` 恰 1000 行，`split-js.py` 纯搬移尾 64 行 → 新片
+  `tls_defaultecdhcurve.js`（`cmp` 字节恒等；脚本 rs 改写错位已手工扶正多行 concat），
+  搬移提交与 N2 提交分离（`git diff -w` 仅路径）。
+- 验证：P5 `nosni-servername=false` ✓；node 套件 `test-tls-error-servername` 转绿；
+  黑盒 `tls_client_absent_sni_is_false`（显式/IP-缺席/''/setServername×2）绿；
+  `--test node tls_` 13/13；冒烟 5/5；`check-lines/naming` 双绿。
+  余红（sni-option/servername/server-client/empty-sni）皆服务端选链
+  （`no server certificate chain resolved`）即 addContext 未下沉 bound，不在 N2 内。
+
 
 
 

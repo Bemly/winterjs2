@@ -75,6 +75,22 @@ function __tlsErr(code, msg) {
   e.code = code;
   return e;
 }
+// node invalidArgTypeHelper 口径（setServername 文案逐字：Received 后缀）。
+function __invalidArgReceived(v) {
+  if (v === null || v === undefined) return " Received " + v;
+  if (typeof v === "function") return " Received function " + (v.name || "");
+  if (typeof v === "object") {
+    const n = v.constructor?.name;
+    if (typeof n === "string" && n !== "") return " Received an instance of " + n;
+    return " Received " + JSON.stringify(v);
+  }
+  return " Received type " + typeof v + " (" + String(v) + ")";
+}
+// node：身份校验/报错 host 取 SNI 字符串，无 SNI（false/null/undefined）即回落连接目标。
+function __sniHost(t, dflt) {
+  if (typeof t.servername === "string" && t.servername !== "") return t.servername;
+  return t.__targetHost ?? dflt;
+}
 // rustls 名失配哨兵（链错原文捕获、名错记哨兵走 checkServerIdentity；见 tls_wrap.rs）。
 const __NAME_MISMATCH = "__wjs2_name_mismatch__";
 function __pemOf(v) {
@@ -245,6 +261,8 @@ class TLSSocket extends Socket {
     const wire = {};
     const servername = mo.servername || (host && !__isIP(host) ? host : undefined);
     if (servername !== undefined) wire.servername = String(servername);
+    // N2：SNI 实发旗（直拨面；无名/IP 即未发，finishInit 口径回 false 不回灌 host）。
+    this.__sniSent = (servername !== undefined);
     // node：显式 secureContext 在场即整体采用（ca 等选项不再读）；否则读 ca 选项。
     const ca = mo.secureContext !== undefined
       ? __pemOf(sc.ca)
@@ -282,7 +300,7 @@ class TLSSocket extends Socket {
   __nameCheck() { // 名失配哨兵 → checkServerIdentity 定夺（node onConnectSecure 口径；过放行，错落位）。
     const mo = this.__wrapOpts ?? this.__tlsOpts ?? {};
     let r = null;
-    try { r = (mo.checkServerIdentity ?? checkServerIdentity)(this.servername ?? this.__targetHost ?? "localhost", this.getPeerCertificate(true)) || null; } catch (e) { r = e; }
+    try { r = (mo.checkServerIdentity ?? checkServerIdentity)(__sniHost(this) ?? "localhost", this.getPeerCertificate(true)) || null; } catch (e) { r = e; }
     this.__nameChecked = true;
     if (r !== null) { this.__verifyErr = r; this.authorized = false; this.authorizationError = r.code ?? r.message; }
     return r;
@@ -290,13 +308,15 @@ class TLSSocket extends Socket {
   __applyTlsInfo(info) {
     this.__tls = info;
     this.alpnProtocol = info.alpn ?? false;
-    if (info.servername) this.servername = info.servername;
-    // node：服务端无 SNI 即 servername=false（非 null；sni 套件 '' 形点名）。
+    // node _finishInit 口径：SNI 以实发为准——服务端收即 servername（'' 亦收），
+    // 无收即 false；客户端仅实发（wire 置名）才收，回落 host 冒充即 N2 偏差。
+    if (info.servername && (this.__tlsServer || this.__isServer || this.__sniSent)) this.servername = info.servername;
     else if (this.__tlsServer || this.__isServer) this.servername = false;
+    else if (this.__sniSent === false) this.servername = false;
     // 捕获式校验错：哨兵走身份校验（通过即放行）；链错原文映射（reject 面由连接事件收口）。
     if (info.verifyErr && this.__verifyErr === null) {
       if (String(info.verifyErr) === __NAME_MISMATCH) { this.__nameCheck(); return; }
-      this.__verifyErr = __handshakeErr(String(info.verifyErr), this.servername ?? this.__targetHost);
+      this.__verifyErr = __handshakeErr(String(info.verifyErr), __sniHost(this));
       this.authorized = false;
       this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
     }
@@ -306,7 +326,7 @@ class TLSSocket extends Socket {
     let verifyError = this.__verifyErr;
     if (!verifyError && !this.__nameChecked) {
       const csi = typeof mo.checkServerIdentity === "function" ? mo.checkServerIdentity : checkServerIdentity;
-      try { verifyError = csi(this.servername ?? this.__targetHost, this.getPeerCertificate(true)) || null; } catch (e) { verifyError = e; }
+      try { verifyError = csi(__sniHost(this), this.getPeerCertificate(true)) || null; } catch (e) { verifyError = e; }
     }
     this.__verdictDone = true;
     if (verifyError) {
@@ -338,7 +358,7 @@ class TLSSocket extends Socket {
       let o = {};
       try { o = JSON.parse(payload); } catch { /* 非 JSON 即原样 */ }
       if (o.code === "ERR_TLS_HANDSHAKE") {
-        this.destroy(__handshakeErr(String(o.msg ?? ""), this.servername ?? this.__targetHost));
+        this.destroy(__handshakeErr(String(o.msg ?? ""), __sniHost(this)));
         return;
       }
     }
@@ -436,6 +456,8 @@ class TLSSocket extends Socket {
         wire.servername = String(servername);
         this.servername = String(servername);
       }
+      // N2：SNI 实发旗（包裹面；空串/IP 回落即未发）。
+      this.__sniSent = (servername !== undefined && servername !== null && servername !== "");
       const ca = mo.secureContext !== undefined
         ? __pemOf(mo.secureContext?.context?.ca)
         : (__pemOf(mo.ca) ?? (__defaultCA !== null ? __defaultCA.join("\n") : undefined));
@@ -469,7 +491,7 @@ class TLSSocket extends Socket {
     if (!r) return;
     if (r.err !== undefined && r.err !== null) {
       // rustls 协议错 → node/OpenSSL 码映射（复用直拨面映射表）。
-      this.destroy(__handshakeErr(String(r.err), this.servername ?? this.__targetHost));
+      this.destroy(__handshakeErr(String(r.err), __sniHost(this)));
       return;
     }
     if (r.out) this.__wrapped.write(Buffer.from(r.out, "base64"));
@@ -478,7 +500,7 @@ class TLSSocket extends Socket {
     if (r.verifyErr !== undefined && r.verifyErr !== null && this.__verifyErr === null) {
       if (String(r.verifyErr) === __NAME_MISMATCH) { this.__nameCheck(); }
       else {
-        this.__verifyErr = __handshakeErr(String(r.verifyErr), this.servername ?? this.__targetHost);
+        this.__verifyErr = __handshakeErr(String(r.verifyErr), __sniHost(this));
         this.authorized = false;
         this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
       }
@@ -573,7 +595,7 @@ class TLSSocket extends Socket {
     try { r = JSON.parse(__wjs2_tls_wrap_write(this.__tlsId, u8)); }
     catch { this.destroy(); return; }
     if (r.err !== undefined && r.err !== null) {
-      this.destroy(__handshakeErr(String(r.err), this.servername ?? this.__targetHost));
+      this.destroy(__handshakeErr(String(r.err), __sniHost(this)));
       return;
     }
     if (r.out) this.__wrapped.write(Buffer.from(r.out, "base64"));
@@ -629,7 +651,9 @@ class TLSSocket extends Socket {
   getEphemeralKeyInfo() { return this.__tls?.protocol ? {} : null; }
   getSharedSigalgs() { return []; }
   setServername(name) {
-    if (typeof name !== "string") throw __tlsErr("ERR_INVALID_ARG_TYPE", `The "name" argument must be of type string.`);
+    // node wrap.js 口径：先校验 string 形（含 Received 后缀），再禁服务端签发。
+    if (typeof name !== "string") throw __tlsErr("ERR_INVALID_ARG_TYPE", `The "name" argument must be of type string.${__invalidArgReceived(name)}`);
+    if (this.__isServer || this.__tlsServer) throw __tlsErr("ERR_TLS_SNI_FROM_SERVER", "Cannot issue SNI from a TLS server-side socket");
     this.servername = name;
   }
   setMaxSendFragment(size) { return size >= 512 && size <= 16384; }
@@ -934,67 +958,3 @@ export function setDefaultCACertificates(certs) {
 // node 口径：bundled/root 证书 PEM 无尾换行，且 getCACertificates('bundled') 即同一冻结数组。
 export const rootCertificates = Object.freeze(__certsOf("bundled").map((c) => c.replace(/\n+$/, "")));
 
-// node tls.checkServerIdentity：见 tls_context.js（校验算法族；导出经同模块拼接保持）。
-export const DEFAULT_ECDH_CURVE = "auto";
-export const DEFAULT_MIN_VERSION = "TLSv1.2";
-export const DEFAULT_MAX_VERSION = "TLSv1.3";
-export const DEFAULT_CIPHERS =
-  "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:" +
-  "ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:" +
-  "ECDHE-ECDSA-AES256-GCM-SHA384";
-export function getCiphers() {
-  return ["tls_aes_128_gcm_sha256", "tls_aes_256_gcm_sha384", "tls_chacha20_poly1305_sha256",
-    "ecdhe-ecdsa-aes128-gcm-sha256", "ecdhe-ecdsa-aes256-gcm-sha384", "ecdhe-ecdsa-chacha20-poly1305",
-    "ecdhe-rsa-aes128-gcm-sha256", "ecdhe-rsa-aes256-gcm-sha384", "ecdhe-rsa-chacha20-poly1305"];
-}
-export const CLIENT_RENEG_LIMIT = 3;
-export const CLIENT_RENEG_WINDOW = 600;
-
-export function createServer(options, cb) {
-  return new Server(options, cb);
-}
-export function connect(...args) {
-  const o = typeof args[0] === "object" && args[0] !== null ? args[0] : (typeof args[1] === "object" && args[1] !== null ? args[1] : (typeof args[2] === "object" && args[2] !== null ? args[2] : {}));
-  // node exports.connect：缺省合并 → 回调/DH 校验 → createSecureContext(options)（套件/证书/密钥
-  // 校验同 server）→ servername 禁 IP。
-  const options = {
-    ciphers: __api.DEFAULT_CIPHERS,
-    checkServerIdentity: __api.checkServerIdentity,
-    minDHSize: 1024,
-    ...o,
-  };
-  __tlsVFunction(options.checkServerIdentity, "options.checkServerIdentity");
-  __tlsVNumber(options.minDHSize, "options.minDHSize", 1);
-  const context = options.secureContext || createSecureContext(options);
-  if (options.servername && __isIP(options.servername)) {
-    throw new __tlsC.ERR_INVALID_ARG_VALUE(
-      "options.servername",
-      options.servername,
-      "Setting the TLS ServerName to an IP address is not permitted.",
-    );
-  }
-  if (!o.secureContext) o.secureContext = context;
-  const tlssock = new TLSSocket(undefined, { allowHalfOpen: !!o.allowHalfOpen });
-  tlssock.__viaConnectApi = true;
-  if (o.ALPNProtocols !== undefined) convertALPNProtocols(o.ALPNProtocols, tlssock);
-  return tlssock.connect(...args);
-}
-// node 口径：`tls.Server(...)`/`SecureContext(...)` 无 new 可调（函数构造器自 new）；
-// Proxy apply→construct，extends/instanceof 照常（connect-simple 等 9 件）。
-const __callable = (C) => new Proxy(C, { apply(t, _this, args) { return new t(...args); } });
-const __ServerCallable = __callable(Server);
-export { connect as createConnection, TLSSocket, __ServerCallable as Server, SecureContext, convertALPNProtocols };
-const __api = {
-  TLSSocket, Server: __ServerCallable, SecureContext, createServer, connect, createConnection: connect,
-  createSecureContext, getCACertificates, setDefaultCACertificates, convertALPNProtocols,
-  checkServerIdentity, getCiphers, DEFAULT_ECDH_CURVE, DEFAULT_MIN_VERSION, DEFAULT_MAX_VERSION,
-  DEFAULT_CIPHERS, CLIENT_RENEG_LIMIT, CLIENT_RENEG_WINDOW,
-};
-// node 口径：rootCertificates 为只读访问器（赋值在严格模式抛 TypeError，root-certificates 套件）。
-Object.defineProperty(__api, "rootCertificates", {
-  __proto__: null,
-  configurable: false,
-  enumerable: true,
-  get: () => rootCertificates,
-});
-export default __api;

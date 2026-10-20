@@ -343,6 +343,24 @@ function __mkSocketProxy(stream, server, peerObj) {
   const base = Object.create(net.Socket.prototype);
   Object.defineProperty(base, "connecting", { value: false, writable: true, configurable: true });
   const handler = {
+    // node proxySocketHandler.has 逐字：stream 或其会话 socket 含即 true
+    //（socket-proxy-handler-for-has 套件点名 'encrypted' in socket）。
+    has(t, prop) {
+      try {
+        if (prop in t) return true;
+      } catch {}
+      const s = stream;
+      try {
+        if (s !== undefined && s !== null && prop in Object(s)) return true;
+      } catch {}
+      const sess = s?.__session;
+      if (sess) {
+        try {
+          if (prop in sess.socket) return true;
+        } catch {}
+      }
+      return (server.__sockBag !== undefined && prop in server.__sockBag) || false;
+    },
     get(t, prop) {
       if (prop === "readable" || prop === "writable") return stream[prop];
       if (prop === "destroyed") return stream.__destroyed;
@@ -407,6 +425,9 @@ function __mkSessionSocket(session, peerObj, localObj) {
   sock.localAddress = localObj?.address;
   sock.localPort = localObj?.port;
   sock.remoteFamily = peerObj.addr?.includes(":") ? "IPv6" : "IPv4";
+  // node 会话 socket 自带 encrypted（socket-proxy-handler-for-has 套件点名
+  // request.socket.encrypted + 'encrypted' in request.socket）。
+  sock.encrypted = !!session.encrypted;
   sock.connecting = false;
   sock.destroyed = false;
   sock.readable = true;

@@ -403,3 +403,44 @@ server.listen(() => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_socket_proxy_handler_for_has_faces() {
+    // socket-proxy-handler-for-has：会话 socket 自带 encrypted；
+    // request socket 代理 has 陷阱（stream 或会话 socket 含即 true）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "h.mjs",
+        &format!(
+            r#"
+import {{ createSecureServer, connect }} from "node:http2";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = createSecureServer({{ key, cert }}, (req, res) => {{
+  console.log("encrypted", req.socket.encrypted);
+  console.log("has", "encrypted" in req.socket);
+  res.end();
+}});
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  const sess = connect(`https://127.0.0.1:${{port}}`, {{ ca: cert }});
+  sess.on("error", () => {{}});
+  sess.on("connect", () => {{
+    const st = sess.request({{ ":path": "/" }});
+    st.on("response", () => console.log("resp"));
+    st.on("end", () => {{ sess.close(); server.close(); }});
+    st.resume();
+    st.end();
+  }});
+}});
+"#
+        ),
+    );
+    for line in ["encrypted true", "has true", "resp"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

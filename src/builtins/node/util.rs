@@ -625,9 +625,9 @@ function toUSVString(input) {
 
 // ── parseEnv（dotenv 语义；真机 26.8.2 差分钉住，plan 9j）───────────────────
 // 行按 \n 切；trim 后空行/`#` 跳过；`export ` 前缀剥离；首个 `=` 分键值
-// （空键/无 `=` 丢弃）；值 trim 后首字符为引号则扫到同種闭引号（可跨行吞
-// 后续行；永不闭合则首行原文、后续行照常解析），双引号内容只展开 `\n`，
-// 单引号原文；其余（非引号）在首个 `#` 处截断再去尾空格。
+// （空键/无 `=` 丢弃）；值 trim 后首字符为引号（`"`/`'`/backtick）则扫到同種
+// 闭引号（可跨行吞后续行；永不闭合则首行原文、后续行照常解析），双引号内容
+// 只展开 `\n`，单引号/backtick 原文；其余（非引号）在首个 `#` 处截断再去尾空格。
 function parseEnv(content) {
   validateString(content, 'content');
   const entries = new Map();
@@ -643,7 +643,9 @@ function parseEnv(content) {
     if (key === '') continue;
     let val = line.slice(idx + 1).trim();
     const q = val[0];
-    if (q === '"' || q === "'") {
+    // 引号三形（真机口径：backtick 与单引号同为原文（不展开 `\n`），双引号
+    // 只展开 `\n`；闭合跨行吞后续行；闭合后尾文丢弃）。
+    if (q === '"' || q === "'" || q === '`') {
       let end = val.indexOf(q, 1);
       let j = i;
       let acc = val;
@@ -664,9 +666,19 @@ function parseEnv(content) {
     }
     entries.set(key, val);
   }
-  // 真机行为：结果键按 ASCII 排序（`B=1\nA=2` → A,B；大小写敏感，大写在前）。
-  const obj = {};
-  for (const k of [...entries.keys()].sort()) obj[k] = entries.get(k);
+  // 真机行为：结果为 null 原型对象（`__proto__: null`；deepStrictEqual 点名），
+  // 键按 ASCII 排序（`B=1\nA=2` → A,B；大小写敏感，大写在前）。
+  // `__proto__` 键走 defineProperty（赋值会触发原型 setter，真机 C++ 为自有属性）。
+  const obj = { __proto__: null };
+  for (const k of [...entries.keys()].sort()) {
+    if (k === '__proto__') {
+      Object.defineProperty(obj, k, {
+        value: entries.get(k), enumerable: true, writable: true, configurable: true,
+      });
+    } else {
+      obj[k] = entries.get(k);
+    }
+  }
   return obj;
 }
 

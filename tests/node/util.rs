@@ -150,6 +150,41 @@ try { parseEnv(42); } catch (e) { console.log("pe-t", e.code); }
 }
 
 #[test]
+fn util_parse_env_backticks() {
+    // 正常：backtick 与单引号同为原文（剥外层、不展 `\n`、内层异种引号保留、
+    // 跨行吞行）；边界：空 backtick 对、闭合后尾文丢弃；
+    // 报错：无（非法输入沿用 ARG_TYPE）；null 原型：__proto__ 键自有化。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r##"
+import { parseEnv } from "node:util";
+const o = parseEnv("A=`x`\nB=``\nC=`a\"b'c`\nD=`m\nn`\nE=`v` # t\n__proto__=p");
+console.log("vals:" + JSON.stringify([o.A, o.B, o.C, o.D, o.E, o["__proto__"]]));
+console.log("nullproto:" + (Object.getPrototypeOf(o) === null));
+console.log("own:" + Object.prototype.hasOwnProperty.call(o, "__proto__"));
+console.log("pollute:" + (({}).polluted === undefined));
+"##,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "vals:[\"x\",\"\",\"a\\\"b'c\",\"m\\nn\",\"v\",\"p\"]",
+        "nullproto:true",
+        "own:true",
+        "pollute:true",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn util_parse_args_mime_errno() {
     // 10a：parseArgs/MIMEType/getSystemError*（真机 26.8.2 探针结论转断言）。
     let dir = assert_fs::TempDir::new().unwrap();

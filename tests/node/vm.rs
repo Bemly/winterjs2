@@ -677,8 +677,10 @@ await m.evaluate().then(() => console.log("ev", "RES"), (e) => console.log("ev",
         "guard-proto TypeError:ERR_INVALID_THIS TypeError:ERR_INVALID_THIS",
         "guard-stm TypeError:ERR_INVALID_THIS",
         "guard-fn TypeError:ERR_INVALID_ARG_TYPE",
-        "link-err true ERR_VM_MODULE_LINK_FAILURE",
-        "ev ERR_VM_MODULE_LINK_FAILURE",
+        // linker 真机口径（26.8.1 实测）：非模块返回即 NOT_MODULE（v1 的
+        // LINK_FAILURE 已随 linker 落地作废），errored 记账 + 求值拒同因。
+        "link-err true ERR_VM_MODULE_NOT_MODULE",
+        "ev ERR_VM_MODULE_NOT_MODULE",
     ] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
@@ -863,6 +865,113 @@ console.log("settle-insp", inspect(Promise.resolve(42)) === "Promise { 42 }", in
         "settle-tla true true",
         "settle-tla2 true true",
         "settle-insp true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn vm_module_linker_graph_faces() {
+    // 链接器图（真机口径）：命名导入接线 + 传递/循环 + linkRequests 双路。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+// 正常：命名导入接线求值 + linker 所见（spec, 引用者）+ 传递标记 linked。
+const foo = new vm.SourceTextModule("export default 5; export const n = 6;");
+await foo.link(() => {});
+const bar = new vm.SourceTextModule('import five, { n } from "foo"; export const sum = five + n;');
+await bar.link((s, ref) => { console.log("link-ref", s === "foo" && ref === bar); return foo; });
+console.log("link-st", bar.status === "linked" && foo.status === "linked");
+await bar.evaluate();
+console.log("link-ev", bar.namespace.sum === 11);
+// 正常：extra 第三参（attributes/assert 同一空原型）+ with 属性照传照连。
+const w = new vm.SourceTextModule('import "x" with { k: "v" };');
+await w.link((s, r, p) => { console.log("link-extra", s === "x" && p.attributes.k === "v" && p.assert === p.attributes); return new vm.SourceTextModule(""); });
+// 正常：moduleRequests 冻结空原型 + phase + dependencySpecifiers 同源缓存。
+const q = new vm.SourceTextModule("import { a } from './a.js';\nimport source S from './s.js';");
+console.log("link-req", q.moduleRequests.length === 2 && Object.isFrozen(q.moduleRequests[0]) && Object.getPrototypeOf(q.moduleRequests[0]) === null && q.moduleRequests[0].phase === "evaluation" && q.moduleRequests[1].phase === "source");
+console.log("link-dep", JSON.stringify(q.dependencySpecifiers) === '["./a.js","./s.js"]' && q.dependencySpecifiers === q.dependencySpecifiers);
+// 正常：linkRequests + instantiate 双路（含已链接依赖复用）。
+const f2 = new vm.SourceTextModule("export const v = 41;");
+f2.linkRequests([]);
+f2.instantiate();
+const g2 = new vm.SourceTextModule('import { v } from "F"; export const w = v + 1;');
+g2.linkRequests([f2]);
+g2.instantiate();
+await g2.evaluate();
+console.log("link-inst", g2.namespace.w === 42);
+// 正常：循环链接（linker 恰调两次，foo 保持 linking 可见）。
+const ca = new vm.SourceTextModule("import getB from 'cb'; export const a = 21; export default getB() * 2;");
+const cb = new vm.SourceTextModule("import { a } from 'ca'; export default function getB() { return a + 1; }");
+let ncalls = 0;
+await ca.link(async (s, r) => { ncalls++; return s === "cb" ? cb : ca; });
+console.log("link-circ", ncalls === 2 && cb.status === "linked");
+await ca.evaluate();
+console.log("link-circev", ca.namespace.default === 44);
+// 报错：非模块/异 ctx/失败依赖（cause 透传）/键不一致/长度/未链接传递。
+const bad = async (f) => { try { await f(); return "NO-THROW"; } catch (e) { return e.code || "(nocode)"; } };
+const m1 = new vm.SourceTextModule('import "x";');
+console.log("link-err1", await bad(() => m1.link(() => ({}))), m1.status);
+const c = vm.createContext({});
+const cf = new vm.SourceTextModule("", { context: c });
+const m2 = new vm.SourceTextModule('import "f";');
+console.log("link-err2", await bad(() => m2.link(() => cf)), m2.status);
+const depErr = new Error("boom");
+globalThis.__depErr = depErr;
+const eb = new vm.SourceTextModule("throw globalThis.__depErr;");
+await eb.link(() => {});
+try { await eb.evaluate(); } catch {}
+delete globalThis.__depErr;
+const rt = new vm.SourceTextModule('import "b";');
+console.log("link-err3", await bad(() => rt.link(() => eb)), rt.error && rt.error.cause === depErr);
+const mm = new vm.SourceTextModule('import a from "a";');
+const syncBad = (f) => { try { f(); return "NO-THROW"; } catch (e) { return `${e.code || "(nocode)"}|${e.message}`; } };
+console.log("link-mm", syncBad(() => mm.linkRequests([f2, f2])));
+const iu = new vm.SourceTextModule('import bar from "bar";', { identifier: "file://foo" });
+const ib = new vm.SourceTextModule('import "unknown";', { identifier: "file://bar" });
+iu.linkRequests([ib]);
+console.log("link-insterr", syncBad(() => iu.instantiate()));
+// 边界：link 已链接/求值后重 link；instantiate 重入；linker 同步抛状态不动。
+const z = new vm.SourceTextModule("export default 1;");
+await z.link(() => {});
+console.log("link-dup", await bad(() => z.link(() => {})));
+const ze = new vm.SourceTextModule("export default 1;");
+ze.linkRequests([]);
+ze.instantiate();
+console.log("link-dup2", syncBad(() => ze.instantiate()));
+const zs = new vm.SourceTextModule('import "x";');
+const zb = new Error("sync-boom");
+try { await zs.link(() => { throw zb; }); } catch (e) { console.log("link-syncdrop", e === zb, zs.status); }
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "link-ref true",
+        "link-st true",
+        "link-ev true",
+        "link-extra true",
+        "link-req true",
+        "link-dep true",
+        "link-inst true",
+        "link-circ true",
+        "link-circev true",
+        "link-err1 ERR_VM_MODULE_NOT_MODULE errored",
+        "link-err2 ERR_VM_MODULE_DIFFERENT_CONTEXT errored",
+        "link-err3 ERR_VM_MODULE_LINK_FAILURE true",
+        "link-mm ERR_MODULE_LINK_MISMATCH|Expected 1 modules, got 2",
+        "link-insterr ERR_VM_MODULE_LINK_FAILURE|request for 'unknown' can not be resolved on module 'file://bar' that is not linked",
+        "link-dup ERR_VM_MODULE_ALREADY_LINKED",
+        "link-dup2 ERR_VM_MODULE_STATUS|Module status must be unlinked",
+        "link-syncdrop true linking",
     ] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }

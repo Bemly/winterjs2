@@ -1,13 +1,78 @@
 // ── 9i-1 模块系（真机口径：node --experimental-vm-modules 实测，见模块头注）──
-// SourceTextModule：Rust 侧编译/link/evaluate（零导入全链；带导入 link 即
-// ERR_VM_MODULE_LINK_FAILURE，linker 切片后续）；SyntheticModule 纯 JS。
+// SourceTextModule：Rust 侧编译/link/evaluate（linker 图：JS 壳 BFS 调 linker
+// 收集 (referrer, spec) → dep 边，native 换装会话 hook 经
+// `LoadRequestedModules` 接线 + `ModuleLink`；零导入走旧单步路）；
+// SyntheticModule 纯 JS（link 依赖位不可接线——引擎墙，见 __isSynthetic 注）。
+import { inspect as __vsInspect } from "node:util";
 
-// 模块标识真机按 context 独立计数（无 context 共用默认计数，26.8.1 实测）。
+// 模块标识按 context 独立计数（无 context 共用默认计数，26.8.1 实测）。
+// SourceText/Synthetic 共用同一计数器（真机同源，实测）。
 const __vmModSeqs = new Map();
 function __vmModSeqFor(key) {
   const n = __vmModSeqs.get(key) ?? 0;
   __vmModSeqs.set(key, n + 1);
   return n;
+}
+
+// 实例字段统一落为不可枚举（真机 `Object.keys(m)` 为空；inspect 走 custom）。
+function __vmHideFields(m) {
+  for (const k of Object.keys(m)) {
+    Object.defineProperty(m, k, { enumerable: false });
+  }
+}
+
+// 请求缓存键（linkRequests 键一致组用；phase 不入键，真机 ModuleCacheKey 口径）。
+function __vmReqKey(r) {
+  const attrs = r.attributes || {};
+  const keys = Object.keys(attrs).sort();
+  return r.specifier + "\n" + keys.map((k) => k + "=" + attrs[k]).join("\n");
+}
+
+// linker 第三参 extra（attributes/assert 同一空原型对象，真机实测）。
+function __vmLinkExtra(r) {
+  const attributes = Object.create(null);
+  Object.assign(attributes, r.attributes || {});
+  return { attributes, assert: attributes };
+}
+
+function __isModuleLive(m) {
+  return (typeof m === "object" && m !== null) || typeof m === "function";
+}
+
+// inspect 名牌原型（`util.inspect` 按 `constructor.name` 打头；真机三字段体）。
+const __vmInspectProtos = new Map();
+function __vmInspectTag(name) {
+  let p = __vmInspectProtos.get(name);
+  if (p === undefined) {
+    const ctor = function () {};
+    Object.defineProperty(ctor, "name", { value: name });
+    p = ctor.prototype;
+    __vmInspectProtos.set(name, p);
+  }
+  return p;
+}
+function __vmInspectBody(m, name, depth, options) {
+  // this 凭据与 getter 同口径（checkGettersErrors 点名 custom 借调）。
+  if ((typeof m !== "object" && typeof m !== "function") || m === null || !__vmModLive.has(m)) {
+    const err = new TypeError('Value of "this" must be of type Module');
+    err.code = "ERR_INVALID_THIS";
+    throw err;
+  }
+  if (typeof depth === "number" && depth < 0) return `[${name}]`;
+  // 真机断行计入 `Name ` 前缀（plain 体 70 字符、单行 87：默认 80 即断；
+  // 本仓 inspect 只计体，需此处复刻阈值——util 面动则删此分支）。
+  const bl = (options && typeof options.breakLength === "number") ? options.breakLength : 80;
+  const body = { status: m.__status, identifier: m.__identifier, context: m.__context };
+  let single = "";
+  try {
+    single = `${name} ${__vsInspect(body, { ...(options || {}), colors: false, breakLength: 1e9 })}`;
+  } catch { single = ""; }
+  if (single !== "" && single.length <= bl) {
+    Object.setPrototypeOf(body, __vmInspectTag(name));
+    return __vsInspect(body, options);
+  }
+  const nested = (typeof depth === "number") ? { ...(options || {}), depth: depth - 1 } : options;
+  return `${name} {\n  status: ${__vsInspect(m.__status, nested)},\n  identifier: ${__vsInspect(m.__identifier, nested)},\n  context: ${__vsInspect(m.__context, nested)}\n}`;
 }
 
 // invalidArgTypeHelper 近似（cachedData/exportNames 文案用，真机实测采样）。
@@ -40,10 +105,10 @@ function __vmModTag(code) {
 }
 
 function __modErr(code, message) {
-  // 真机码类→构造器映射（实测）：ARG_TYPE→TypeError、OUT_OF_RANGE→RangeError，
-  // 其余 Error；只定构造器，码仍挂载（module-errors 点名 name）。
+  // 真机码类→构造器映射（实测）：ARG_TYPE/ARG_VALUE→TypeError、
+  // OUT_OF_RANGE→RangeError，其余 Error；只定构造器，码仍挂载（module-errors 点名 name）。
   let err;
-  if (code === "ERR_INVALID_ARG_TYPE") err = new TypeError(message);
+  if (code === "ERR_INVALID_ARG_TYPE" || code === "ERR_INVALID_ARG_VALUE") err = new TypeError(message);
   else if (code === "ERR_OUT_OF_RANGE") err = new RangeError(message);
   else err = new Error(message);
   err.code = code;
@@ -81,7 +146,7 @@ export class Module {
   link(linker) {
     this.__assertThis();
     if (typeof linker !== "function") {
-      __modErr("ERR_INVALID_ARG_TYPE", `The "linker" argument must be of type function. Received ${linker === null ? "null" : typeof linker}`);
+      __modErr("ERR_INVALID_ARG_TYPE", `The "linker" argument must be of type function. Received ${__recvArg(linker)}`);
     }
     return this.__doLink(linker);
   }
@@ -134,6 +199,7 @@ export class SourceTextModule extends Module {
     this.__source = code;
     this.__linkReqs = undefined;
     this.__depCache = undefined;
+    this.__reqCache = undefined;
     this.__modReqCache = undefined;
     // cachedData 接受并记忆匹配结论（存根：内容哈希比对，见 createCachedData）。
     this.__cachedRejected = undefined;
@@ -158,6 +224,7 @@ export class SourceTextModule extends Module {
     }
     this.__id = __vmCall(() => __wjs2_vm_compile_mod(ctxId, identifier, code));
     __vmModAutoRelease(this, this.__id);
+    __vmHideFields(this);
   }
   get status() { this.__assertThis(); return this.__status; }
   get identifier() { this.__assertThis(); return this.__identifier; }
@@ -165,14 +232,30 @@ export class SourceTextModule extends Module {
   get dependencySpecifiers() {
     this.__assertThis();
     if (this.__depCache === undefined) {
-      this.__depCache = JSON.parse(__vmCall(() => __wjs2_vm_mod_deps(this.__id)));
+      this.__depCache = this.__requests().map((r) => r.specifier);
     }
     return this.__depCache;
+  }
+  // 静态请求表（native 全量 `{specifier,attributes,phase}`；首现序全键去重）。
+  __requests() {
+    if (this.__reqCache === undefined) {
+      this.__reqCache = JSON.parse(__vmCall(() => __wjs2_vm_mod_deps(this.__id)));
+    }
+    return this.__reqCache;
   }
   get moduleRequests() {
     this.__assertThis();
     if (this.__modReqCache === undefined) {
-      this.__modReqCache = this.dependencySpecifiers.map((s) => ({ specifier: s, attributes: {}, phase: "evaluation" }));
+      // 真机口径：空原型冻结对象（条目与 attributes 双冻；phase 源自引擎请求）。
+      this.__modReqCache = this.__requests().map((r) => {
+        const attributes = Object.create(null);
+        Object.assign(attributes, r.attributes || {});
+        const item = Object.create(null);
+        item.specifier = r.specifier;
+        item.attributes = Object.freeze(attributes);
+        item.phase = r.phase;
+        return Object.freeze(item);
+      });
     }
     return this.__modReqCache;
   }
@@ -196,6 +279,9 @@ export class SourceTextModule extends Module {
     return this.__error;
   }
   get cachedDataRejected() { return this.__cachedRejected; }
+  [__vsInspect.custom](depth, options) {
+    return __vmInspectBody(this, "SourceTextModule", depth, options);
+  }
   createCachedData() {
     if (this.__status === "evaluated" || this.__status === "errored") {
       __modErr("ERR_VM_MODULE_CANNOT_CREATE_CACHED_DATA", "Cannot create cached data for a module that has already been evaluated");
@@ -204,8 +290,34 @@ export class SourceTextModule extends Module {
   }
   linkRequests(requests) {
     this.__assertThis();
+    // 真机顺序：状态 → 数组形 → 长度 → 逐项（身份/同 ctx）→ 同键同模块。
+    if (this.__status !== "unlinked") {
+      __modErr("ERR_VM_MODULE_STATUS", "Module status must be unlinked");
+    }
     if (!Array.isArray(requests)) {
       __modErr("ERR_INVALID_ARG_TYPE", `The "modules" argument must be an instance of Array. Received ${__recvArg(requests)}`);
+    }
+    const reqs = this.__requests();
+    if (requests.length !== reqs.length) {
+      __modErr("ERR_MODULE_LINK_MISMATCH", `Expected ${reqs.length} modules, got ${requests.length}`);
+    }
+    const keyMod = new Map();
+    for (let i = 0; i < reqs.length; i++) {
+      const m = requests[i];
+      if (!__isModuleLive(m) || !__vmModLive.has(m)) {
+        __modErr("ERR_VM_MODULE_NOT_MODULE", "Provided module is not an instance of Module");
+      }
+      if (!(m instanceof SyntheticModule) && m.__ctxId !== this.__ctxId) {
+        __modErr("ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
+      }
+      const key = __vmReqKey(reqs[i]);
+      if (keyMod.has(key)) {
+        if (keyMod.get(key).mod !== m) {
+          __modErr("ERR_MODULE_LINK_MISMATCH", `Module request 'ModuleCacheKey("${reqs[i].specifier}")' at index ${i} must be linked to the same module requested at index ${keyMod.get(key).index}`);
+        }
+      } else {
+        keyMod.set(key, { mod: m, index: i });
+      }
     }
     this.__linkReqs = requests;
     return undefined;
@@ -218,31 +330,149 @@ export class SourceTextModule extends Module {
     if (this.__linkReqs === undefined) {
       __modErr("ERR_VM_MODULE_LINK_FAILURE", "module is not linked");
     }
-    __vmCall(() => __wjs2_vm_link(this.__id));
-    this.__status = "linked";
+    // linkRequests 绑定 BFS：未链接且有请求的依赖必须自带 linkReqs，
+    // 否则按真机点名该依赖（首请求 spec + identifier）。
+    const seen = new Map();
+    seen.set(this.__id, this);
+    const modules = [this.__id];
+    const edges = [];
+    const queue = [this];
+    while (queue.length > 0) {
+      const ref = queue.shift();
+      const reqs = ref.__requests();
+      const bound = ref.__linkReqs;
+      for (let i = 0; i < reqs.length; i++) {
+        const m = bound[i];
+        if (m.__status === "errored") {
+          const err = new Error(`request for '${reqs[i].specifier}' resolved to an errored module`, { cause: m.__error });
+          err.code = "ERR_VM_MODULE_LINK_FAILURE";
+          throw err;
+        }
+        if (m instanceof SyntheticModule) {
+          __modErr("ERR_VM_MODULE_LINK_FAILURE", `request for '${reqs[i].specifier}' resolved to a SyntheticModule which can not be linked by this engine (no named-synthetic record API; Gecko153 Modules.h only exposes CreateDefaultExportSyntheticModule)`);
+        }
+        edges.push([ref.__id, reqs[i].specifier, m.__id]);
+        if (!seen.has(m.__id)) {
+          seen.set(m.__id, m);
+          // 已链接/已求值依赖沿用既有绑定，不遍历（与 link() 混用口径）；
+          // 未链接且有请求者必须自带 linkReqs，否则按真机点名。
+          if (m.__status === "unlinked") {
+            const depReqs = m.__requests();
+            if (depReqs.length > 0 && m.__linkReqs === undefined) {
+              __modErr("ERR_VM_MODULE_LINK_FAILURE", `request for '${depReqs[0].specifier}' can not be resolved on module '${m.__identifier}' that is not linked`);
+            }
+            modules.push(m.__id);
+            queue.push(m);
+          }
+        }
+      }
+    }
+    __vmCall(() => __wjs2_vm_link(this.__id, JSON.stringify({ modules, edges })));
+    for (const w of seen.values()) {
+      if (w.__status === "unlinked" || w.__status === "linking") w.__status = "linked";
+    }
     return undefined;
   }
-  __doLink(linker) {
+  __linkValidateDep(dep, spec) {
+    // linker 返回值校验（真机顺序：身份 → synthetic 墙 → 同 ctx → 已失败态）；
+    // 失败一律记 entry errored（同步抛 linker 自身错误除外，V8 quirk）。
+    if (!__isModuleLive(dep) || !__vmModLive.has(dep)) {
+      __modErr("ERR_VM_MODULE_NOT_MODULE", "Provided module is not an instance of Module");
+    }
+    if (dep instanceof SyntheticModule) {
+      __modErr("ERR_VM_MODULE_LINK_FAILURE", `request for '${spec}' resolved to a SyntheticModule which can not be linked by this engine (no named-synthetic record API; Gecko153 Modules.h only exposes CreateDefaultExportSyntheticModule)`);
+    }
+    if (dep.__ctxId !== this.__ctxId) {
+      __modErr("ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context");
+    }
+    if (dep.__status === "errored") {
+      const err = new Error(`request for '${spec}' resolved to an errored module`, { cause: dep.__error });
+      err.code = "ERR_VM_MODULE_LINK_FAILURE";
+      throw err;
+    }
+    return dep;
+  }
+  async __doLink(linker) {
     if (this.__status !== "unlinked") {
-      if (this.__status === "linking" || this.__status === "evaluating") {
-        return __modStatusErr("ERR_VM_MODULE_STATUS", "Module status must be unlinked");
+      if (this.__status === "linked") {
+        return __modStatusErr("ERR_VM_MODULE_ALREADY_LINKED", "Module has already been linked");
       }
-      return __modStatusErr("ERR_VM_MODULE_ALREADY_LINKED", "Module has already been linked");
+      return __modStatusErr("ERR_VM_MODULE_STATUS", "Module status must be unlinked");
     }
     // linking 同步落位（真机 link 后 status 即 linking，实测）。
     this.__status = "linking";
-    void linker;
-    return Promise.resolve().then(() => {
-      try {
-        __vmCall(() => __wjs2_vm_link(this.__id));
-      } catch (e) {
-        // 链接失败即 errored（真机口径；v1 零导入外请求同样落 errored）。
-        this.__status = "errored";
-        this.__error = e;
-        throw e;
+    const reqs = this.__requests();
+    if (reqs.length === 0) {
+      return Promise.resolve().then(() => {
+        try {
+          __vmCall(() => __wjs2_vm_link(this.__id));
+        } catch (e) {
+          // 链接失败即 errored（真机口径）。
+          this.__status = "errored";
+          this.__error = e;
+          throw e;
+        }
+        this.__status = "linked";
+      });
+    }
+    // linker BFS（transitive；每 (referrer, 请求键) 调一次；异步 linker 顺序
+    // await——shared-deps race 回归即靠此串行化；同步抛 linker 原错且状态不动）。
+    const seen = new Map();
+    seen.set(this.__id, this);
+    const modules = [this.__id];
+    const edges = [];
+    const queue = [this];
+    while (queue.length > 0) {
+      const ref = queue.shift();
+      const rreqs = ref.__requests();
+      const called = new Set();
+      for (const r of rreqs) {
+        const key = __vmReqKey(r);
+        if (called.has(key)) continue;
+        called.add(key);
+        let dep;
+        try {
+          dep = linker(r.specifier, ref, __vmLinkExtra(r));
+        } catch (e) {
+          throw e;
+        }
+        try {
+          dep = await dep;
+        } catch (e) {
+          this.__status = "errored";
+          this.__error = e;
+          throw e;
+        }
+        try {
+          this.__linkValidateDep(dep, r.specifier);
+        } catch (e) {
+          this.__status = "errored";
+          this.__error = e;
+          throw e;
+        }
+        edges.push([ref.__id, r.specifier, dep.__id]);
+        if (!seen.has(dep.__id)) {
+          seen.set(dep.__id, dep);
+          // 已链接/已求值依赖不再为其请求调 linker（V8 复用既有绑定；
+          // depth 链式口径），只记边供引擎接线。
+          if (dep.__status !== "linked" && dep.__status !== "evaluated") {
+            modules.push(dep.__id);
+            queue.push(dep);
+          }
+        }
       }
-      this.__status = "linked";
-    });
+    }
+    try {
+      __vmCall(() => __wjs2_vm_link(this.__id, JSON.stringify({ modules, edges })));
+    } catch (e) {
+      this.__status = "errored";
+      this.__error = e;
+      throw e;
+    }
+    for (const w of seen.values()) {
+      if (w.__status === "unlinked" || w.__status === "linking") w.__status = "linked";
+    }
+    return undefined;
   }
   __doEvaluate(timeoutMs = 0) {
     if (this.__status !== "linked" && this.__status !== "evaluating" && this.__status !== "evaluated" && this.__status !== "errored") {
@@ -341,8 +571,17 @@ export class SyntheticModule extends Module {
       this.__exports[n] = undefined;
     }
     this.__cb = evaluateCallback;
-    // Synthetic 无显式 context 概念：标识走默认计数（真机实测）。
-    this.__identifier = __normStr(options.identifier, "identifier", `vm:module(${__vmModSeqFor("")})`);
+    // Synthetic 亦收 context（真机：同 SourceText 按 context 独立计数 + 身份透出）。
+    let ctxKey = "";
+    if (options.context !== undefined) {
+      const ctxId = __validateCtx(options.context);
+      ctxKey = String(ctxId);
+      this.__context = options.context;
+    } else {
+      this.__context = undefined;
+    }
+    this.__ctxId = ctxKey === "" ? undefined : ctxKey;
+    this.__identifier = __normStr(options.identifier, "identifier", `vm:module(${__vmModSeqFor(ctxKey)})`);
     this.__status = "linked";
     this.__error = null;
     // 命名空间活绑定：冻结外壳 + getter 直读 __exports（setExport 评估后仍生效，真机）。
@@ -351,9 +590,11 @@ export class SyntheticModule extends Module {
       Object.defineProperty(ns, n, { enumerable: true, configurable: true, get: () => this.__exports[n] });
     }
     this.__ns = Object.freeze(ns);
+    __vmHideFields(this);
   }
   get status() { this.__assertThis(); return this.__status; }
   get identifier() { this.__assertThis(); return this.__identifier; }
+  get context() { this.__assertThis(); return this.__context; }
   get dependencySpecifiers() { this.__assertThis(); return undefined; }
   get namespace() {
     this.__assertThis();
@@ -370,7 +611,13 @@ export class SyntheticModule extends Module {
     return this.__error;
   }
   setExport(name, value) {
-    this.__assertThis();
+    // 显式凭据（`this.__assertThis()` 在 null/裸对象上先炸属性访问/方法缺失，
+    // 丢码；真机一律 ERR_INVALID_THIS，实测）。
+    if (!__isModuleLive(this) || !__vmModLive.has(this)) {
+      const err = new TypeError('Value of "this" must be of type Module');
+      err.code = "ERR_INVALID_THIS";
+      throw err;
+    }
     if (typeof name !== "string") {
       const err = new TypeError(`The "name" argument must be of type string. Received ${__recvArg(name)}`);
       throw err;
@@ -397,24 +644,13 @@ export class SyntheticModule extends Module {
     if (this.__status === "evaluating") {
       return __modStatusErr("ERR_VM_MODULE_STATUS", "Module status must not be evaluating");
     }
-    // 求值步同步执行（真机：同步完成即同步落定；异步回调的拒绝走
-    // unhandledRejection——按监听有无分流：有监听则手动派发（运行时不发该
-    // 事件、只做 fatal），无监听则抛回浮动 promise 交运行时 fatal，
-    // 与真机无监听行为一致）。
+    // 求值步同步执行（真机：同步完成即同步落定）。回调返回的 thenable 不认领、
+    // 不派发——用户侧挂载处理器即 handled；无人认领的拒绝交运行时既有
+    // unhandled 机制（与 V8 微任务检查点语义一致；旧侧车 `throw e` 会衍生
+    // 二次 unhandled，误报已 handled 情形，删）。
     this.__status = "evaluating";
     try {
-      const r = this.__cb(this.__nsHelper());
-      if (r !== null && (typeof r === "object" || typeof r === "function") && typeof r.then === "function") {
-        r.then(undefined, (e) => {
-          let n = 0;
-          try { n = (typeof process !== "undefined" && process.listenerCount) ? process.listenerCount("unhandledRejection") : 0; } catch { n = 0; }
-          if (n > 0) {
-            process.emit("unhandledRejection", e, r);
-          } else {
-            throw e;
-          }
-        });
-      }
+      this.__cb(this.__nsHelper());
     } catch (e) {
       this.__status = "errored";
       this.__error = e;
@@ -426,6 +662,9 @@ export class SyntheticModule extends Module {
   __nsHelper() {
     // 评估回调拿到的设置器（真机按导出名设值）。
     return { setExport: (k, v) => this.setExport(k, v) };
+  }
+  [__vsInspect.custom](depth, options) {
+    return __vmInspectBody(this, "SyntheticModule", depth, options);
   }
 }
 

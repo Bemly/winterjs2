@@ -660,7 +660,11 @@ pub unsafe extern "C" fn tls_listen(
 }
 
 /// 内嵌 ESM 源（`node:tls`；P2 起 TLSSocket 建在 net.Socket 之上，JS 见 `tls.js`）。
-pub const SOURCE: &str = concat!(include_str!("tls.js"), include_str!("tls_context.js"));
+pub const SOURCE: &str = concat!(
+    include_str!("tls.js"),
+    include_str!("tls_defaultecdhcurve.js"),
+    include_str!("tls_context.js")
+);
 
 #[cfg(test)]
 mod tests {

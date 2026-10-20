@@ -305,3 +305,126 @@ setTimeout(() => console.log("end-ok"), 1500);
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn tls_absent_sni_reports_false() {
+    // node 真机：客户端 servername 缺席（''/IP 直连）即不发 SNI，
+    // 服务端 socket.servername 为 false（非 null）；显式名则原样透传。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "s.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = tls.createServer({{ key, cert }}, (sock) => {{
+  console.log("srv-sni", JSON.stringify(sock.servername));
+  sock.on("data", () => sock.end());
+  sock.on("error", () => {{}});
+}});
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  // 正常：显式 servername 透传（DNS 名，webpki 合法形）。
+  const a = tls.connect({{ port, host: "127.0.0.1", servername: "example.com", rejectUnauthorized: false }}, () => {{
+    a.write("x");
+    a.on("data", () => {{}});
+    a.on("end", () => {{
+      a.destroy();
+      // 边界：显式 '' 即缺席（SNI 禁发），服务端见 false。
+      const b = tls.connect({{ port, host: "127.0.0.1", servername: "", rejectUnauthorized: false }}, () => {{
+        b.write("y");
+        b.on("data", () => {{}});
+        b.on("end", () => {{ b.destroy(); server.close(); }});
+      }});
+      b.on("error", () => {{}});
+    }});
+  }});
+  a.on("error", () => {{}});
+}});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#
+        ),
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines.contains(&"srv-sni \"example.com\""), "out: {out}");
+    assert!(lines.contains(&"srv-sni false"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn tls_verify_verdict_precedes_flush() {
+    // node onConnectSecure 口径：裁决（捕获错/身份校验）先于应用字节上网；
+    // 须销毁即预连写随 socket 弃置——服务端零字节（checkServerIdentity 套件幻影请求根因）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "v.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+let srvBytes = 0;
+const server = tls.createServer({{ key, cert }}, (sock) => {{
+  sock.on("data", (c) => {{ srvBytes += c.length; sock.write("echo:" + c); }});
+}});
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  // 报错：自签无 ca → 链错硬失败，服务端零字节（预连写不上网）。
+  const step1 = () => {{
+    const c = tls.connect({{ port, host: "127.0.0.1" }});
+    c.write("nope"); // 预连写：裁决失败即随 socket 弃置
+    c.on("data", () => {{}});
+    c.on("error", (e) => {{
+      console.log("untrusted", e.code, "srvbytes", srvBytes);
+      c.destroy();
+      step2();
+    }});
+  }};
+  // 边界：名错 + 自定义 CSI 放行 → authorized 且数据通。
+  const step2 = () => {{
+    const c = tls.connect({{ port, host: "127.0.0.1", ca: cert, servername: "mismatch.invalid",
+      checkServerIdentity: () => undefined }}, () => {{
+      console.log("csi-pass", c.authorized, c.authorizationError);
+      c.write("hi");
+    }});
+    c.on("data", (d) => {{ console.log("echo", String(d), "srvbytes", srvBytes); c.destroy(); step3(); }});
+    c.on("error", (e) => console.log("unexpected", e.code));
+  }};
+  // 报错：名错 + 自定义 CSI 落错 → error，服务端无新增字节。
+  const step3 = () => {{
+    const before = srvBytes;
+    const c = tls.connect({{ port, host: "127.0.0.1", ca: cert, servername: "mismatch.invalid",
+      checkServerIdentity: () => new Error("nope") }});
+    c.write("nope2"); // 预连写：裁决失败即随 socket 弃置
+    c.on("data", () => {{}});
+    c.on("error", (e) => {{
+      console.log("csi-fail", e.message, c.authorized, "srvbytes", srvBytes, "delta", srvBytes - before);
+      c.destroy();
+      server.close();
+    }});
+  }};
+  step1();
+}});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#
+        ),
+    );
+    assert!(out.contains("untrusted UNABLE_TO_VERIFY_LEAF_SIGNATURE srvbytes 0"), "out: {out}");
+    assert!(out.contains("csi-pass true null"), "out: {out}");
+    assert!(out.contains("echo echo:hi srvbytes 2"), "out: {out}");
+    assert!(out.contains("csi-fail nope false srvbytes 2 delta 0"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}

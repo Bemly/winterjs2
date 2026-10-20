@@ -239,6 +239,40 @@ function __packValue(v, st) {
   if (typeof v === "bigint") return { __wjs2_xfer: st.nonce, k: "big", v: String(v) };
   if (v === undefined) return { __wjs2_xfer: st.nonce, k: "undef" };
   if (v instanceof Date) return { __wjs2_xfer: st.nonce, k: "date", v: v.toISOString() };
+  // CryptoKey 跨线程（cryptokey-workers/clone-transfer 套件）：经槽快照过线，
+  // 收端复原（binary 槽一律 b64，usages 拷贝）。
+  try {
+    const __cki = (typeof globalThis.__wjs2_cryptoKeyInfo === "function")
+      ? globalThis.__wjs2_cryptoKeyInfo(v)
+      : null;
+    if (__cki !== null && __cki !== undefined) {
+      const __pkBin = (x) => {
+        if (x instanceof ArrayBuffer) return { __wjs2Bytes: __b64encode(new Uint8Array(x)) };
+        if (ArrayBuffer.isView(x)) return { __wjs2Bytes: __b64encode(new Uint8Array(x.buffer, x.byteOffset, x.byteLength)), __wjs2View: x.constructor?.name };
+        if (Array.isArray(x)) return x.map(__pkBin);
+        if (x !== null && typeof x === "object") {
+          const o = {};
+          for (const k of Object.keys(x)) o[k] = __pkBin(x[k]);
+          return o;
+        }
+        return x;
+      };
+      const __mat = (() => {
+        const m = __cki.material;
+        if (m instanceof ArrayBuffer) return new Uint8Array(m);
+        if (ArrayBuffer.isView(m)) return new Uint8Array(m.buffer, m.byteOffset, m.byteLength);
+        return new Uint8Array(0);
+      })();
+      return {
+        __wjs2_xfer: st.nonce, k: "key",
+        alg: __pkBin(__cki.alg ?? null),
+        materialB64: __b64encode(__mat),
+        usages: [...(__cki.usages ?? [])],
+        extractable: !!__cki.extractable,
+        kind: __cki.kind ?? "secret",
+      };
+    }
+  } catch {}
   if (v instanceof Map) {
     // 容器先序 id：首访编号，祖先/共享重访即 `ref`（解码侧同序注册，恒后向引用）。
     const hit = st.path.get(v);
@@ -330,6 +364,29 @@ function __unpackValue(v, st) {
           return s;
         }
         case "buf": return __b64decode(v.b).buffer;
+        case "key": {
+          // CryptoKey 复原（无桥即不可克隆， strukt 同 structuredClone 面）。
+          if (typeof globalThis.__wjs2_makeCryptoKey !== "function") {
+            __dataCloneErr("CryptoKey could not be cloned.");
+          }
+          const __unBin = (x) => {
+            if (x !== null && typeof x === "object" && typeof x.__wjs2Bytes === "string" && Object.keys(x).length <= 2) {
+              const u8 = __b64decode(x.__wjs2Bytes);
+              return x.__wjs2View === "DataView" ? new DataView(u8.buffer) : u8;
+            }
+            if (Array.isArray(x)) return x.map(__unBin);
+            if (x !== null && typeof x === "object") {
+              const o = {};
+              for (const k of Object.keys(x)) o[k] = __unBin(x[k]);
+              return o;
+            }
+            return x;
+          };
+          return globalThis.__wjs2_makeCryptoKey(
+            __unBin(v.alg), String(v.materialB64 ?? ""),
+            Array.isArray(v.usages) ? [...v.usages] : [],
+            !!v.extractable, String(v.kind ?? "secret"));
+        }
         case "blob": {
           const u8b = __b64decode(v.b);
           if (typeof v.f === "string" && typeof File !== "undefined") {

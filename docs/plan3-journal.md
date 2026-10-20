@@ -2991,3 +2991,12 @@ G1/G2/G3/G9 已收官。）
 - 判明：derivebits.js 余 X448（montgomery 无高层 DH，另案）；X448 同挡
   derivekey-cfrg；KMAC 需 tiny-keccak kmac 特性门（零新 crate，待批）；
   RSA-SHA3 需手工（无单独翻转）；OCB 无轮子。
+
+## 2026-10-21 webcrypto 落地批 5（39 件 16→18 绿）
+
+- 转绿 2：cryptokey-clone-transfer + cryptokey-workers（worker 结构化克隆
+  CryptoKey 门面：槽快照过线 + 收端复原）。
+- 实现：`__wjs2_makeCryptoKey` 复原桥；worker_clone pack/unpack `key` 槽
+  （binary 槽 b64，usages 拷贝）。
+- 排障：复原桥引黑盒外 `__b64dec`（IIFE 内）致 messageerror 静默丢信，
+  改内联 atob；教训：跨 scope 引用必就地验证。

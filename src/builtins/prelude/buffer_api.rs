@@ -199,6 +199,13 @@ globalThis.__wjs2_cryptoKeyInfo = (k) => {
   if (!s) return null;
   return { kind: s.kind, material: s.material, usages: s.usages, extractable: s.extractable, alg: s.alg };
 };
+// worker 结构化克隆复原桥（cryptokey-workers/clone-transfer 套件）。
+globalThis.__wjs2_makeCryptoKey = (alg, materialB64, usages, extractable, kind) => {
+  const bin = atob(String(materialB64 ?? ""));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return __wjs2_makeKey(alg, bytes, usages, extractable, kind);
+};
 function __wjs2_keyBytes(v) {
   if (v instanceof ArrayBuffer) return new Uint8Array(v);
   if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);

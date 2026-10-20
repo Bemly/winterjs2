@@ -744,7 +744,7 @@ unsafe extern "C" {
 // libc 的 mach_thread_self/thread_info 系标记 deprecate（指向上游 mach2 轮子；
 // 引新 crate 须 §0.5 用户点头，libc 仍可用，属预期告警，允许）。
 #[allow(deprecated)]
-fn thread_micros() -> (f64, f64) {
+pub(crate) fn thread_micros() -> (f64, f64) {
     // SAFETY: mach port 由 mach_thread_self 当场取得、用后即 deallocate；
     // thread_info 同步写入栈上 info，无别名；flavor/count 均为常量口径。
     unsafe {
@@ -766,7 +766,7 @@ fn thread_micros() -> (f64, f64) {
     }
 }
 #[cfg(all(unix, not(target_vendor = "apple")))]
-fn thread_micros() -> (f64, f64) {
+pub(crate) fn thread_micros() -> (f64, f64) {
     // SAFETY: 同 rusage_self_micros（Linux RUSAGE_THREAD）。
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut r) } != 0 {
@@ -776,7 +776,7 @@ fn thread_micros() -> (f64, f64) {
     (tv(r.ru_utime), tv(r.ru_stime))
 }
 #[cfg(not(unix))]
-fn thread_micros() -> (f64, f64) {
+pub(crate) fn thread_micros() -> (f64, f64) {
     (0.0, 0.0)
 }
 

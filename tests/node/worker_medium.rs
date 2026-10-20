@@ -60,3 +60,61 @@ setTimeout(() => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_cpu_usage_faces() {
+    // 正常：prev/curr 单调非减 + delta 差值（node test-worker-cpu-usage）；
+    // 报错：非对象/坏字段抛 INVALID_ARG_TYPE/OUT_OF_RANGE（文案逐字对真机）；
+    // 边界：NaN/undefined/null 视作无参；退出后采样拒 NOT_RUNNING。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Worker } from "node:worker_threads";
+const worker = new Worker("const { parentPort } = require('worker_threads'); parentPort.on('message', () => {});", { eval: true });
+const validate = (r) => typeof r === "object" && r !== null && r.user >= 0 && r.system >= 0 && Number.isFinite(r.user) && Number.isFinite(r.system);
+for (const v of [NaN, undefined, null]) worker.cpuUsage(v);
+console.log("cpu-nothrow", true);
+for (const [v, code] of [[-1, "ERR_INVALID_ARG_TYPE"], [1.1, "ERR_INVALID_ARG_TYPE"], [{}, "ERR_INVALID_ARG_TYPE"], [[], "ERR_INVALID_ARG_TYPE"], [true, "ERR_INVALID_ARG_TYPE"], [Infinity, "ERR_INVALID_ARG_TYPE"], [{ user: -1, system: 1 }, "ERR_OUT_OF_RANGE"], [{ user: 1, system: -1 }, "ERR_OUT_OF_RANGE"]]) {
+  try { await worker.cpuUsage(v); console.log("cpu-bad NO-THROW", JSON.stringify(String(v))); }
+  catch (e) { console.log("cpu-bad", e.code === code); }
+}
+try { await worker.cpuUsage({}); console.log("cpu-empty NO-THROW"); }
+catch (e) { console.log("cpu-empty", e.code === "ERR_INVALID_ARG_TYPE" && e.message === 'The "prev.user" property must be of type number. Received undefined'); }
+try { await worker.cpuUsage({ user: -1, system: 1 }); console.log("cpu-range NO-THROW"); }
+catch (e) { console.log("cpu-range", e.code === "ERR_OUT_OF_RANGE" && e.message === 'The value of "prev.user" is out of range. It must be >= 0 && <= 9007199254740991. Received -1'); }
+worker.on("online", async () => {
+  const prev = await worker.cpuUsage();
+  const curr = await worker.cpuUsage();
+  console.log("cpu-shape", validate(prev) && validate(curr));
+  console.log("cpu-mono", curr.user >= prev.user && curr.system >= prev.system);
+  console.log("cpu-delta", validate(await worker.cpuUsage(curr)));
+  await worker.terminate();
+});
+worker.once("exit", async () => {
+  try { await worker.cpuUsage(); console.log("cpu-exited NO-THROW"); }
+  catch (e) { console.log("cpu-exited", e.code === "ERR_WORKER_NOT_RUNNING" && e.message === "Worker instance not running"); }
+});
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "cpu-nothrow true",
+        "cpu-shape true",
+        "cpu-mono true",
+        "cpu-delta true",
+        "cpu-empty true",
+        "cpu-range true",
+        "cpu-exited true",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    assert_eq!(stdout.lines().filter(|l| *l == "cpu-bad true").count(), 8, "out: {stdout}");
+    dir.close().unwrap();
+}

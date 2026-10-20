@@ -455,3 +455,77 @@ pub const WORKER_STDIO_INIT: &str = r#"
   } catch {}
 })();
 "#;
+
+// ── worker CPU 采样面（cpu-usage 套件；主→worker 自采回执，promise 结算）──
+
+/// UNSAFE-BOUNDARY: 主→worker CPU 采样请求。`__wjs2_worker_cpu_sample(id, nonce)`
+/// → boolean（worker 收件箱 `WCpuSample` 投递；无路由即 false→NOT_RUNNING）。
+/// 前置：id 为已登记 worker；覆盖：`tests/node/worker_medium.rs::worker_cpu_usage_faces`。
+pub unsafe extern "C" fn worker_cpu_sample(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 worker::port_pair
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: worker cpu sample needs a nonce");
+        return false;
+    }
+    let nonce = value_to_string(&mut cx, frame.arg(1));
+    let ok = match worker_route(id) {
+        Some((inbox, _)) => inbox.send(WorkerEvent::WCpuSample { worker_id: id, nonce }).is_ok(),
+        None => false,
+    };
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// CPU 采样派发（`WCpuSample/WCpuResult` 用；`dispatch` 经 `&failed` 保底）。
+/// Sample 只进 worker 会话（本线程 `thread_micros` 真值经主 inbox 回执）；
+/// Result 只进主会话（worker 目标 `__ev("cpu-result")` 结算，JSON 载荷）。
+pub fn dispatch_cpu(
+    cx: &mut JSContext,
+    global: *mut JSObject,
+    failed: &dyn Fn(&mut JSContext) -> crate::error::Error,
+    ev: &WorkerEvent,
+) -> Result<(), crate::error::Error> {
+    match ev {
+        WorkerEvent::WCpuSample { worker_id, nonce } => {
+            if state::worker_is_main() {
+                return Ok(());
+            }
+            let (user, system) = super::process_::thread_micros();
+            if let Some(tx) = state::with_plain(|p| p.worker_main_inbox.clone()) {
+                let _ = tx.send(WorkerEvent::WCpuResult { worker_id: *worker_id, nonce: nonce.clone(), user, system });
+            }
+            Ok(())
+        }
+        WorkerEvent::WCpuResult { worker_id, nonce, user, system } => {
+            if !state::worker_is_main() {
+                return Ok(());
+            }
+            let Some(target) = state::worker_target(*worker_id) else {
+                return Ok(());
+            };
+            if !target.is_object() {
+                return Ok(());
+            }
+            rooted!(&in(cx) let t: *mut JSObject = target.to_object());
+            let Some(fun) = get_prop_value(cx, t.get(), c"__ev") else {
+                return Err(failed(cx));
+            };
+            let payload = serde_json::json!({ "nonce": nonce, "user": user, "system": system }).to_string();
+            if with_str_args(cx, global, fun, "cpu-result", &payload).is_none() {
+                return Err(failed(cx));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}

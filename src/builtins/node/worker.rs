@@ -79,6 +79,11 @@ pub enum WorkerEvent {
     /// 主→worker：子输入块（wire JSON {s}/{b}/{end}；stdio 套件；worker 全局
     /// `__wjs2_stdin_push` 进流，缺失即丢）。
     WStdin { data: String },
+    /// 主→worker：CPU 采样请求（worker 会话自采 `thread_micros` 经 `WCpuResult`
+    /// 回主；cpu-usage 套件；worker 已退/无路由即 NOT_RUNNING）。
+    WCpuSample { worker_id: u64, nonce: String },
+    /// worker→主：CPU 采样回执（微秒 user/system；父 `__ev("cpu-result")` 结算）。
+    WCpuResult { worker_id: u64, nonce: String, user: f64, system: f64 },
     /// 跨线程直投（`postMessageToThread`）：目标会话 `workerMessage` 派发 + 回执。
     /// dest 0（主线程）非主会话收到即沿派生链上转（worker 的 `worker_main_inbox`
     /// 恒为直接派生者，主线程无注册表——node 全线程直连主端口的等价实现）。
@@ -268,6 +273,9 @@ pub fn dispatch(
         }
         WorkerEvent::WStdio { .. } | WorkerEvent::WStdin { .. } => {
             dispatch_stdio(cx, global, &failed, &ev)
+        }
+        WorkerEvent::WCpuSample { .. } | WorkerEvent::WCpuResult { .. } => {
+            dispatch_cpu(cx, global, &failed, &ev)
         }
         WorkerEvent::WExit { worker_id, code } => {
             if !state::worker_exited(worker_id) {
@@ -801,7 +809,7 @@ pub use super::worker_term::{
     term_tls_bind, term_tls_flagged, worker_boot_from_slot, worker_booted,
     worker_spawn,
 };
-pub use super::worker_messaging::{WORKER_STDIO_INIT, dispatch_stdio, post_to_thread, thread_bridge_attach, worker_attach, worker_post, worker_stdin_to, worker_stdio_out, worker_tid};
+pub use super::worker_messaging::{WORKER_STDIO_INIT, dispatch_cpu, dispatch_stdio, post_to_thread, thread_bridge_attach, worker_attach, worker_cpu_sample, worker_post, worker_stdin_to, worker_stdio_out, worker_tid};
 
 
 /// 终止 worker（`WTerminate`；退出码经 `WExit` 事件回传，恒 1）。

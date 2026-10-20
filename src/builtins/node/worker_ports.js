@@ -292,9 +292,9 @@ function __workerFilePath(filename) {
 }
 
 export class Worker extends EventEmitter {
-  // 子线程标出流（M5 vitest 牵引：threads 池 `worker.stdout.pipe(logger)` 无守卫，
-  // `streamFlushed` 等 end/close；无数据流——子输出直走共享 stdio，见 `__end` 记档）。
-  // 仅 `new Worker(..., { stdout: true })` 时具现（Node 形），否则保持 null。
+  // 子线程标出流（node 真机：stdout/stderr 恒 Readable 管道——子输出经 WStdio
+  // 事件进父流并本地 TEE；stdin 仅 stdin:true 具现 Writable）。
+  __stdin = null;
   __stdout = null;
   __stderr = null;
   constructor(filename, options = {}) {
@@ -415,8 +415,12 @@ export class Worker extends EventEmitter {
     this.__name = options.name ?? null;
     this.__rl = options.resourceLimits ?? null;
     this.__termWaiters = [];
-    if (options.stdout) this.__stdout = new __WorkerStdio();
-    if (options.stderr) this.__stderr = new __WorkerStdio();
+    this.__cpuWaiters = new Map();
+    // 缺省双管（node 真机：stdout/stderr 恒 Readable，stdin 仅 stdin:true 才具现；
+    // 旧"恒 null"断言已随实测翻转，见黑盒）。
+    this.__stdin = options.stdin ? new __WorkerStdin(this.__id) : null;
+    this.__stdout = new __WorkerStdio();
+    this.__stderr = new __WorkerStdio();
     this.__ev = this.__ev.bind(this);
     __wjs2_worker_attach(this.__id, this);
     // 10f 对拍：新建 Worker 派发 process 'worker' 事件（worker-event 套件；
@@ -464,6 +468,20 @@ export class Worker extends EventEmitter {
       this.emit("exit", code);
     } else if (kind === "online") {
       this.emit("online");
+    } else if (kind === "stdout" || kind === "stderr") {
+      // 子输出事件（WStdio；exit 前必达——同 inbox 保序，flush 套件点名）。
+      const target = kind === "stdout" ? this.__stdout : this.__stderr;
+      try { target?.__pushWire(String(payload)); } catch { /* 流已摘即丢 */ }
+    } else if (kind === "cpu-result") {
+      // CPU 采样回执（WCpuResult；nonce 对账结算，退出竞态丢弃）。
+      let obj;
+      try { obj = JSON.parse(String(payload)); } catch { return; }
+      const w = this.__cpuWaiters.get(obj?.nonce);
+      if (!w) return;
+      this.__cpuWaiters.delete(obj.nonce);
+      const cur = { user: Number(obj.user), system: Number(obj.system) };
+      if (w.prev) w.resolve({ user: cur.user - w.prev.user, system: cur.system - w.prev.system });
+      else w.resolve(cur);
     }
   }
   postMessage(value, transfer) {
@@ -494,9 +512,45 @@ export class Worker extends EventEmitter {
   // resourceLimits = 传入对象（缺省 {}，退出后 {}——resource-limits 套件）。
   get threadName() { return this.__exited === null ? (this.__name ?? null) : null; }
   get resourceLimits() { return this.__rl ?? {}; }
-  get stdin() { return null; }
+  get stdin() { return this.__stdin; }
   get stdout() { return this.__stdout; }
   get stderr() { return this.__stderr; }
+  // CPU 用量（node internal/worker.js:565-594：prev 真值即对象 + 双 numeric
+  // [0, 2^53-1] 校验，同步抛；采样走 worker 会话自采回执，promise 结算；
+  // 已退出/无路由即 ERR_WORKER_NOT_RUNNING 拒——cpu-usage 套件）。
+  cpuUsage(prev) {
+    if (prev) {
+      if (typeof prev !== "object" || prev === null) {
+        throw new codes.ERR_INVALID_ARG_TYPE("prev", "object", prev);
+      }
+      for (const k of ["user", "system"]) {
+        const v = prev[k];
+        if (typeof v !== "number") {
+          throw new codes.ERR_INVALID_ARG_TYPE(`prev.${k}`, "number", v);
+        }
+        if (!(v >= 0 && v <= 9007199254740991)) {
+          throw new codes.ERR_OUT_OF_RANGE(`prev.${k}`, ">= 0 && <= 9007199254740991", v);
+        }
+      }
+    }
+    if (this.__exited !== null) {
+      return Promise.reject(new codes.ERR_WORKER_NOT_RUNNING());
+    }
+    const nonce = `${this.__id}.${++__cpuSeq}`;
+    return new Promise((resolve, reject) => {
+      this.__cpuWaiters.set(nonce, { resolve, reject, prev: prev || null });
+      let queued = false;
+      try {
+        queued = __wjs2_worker_cpu_sample(this.__id, nonce) === true;
+      } catch {
+        queued = false;
+      }
+      if (!queued) {
+        this.__cpuWaiters.delete(nonce);
+        reject(new codes.ERR_WORKER_NOT_RUNNING());
+      }
+    });
+  }
 }
 // MessageEvent 的 source/ports 校验需要 MessagePort 品牌（主线程无全局
 // MessagePort，模块求值期登记到隐藏槽；求值前无从有端口，校验恒 TypeError）。
@@ -504,46 +558,60 @@ globalThis.__wjs2_MessagePort = MessagePort;
 // 10f：BroadcastChannel 是 Web 全局（node 主/worker 线程均全局，messaging
 // 套件裸 `new BroadcastChannel(...)`；与 worker_threads 导出同一类）。
 globalThis.BroadcastChannel = BroadcastChannel;
-// 无数据标出流（见 Worker 注释）：pipe/unpipe 形状 + end/close 一次性语义；
-// 数据永不流动（子输出直走共享 stdio），`__end` 在 worker 退出时由分发调用。
-class __WorkerStdio {
+// 子输出流（node 真机 Readable：WStdio 事件经 __pushWire 进流；setEncoding/
+// pipe/unpipe 全继承；`__end` 在 worker 退出时由分发调用——push(null) 收尾）。
+class __WorkerStdio extends __wjs2Readable {
   constructor() {
-    this.__listeners = {};
-    this.readableEnded = false;
-    this.destroyed = false;
+    super({ read() {} });
+    // 基类 readableEnded/destroyed 只读——终态记自有旗（旧面 readableEnded 照读基类）。
+    this.__ended = false;
   }
-  on(ev, cb) {
-    if (typeof cb !== "function") throw new TypeError("listener must be a function");
-    (this.__listeners[String(ev)] ??= []).push(cb);
-    return this;
-  }
-  once(ev, cb) {
-    if (typeof cb !== "function") throw new TypeError("listener must be a function");
-    const self = this;
-    const wrapped = (...args) => { self.off(ev, wrapped); cb(...args); };
-    wrapped.__wjs2_orig = cb;
-    return this.on(ev, wrapped);
-  }
-  off(ev, cb) {
-    const list = this.__listeners[String(ev)];
-    if (list) {
-      let i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb);
-      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb); }
+  // WStdio wire（JSON：{s} 串直推 / {b} base64 转 Buffer 推；坏线即丢）。
+  __pushWire(wire) {
+    if (this.__ended) return;
+    let obj;
+    try { obj = JSON.parse(String(wire)); } catch { return; }
+    if (obj && typeof obj === "object" && typeof obj.b === "string") {
+      let buf;
+      try { buf = Buffer.from(obj.b, "base64"); } catch { return; }
+      this.push(buf);
+    } else if (obj && typeof obj === "object" && typeof obj.s === "string") {
+      this.push(obj.s);
     }
-    return this;
   }
-  pipe(dest) { return dest; }
-  unpipe() { return this; }
   __end() {
-    if (this.readableEnded) return;
-    this.readableEnded = true;
-    this.destroyed = true;
-    for (const ev of ["end", "close"]) {
-      for (const cb of [...(this.__listeners[ev] ?? [])]) {
-        try { cb(); } catch {}
-      }
-    }
-    this.__listeners = {};
+    if (this.__ended) return;
+    this.__ended = true;
+    try { this.push(null); } catch { /* 已摘即止 */ }
+  }
+}
+
+// 子输入流（stdin:true 具现；_write 经 WStdin 事件进 worker 会话）。
+class __WorkerStdin extends __wjs2Writable {
+  constructor(id) {
+    super({
+      write: (chunk, encoding, cb) => {
+        let wire;
+        try {
+          if (typeof chunk === "string") wire = JSON.stringify({ s: chunk });
+          else if (typeof Buffer !== "undefined" && Buffer.isBuffer(chunk)) {
+            wire = JSON.stringify({ b: chunk.toString("base64") });
+          } else if (chunk instanceof Uint8Array) {
+            wire = JSON.stringify({ b: Buffer.from(chunk).toString("base64") });
+          } else {
+            wire = JSON.stringify({ s: String(chunk) });
+          }
+        } catch { wire = JSON.stringify({ s: "" }); }
+        try { __wjs2_worker_stdin(id, wire); } catch { /* 对端已退即丢 */ }
+        cb();
+      },
+    });
+    this.__id = id;
+  }
+  // 显式 end 即对端 EOF（worker 侧 stdin 推 end；echo 管道收尾用）。
+  _final(cb) {
+    try { __wjs2_worker_stdin(this.__id, '{"end":1}'); } catch { /* 对端已退即丢 */ }
+    cb();
   }
 }
 
@@ -562,6 +630,8 @@ function __threadErr(code, message) {
 }
 const __threadPending = new Map();
 let __threadSeq = 0;
+// CPU 采样 nonce 序号（worker id 前缀，`__cpuWaiters` 对账用）。
+let __cpuSeq = 0;
 function __threadBridgeEv(kind, payload) {
   try {
     if (kind === "thread-ack") {

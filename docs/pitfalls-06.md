@@ -400,3 +400,45 @@
 - 根因：`println!` 到文件是块缓冲，`kill -9` 丢弃未刷新的尾巴；`eprintln!` 无缓冲才保序。多线程下 eprintln 交错亦不可信，本轮单线程（LocalSet）才可用。
 - 修法：调试日志一律 `eprintln!`；JS 侧 console.log/error 跨流不比序。
 - 推广铁律：**取证先对齐时钟**——混合流日志先统一到无缓冲单流，否则时序全是幻觉。
+### 4.315 hook 入口 realm 即被主 AutoRealm 覆盖（2026-10-20，vm lane）
+
+- 症状：动态 import 上下文兜底恒落主 loader（incumbent 查得主 global，明明是 vm 上下文代码）。
+- 根因：`load_hook` 入口先 `AutoRealm(主)` 再调判定——hook 进来的 cx 原在 referrer realm，一进主域 incumbent 即丢；后续 `CurrentGlobalOrNull` 读到的是主 global。
+- 修法：hook 第一行先抓 `CurrentGlobalOrNull` 存参，判定用传入值（见 4.1 铁律的反例：守卫本身会改 realm）。
+- 复现：`zz-ref.mjs`（修前 incumbent=main → 主 loader 拒收；修后 CTX-CB 触发恒等）。
+- 推广铁律：**realm 敏感信息入口即取**——凡进函数先 `AutoRealm` 的协议代码，入参 realm/当前 global 等上下文快照必须在守卫前抓；守卫后读到的都是守卫的 realm。
+
+### 4.316 记录操作必须进记录所属 compartment（2026-10-20，vm lane）
+
+- 症状：上下文回调返回主域模块即 SEGV（`JS::ModuleLink (.cold.1)` 断言崩）。
+- 根因：跨域回调返回异域记录，link/evaluate 仍在 referrer realm 执行——SM 内部按 compartment 断言，直接崩。
+- 修法：`dyn_commit_record/ns` 内按 `record_ctx_of` 重进记录 realm（同域即无操作）；`payload` 跨域 `Resolve/RejectPromise` 由引擎包装，无碍。
+- 推广铁律：**引擎对象操作认归属 realm**——凡跨 compartment 拿到的对象（回调返回/别域记录），操作前重进其所属 global 的 realm；只认"当前 realm 方便"即埋断言崩。
+
+### 4.317 帮忙函数住主 global（2026-10-20，vm lane）
+
+- 症状：跨域 async 动态导入帮忙 lookup 报缺失（helper 在票据 realm 查不到）。
+- 根因：帮忙函数由 `vm_modules.js` 接线在主 global 上；票据 realm 为 vm 上下文时按票据域查找永 miss。
+- 修法：`dyn_then_helper`/`dyn_commit_async` 一律进主 realm 查调（helper 归属域固定）。
+- 推广铁律：**内部帮忙函数按归属域查找**——JS 接线的内部 helper 只存在于接线域；跨域调用先回接线域，别按"当前上下文"想当然。
+
+### 4.318 oxc 箭头函数是独立 AST 节点（2026-10-20，vm lane）
+
+- 症状：TLA 探测把 `const f = async () => await 1` 判为顶层 await。
+- 根因：`visit_function` 不覆盖 `ArrowFunctionExpression`（oxc 里箭头是独立节点类型，有自己的 visit/walk）。
+- 修法：加 `visit_arrow_function_expression` 记 span（函数体排除集）。
+- 推广铁律：**oxc 函数族按节点类型全覆盖**——`Function`/`ArrowFunctionExpression`/`MethodDefinition` 各有 visit；只写 function 即漏箭头，单测必须含箭头形。
+
+### 4.319 after-evaluate 跨上下文队列是引擎墙（2026-10-20，vm lane）
+
+- 症状：`test-vm-module-after-evaluate` 要求 `await` 异域 promise 永挂（mustNotCall 永不触发），我方单共享队列恒决议 → 必红。
+- 根因：V8 按上下文分微任务队列（决议挂 inner 队列等 checkpoint）；我方单 `JobQueue` 全局排空，无"某上下文 checkpoint"概念；真机 `microtaskMode` 即队列归属语义。
+- 修法：书面偏离（引擎架构级；`createContext` 仍校验 `microtaskMode` 口径，单上下文流等价）。
+- 推广铁律：**队列归属语义先认架构**——凡"某域 checkpoint 才推进"的测试，先看自家队列是共享还是分区；共享队列下挂起语义不可模拟，直接偏离别硬拗。
+
+### 4.320 link 连带落定的依赖也要结算闭包（2026-10-20，vm lane）
+
+- 症状：`hasAsyncGraph` 传递用例 `bar` 对、`foo` 错（foo 被 bar 的 instantiate 连带 link 但闭包未算）。
+- 根因：闭包只给 entry 算了一次；seen 里被连带的依赖状态变了但派生值没跟。
+- 修法：seen 落定循环里逐个结算（已 true 跳过；`__vmTlaOf` 递归 + seen 截断环）。
+- 推广铁律：**落定循环里状态与派生同行**——凡 BFS 连带改状态的收尾，派生值（缓存/闭包/计数）必须同循环内逐个结算；只照顾 entry 即漏连带。

@@ -391,6 +391,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_vm_mod_release", Some(node::vm_module::vm_mod_release), 1),
             ("__wjs2_vm_mod_settled", Some(node::vm_module::vm_mod_settled), 1),
             ("__wjs2_vm_mod_deps", Some(node::vm_module::vm_mod_deps), 1),
+            ("__wjs2_vm_mod_tla", Some(node::vm_module::vm_mod_tla), 2),
             // vm-triage：Promise 结算内态（util.inspect 显示用；vm evaluate 同步落定断言）
             ("__wjs2_promise_state", Some(node::vm_module::promise_state), 1),
             ("__wjs2_promise_result", Some(node::vm_module::promise_result), 1),
@@ -400,6 +401,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_vm_dyn_reg_mod", Some(node::vm_dyn::vm_dyn_reg_mod), 6),
             ("__wjs2_vm_dyn_reg_fn", Some(node::vm_dyn::vm_dyn_reg_fn), 5),
             ("__wjs2_vm_dyn_reg_ns", Some(node::vm_dyn::vm_dyn_reg_ns), 2),
+            ("__wjs2_vm_dyn_reg_ctx", Some(node::vm_dyn::vm_dyn_reg_ctx), 4),
             ("__wjs2_vm_dyn_run", Some(node::vm_dyn::vm_dyn_run), 7),
             ("__wjs2_vm_dyn_run_this", Some(node::vm_dyn::vm_dyn_run_this), 6),
             ("__wjs2_vm_dyn_done", Some(node::vm_dyn::vm_dyn_done), 3),

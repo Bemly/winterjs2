@@ -146,9 +146,51 @@ pub unsafe extern "C" fn vm_dyn_reg_ns(
     true
 }
 
+/// 登记上下文级回调（`__wjs2_vm_dyn_reg_ctx(ctxId, ctxObj, cb, mainLoaderFlag)`）。
+/// referrer 不可辨识的动态 import 兜底（referrer-realm 轮）；cb 可为 Undefined。
+/// UNSAFE-BOUNDARY: 同上；覆盖 `tests/node/vm.rs::vm_module_referrer_realm_faces`。
+pub unsafe extern "C" fn vm_dyn_reg_ctx(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_dyn_reg_mod
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: vm context dynamic import registration needs four arguments");
+        return false;
+    }
+    let ctx_s = match arg_string(&mut cx, &frame, 0, "vm dynamic import") {
+        Some(s) => s,
+        None => return false,
+    };
+    rooted!(&in(cx) let referrer = frame.arg(1));
+    rooted!(&in(cx) let cb = frame.arg(2));
+    let flag = match arg_string(&mut cx, &frame, 3, "vm dynamic import") {
+        Some(s) => s,
+        None => return false,
+    };
+    let ctx = if ctx_s == "main" {
+        state::VM_MAIN_CTX
+    } else {
+        match ctx_s.parse::<u64>() {
+            Ok(id) => id,
+            Err(_) => {
+                report_error(&mut cx, "TypeError: vm context id must be a context id string");
+                return false;
+            }
+        }
+    };
+    state::vm_dyn_register_ctx(ctx, referrer.get(), cb.get(), flag == "1");
+    frame.set_rval(UndefinedValue());
+    true
+}
+
 /// Script 单次 run（`__wjs2_vm_dyn_run(id, code, filename, timeout, cb, referrer, mode)`）。
 /// mode: "custom"（调回调）/"main"（主 loader 直通）/"none"（无回调 → 缺失错）。
-/// custom/none 推帧（文件名匹配用），main 直跑。
+/// 三路一律推帧（文件名匹配用；main 帧携直通旗，供 referrer-realm 轮 incumbent
+/// 兜底前优先判定——Script 自身指令优先于上下文回调）。
 /// UNSAFE-BOUNDARY: 求值核心复用 `vm_run_core`（realm/超时/排空同源）；
 /// 帧经 RAII 守卫收尾；覆盖同上。
 pub unsafe extern "C" fn vm_dyn_run(
@@ -187,7 +229,18 @@ pub unsafe extern "C" fn vm_dyn_run(
         }
     };
     if mode == "main" {
-        return vm_run_core(&mut cx, &frame, id, code, filename, timeout_ms);
+        // 主 loader 直通仍推帧（携直通旗；referrer-realm 轮 incumbent 兜底前
+        // 优先命中，保 Script 自身指令优先于上下文回调）。
+        // with 剥离同样适用（SM 解析器墙与 realm 无关）。
+        let token = state::with_plain(|p| {
+            p.vm_next_id += 1;
+            p.vm_next_id
+        });
+        state::vm_dyn_register_token(token, id, referrer.get(), cb.get(), true, code.clone());
+        let _guard = script_frame_push(filename.clone(), token);
+        let compile_code = super::vm_module::requests::strip_dynamic_with(&code, "js")
+            .unwrap_or(code);
+        return vm_run_core(&mut cx, &frame, id, compile_code, filename, timeout_ms);
     }
     // 帧注册（token 单调；回调 Undefined 即 none，native 投递时判缺失）。
     let token = state::with_plain(|p| {
@@ -230,7 +283,24 @@ pub unsafe extern "C" fn vm_dyn_run_this(
         None => return false,
     };
     if mode == "main" {
-        return vm_run_this_core(&mut cx, &frame, code, filename, timeout_ms);
+        // 主 loader 直通仍推帧（携直通旗；Script 自身指令优先于上下文回调，
+        // 与 vm_dyn_run 同源；with 剥离同样适用）。
+        let token = state::with_plain(|p| {
+            p.vm_next_id += 1;
+            p.vm_next_id
+        });
+        state::vm_dyn_register_token(
+            token,
+            state::VM_MAIN_CTX,
+            referrer.get(),
+            cb.get(),
+            true,
+            code.clone(),
+        );
+        let _guard = script_frame_push(filename.clone(), token);
+        let compile_code = super::vm_module::requests::strip_dynamic_with(&code, "js")
+            .unwrap_or(code);
+        return vm_run_this_core(&mut cx, &frame, compile_code, filename, timeout_ms);
     }
     let token = state::with_plain(|p| {
         p.vm_next_id += 1;

@@ -149,11 +149,10 @@ pub fn vm_release(id: u64) -> bool {
         n0
     });
     // 上下文摘除时顺带摘其名下未释放模块（record 随 global 走，无悬垂）
-    // 与动态导入注册（回调/referrer 随 global 走，无悬垂）。
+    // 与动态导入注册（条目均记归属 ctx，一并摘除；主域哨兵永不触及）。
     with_rooted(|s| {
-        let dead: Vec<u64> = s.vm_mods.iter().filter(|m| m.ctx == id).map(|m| m.id).collect();
         s.vm_mods.retain(|m| m.ctx != id);
-        s.vm_dyn.retain(|e| e.mod_id.map(|m| !dead.contains(&m)).unwrap_or(true));
+        s.vm_dyn.retain(|e| e.ctx != id);
     });
     with_rooted(|s| s.vm_contexts.len() != n0)
 }
@@ -322,6 +321,47 @@ pub fn vm_dyn_register_fn(
             source,
         });
     });
+}
+
+/// 登记上下文级动态导入（createContext；referrer 不可辨识时兜底用）。
+/// cb 可为 Undefined（无回调 → CALLBACK_MISSING）；main_loader 直通主 loader。
+pub fn vm_dyn_register_ctx(
+    ctx: u64,
+    referrer: mozjs::jsval::JSVal,
+    callback: mozjs::jsval::JSVal,
+    main_loader: bool,
+) {
+    with_rooted(|s| {
+        s.vm_dyn.retain(|e| !(e.mod_id.is_none() && e.func.is_none() && e.token.is_none() && e.ctx == ctx));
+        s.vm_dyn.push(VmDynEntry {
+            mod_id: None,
+            func: None,
+            token: None,
+            ctx,
+            referrer: Heap::boxed(referrer),
+            callback: Heap::boxed(callback),
+            meta_init: Heap::boxed(mozjs::jsval::UndefinedValue()),
+            main_loader,
+            ns: None,
+            source: String::new(),
+        });
+    });
+}
+
+/// 取上下文级注册（快照；调用方立即重 root）。
+/// 返回（referrer, callback, main_loader）。
+pub fn vm_dyn_get_ctx(ctx: u64) -> Option<(mozjs::jsval::JSVal, mozjs::jsval::JSVal, bool)> {
+    with_rooted(|s| {
+        s.vm_dyn
+            .iter()
+            .find(|e| e.mod_id.is_none() && e.func.is_none() && e.token.is_none() && e.ctx == ctx)
+            .map(|e| (e.referrer.get(), e.callback.get(), e.main_loader))
+    })
+}
+
+/// 列上下文（id, global）：hook incumbent 匹配用（调用方立即重 root）。
+pub fn vm_ctx_all() -> Vec<(u64, *mut JSObject)> {
+    with_rooted(|s| s.vm_contexts.iter().map(|c| (c.id, c.global.get())).collect())
 }
 
 /// 登记 Script 单次 run 帧（token 匹配；mode 主 loader 时直通）。

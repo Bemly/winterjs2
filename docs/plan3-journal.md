@@ -2738,3 +2738,18 @@ G1/G2/G3/G9 已收官。）
   example.com 环境所致（隧道未通前即 protocol 错）。
 - 过程：单流定序（eprintln）+ 方向归属（evid）+ 帧解码三板斧；`println!` 块缓冲
   坑（4.314）；`git checkout` 回退 proxy 半截活保 lane 可合。
+
+## 2026-10-20 vm linker 余件（lane/vm：referrer-realm/hasasyncgraph/hastoplevelawait 修 + after-evaluate 偏离）
+
+- 范围：R19 L-D linker 遗留，parent 定件 4 件（referrer-realm/after-evaluate×2/hasasyncgraph/hastoplevelawait；synthetic 作依赖维持引擎墙偏离）。
+- referrer-realm（真机：间接 eval 无 JS 栈 → referrent null → 走上下文回调）：
+  createContext 接 `importModuleDynamically`（函数/undefined/符号三态校验，node 口径 early-return/validate 顺序对齐）+ `__wjs2_vm_dyn_reg_ctx` 注册上下文条目；
+  hook 兜底：referrer 未命中三路即按 hook 入口 realm 归属 vm 上下文用其回调（referrer 即 sandbox 本体，`wrap === ctx` 恒等）。
+  过程坑：①hook 入口先 AutoRealm(主) 会覆盖 incumbent——入口第一行先抓（4.315）；
+  ②main 模式免推帧致 incumbent 劫持 Script 自身符号指令→三路一律推帧（携直通旗，Script 优先于上下文）；
+  ③跨域记录用 referrer realm 做 link/evaluate 即 SM 断言崩→记录操作进记录所属 compartment（4.316）；
+  ④帮忙函数按票据 realm 查找 miss→一律进主 global 查（4.317）。
+  套件全绿（含 testMissing CALLBACK_MISSING 双路 + createContext 非法值校验）。
+- hasTopLevelAwait/hasAsyncGraph：oxc 静态探测（`visit_function` 不覆盖箭头→补 `visit_arrow_function_expression`，4.318）+ 构造期 `__tla` + link/instantiate 落定 `__tlaClosure`（连带依赖同循环结算，4.320；linkRequests 未实例化抛 STATUS 文案逐字）。
+- after-evaluate×2：书面偏离（4.319）——V8 按上下文分微任务队列，我方单共享队列恒排空，无"某上下文 checkpoint"概念；`createContext` 仍校验 `microtaskMode` 口径。
+- 验证：4 件中 3 转绿（referrer/hasasyncgraph/hastoplevelawait）；黑盒新 2 件（`vm_referrer_ctx_faces`/`vm_tla_faces`）+ 既有 24/24 绿；7 件旧套件 + 超时三件 + identity 三件全绿；冒烟 5/5；check-lines/naming 双绿；sweep vm-linker2：78/95（+1 dont-contextify；余 17=after-evaluate×2 偏离+synthetic 引擎墙+basic 并行抖动+13 预存红）。

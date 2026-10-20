@@ -224,3 +224,147 @@ catch (e) { console.log("sym-throw", e.constructor.name); }
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn console_timer_count_warning_faces() {
+    // 正常：实例 time/timeEnd 输出 `label: ms` 形 + timeLog 余参续接 +
+    // count 递增/countReset 命中删 + dup 不重置 + `__proto__`/归一标签
+    // （`[]`→`""`、`{}`→`[object Object]`、缺省→`default`）；
+    // 报错：time/timeEnd/count 的 Symbol 入参抛 TypeError（真机同形）；
+    // 边界：8 警告文本逐字（warning 事件收，真机 Warning 无 code）+
+    // timeEnd 无死链（size 回落）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Console } from "node:console";
+import { Writable } from "node:stream";
+let seen = "";
+const ws = new Writable({ write(c, e, cb) { seen += String(c); cb(); } });
+const warns = [];
+process.on("warning", (w) => warns.push(`${w.name}|${w.code}|${w.message}`));
+const k = new Console(ws);
+k.time("t"); k.timeEnd("t");
+k.time("log1"); k.timeLog("log1"); k.timeLog("log1", "test"); k.timeLog("log1", {}, [1, 2, 3]); k.timeEnd("log1");
+k.count("a"); k.count("a"); k.countReset("a"); k.count("a");
+k.time("__proto__"); k.timeEnd("__proto__");
+k.time([]); k.timeEnd([]);
+k.time({}); k.timeEnd({});
+k.time(null); k.timeEnd(null);
+k.time(undefined); k.timeEnd("default");
+k.time("dup"); k.time("dup"); k.timeEnd("dup");
+const size0 = k._times.size;
+k.time("l1"); k.time("l2"); k.timeEnd("l1"); k.timeEnd("l2");
+console.log("deadlinks", k._times.size === size0);
+for (const l of seen.split("\n")) { if (l !== "") console.log("SL|" + l); }
+for (const f of [() => k.time(Symbol("x")), () => k.timeEnd(Symbol("x")), () => k.count(Symbol("x"))]) {
+  try { f(); console.log("sym-no-throw"); }
+  catch (e) { console.log("sym-throw", e.constructor.name); }
+}
+k.countReset("nope"); k.timeLog("nope2"); k.timeEnd("nope3");
+k.countReset(); k.timeLog(); k.timeEnd(); k.time(); k.time();
+await new Promise((r) => setTimeout(r, 100));
+console.log("warns", JSON.stringify(warns));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "deadlinks true",
+        "sym-throw TypeError",
+        "sym-throw TypeError",
+        "sym-throw TypeError",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    for re in [
+        "t: \\d+(\\.\\d{1,3})?(ms|s)",
+        "log1: \\d+(\\.\\d{1,3})?(ms|s) test",
+        "log1: \\d+(\\.\\d{1,3})?(ms|s) \\{\\} \\[ 1, 2, 3 \\]",
+        "__proto__: \\d+(\\.\\d{1,3})?(ms|s)",
+        ": \\d+(\\.\\d{1,3})?(ms|s)",
+        "a: 1",
+        "a: 2",
+    ] {
+        let ok = out
+            .lines()
+            .filter_map(|l| l.strip_prefix("SL|"))
+            .any(|l| regex_lite_match(re, l));
+        assert!(ok, "missing /{re}/, out: {out}");
+    }
+    for want in [
+        "Warning|undefined|Count for 'nope' does not exist",
+        "Warning|undefined|No such label 'nope2' for console.timeLog()",
+        "Warning|undefined|No such label 'nope3' for console.timeEnd()",
+        "Warning|undefined|Count for 'default' does not exist",
+        "Warning|undefined|No such label 'default' for console.timeLog()",
+        "Warning|undefined|No such label 'default' for console.timeEnd()",
+        "Warning|undefined|Label 'default' already exists for console.time()",
+        "Warning|undefined|Label 'dup' already exists for console.time()",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+fn regex_lite_match(re: &str, line: &str) -> bool {
+    // 小守门：本文件只用 `\\d`/`(\\.\\d{1,3})?`/`(ms|s)` 三构式，逐段手配。
+    let l = line.trim();
+    let mut rest = l;
+    let mut pat = re;
+    while !pat.is_empty() {
+        if let Some(p) = pat.strip_prefix("\\d+") {
+            let n = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+            if n == 0 {
+                return false;
+            }
+            rest = &rest[n..];
+            pat = p;
+        } else if let Some(p) = pat.strip_prefix("(\\.\\d{1,3})?") {
+            if let Some(r) = rest.strip_prefix('.') {
+                let n = r.bytes().take_while(|b| b.is_ascii_digit()).count();
+                if n == 0 || n > 3 {
+                    return false;
+                }
+                rest = &r[n..];
+            }
+            pat = p;
+        } else if let Some(p) = pat.strip_prefix("(ms|s)") {
+            if let Some(r) = rest.strip_prefix("ms") {
+                rest = r;
+            } else if let Some(r) = rest.strip_prefix('s') {
+                rest = r;
+            } else {
+                return false;
+            }
+            pat = p;
+        } else if let Some(p) = pat.strip_prefix("\\{\\}") {
+            if let Some(r) = rest.strip_prefix("{}") {
+                rest = r;
+                pat = p;
+            } else {
+                return false;
+            }
+        } else if let Some(p) = pat.strip_prefix("\\[ 1, 2, 3 \\]") {
+            if let Some(r) = rest.strip_prefix("[ 1, 2, 3 ]") {
+                rest = r;
+                pat = p;
+            } else {
+                return false;
+            }
+        } else {
+            let ch = pat.chars().next().unwrap();
+            if !rest.starts_with(ch) {
+                return false;
+            }
+            rest = &rest[ch.len_utf8()..];
+            pat = &pat[ch.len_utf8()..];
+        }
+    }
+    rest.is_empty()
+}

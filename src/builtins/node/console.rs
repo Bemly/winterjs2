@@ -22,6 +22,7 @@ pub const SOURCE: &str = r#"
 // require('console') === globalThis.console）；本模块只做导出面装配。
 import { formatWithOptions, inspect } from 'node:util';
 import { validateInteger, validateObject, validateOneOf } from 'node:internal/validators';
+import { formatTime } from 'node:internal/debuglog';
 
 const g = globalThis.console;
 const bind = (name) => (...args) => g[name](...args);
@@ -285,22 +286,60 @@ Console.prototype.assert = function(value, ...args) {
   if (!value) this._err("Assertion failed:", ...args);
 };
 Console.prototype.count = function(label = "default") {
-  const n = (this._counts.get(label) ?? 0) + 1;
+  // 真机口径（constructor.js count 原文）：入参 `${}` 归一（Symbol 抛 TypeError），
+  // 缺标从 1 起（`?? 1` 与原文 `undefined → 1 else ++` 同构）。
+  label = `${label}`;
+  let n = this._counts.get(label);
+  if (n === undefined) n = 1;
+  else n++;
   this._counts.set(label, n);
   this._out(`${label}: ${n}`);
 };
-Console.prototype.countReset = function(label = "default") { this._counts.delete(label); };
-Console.prototype.time = function(label = "default") { this._times.set(label, Date.now()); };
+Console.prototype.countReset = function(label = "default") {
+  // 真机口径（constructor.js countReset 原文）：不预归一；缺标走
+  // `process.emitWarning("Count for '...' does not exist")`，命中删 `${label}`。
+  if (!this._counts.has(label)) {
+    process.emitWarning(`Count for '${label}' does not exist`);
+    return;
+  }
+  this._counts.delete(`${label}`);
+};
+Console.prototype.time = function(label = "default") {
+  // 真机口径（debuglog time 原文）：先 `${}` 归一（Symbol 抛 TypeError），
+  // 已存在即警告并保留原计时（不重置）；存 `process.hrtime()` 元组。
+  label = `${label}`;
+  if (this._times.has(label)) {
+    process.emitWarning(`Label '${label}' already exists for console.time()`);
+    return;
+  }
+  this._times.set(label, process.hrtime());
+};
 Console.prototype.timeLog = function(label = "default", ...args) {
+  // 真机口径（debuglog timeLogImpl 原文）：归一→缺标警告→hrtime 差值→formatTime→
+  // `log('%s: %s', label, formatted, ...args)`（余参续接）。
+  label = `${label}`;
   const t = this._times.get(label);
-  if (t === undefined) this._err(`Timer '${label}' does not exist`);
-  else this._out(`${label}: ${Date.now() - t}ms`, ...args);
+  if (t === undefined) {
+    process.emitWarning(`No such label '${label}' for console.timeLog()`);
+    return;
+  }
+  const d = process.hrtime(t);
+  const f = formatTime(d[0] * 1000 + d[1] / 1e6);
+  if (args.length === 0) this._out(`${label}: ${f}`);
+  else this._out(`${label}: ${f}`, ...args);
 };
 Console.prototype.timeEnd = function(label = "default") {
+  // 真机口径（debuglog timeEnd 原文）：归一→缺标警告→输出→删表（无死链）。
+  label = `${label}`;
   const t = this._times.get(label);
   this._times.delete(label);
-  if (t === undefined) this._err(`Timer '${label}' does not exist`);
-  else this._out(`${label}: ${Date.now() - t}ms`);
+  if (t === undefined) {
+    process.emitWarning(`No such label '${label}' for console.timeEnd()`);
+    return;
+  }
+  const d = process.hrtime(t);
+  const f = formatTime(d[0] * 1000 + d[1] / 1e6);
+  this._out(`${label}: ${f}`);
 };
 Console.prototype.group = function(...args) { if (args.length > 0) this._out(...args); this._indent++; };
 Console.prototype.groupCollapsed = function(...args) { if (args.length > 0) this._out(...args); this._indent++; };

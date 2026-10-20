@@ -12,15 +12,16 @@
 //!   为无操作（真机同为 inspector 旁路，返回 undefined）；`createTask` 只回
 //!   `{ run(f, ...a) }`（无 async_hooks 链路）；`context()` 回新 `Console`
 //!   （真机回原生 console 上下文对象）；实例流校验宽松（无 `.write` 即回落
-//!   全局 console，真机 TypeError）；实例 `dir` 不读 inspect options。
+//!   全局 console，真机 TypeError）。
 
 /// 内嵌 ESM 源。
 pub const SOURCE: &str = r#"
-// Copyright Joyent, Inc. and other Node contributors. MIT.
+ // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Port of node lib/console.js (module face; see module docs for deviations).
 // Console 类与全局正名/别名由 prelude bootstrap 落定（真机口径：
 // require('console') === globalThis.console）；本模块只做导出面装配。
-import { format, inspect } from 'node:util';
+import { formatWithOptions, inspect } from 'node:util';
+import { validateInteger, validateObject, validateOneOf } from 'node:internal/validators';
 
 const g = globalThis.console;
 const bind = (name) => (...args) => g[name](...args);
@@ -30,27 +31,23 @@ function Console(stdout, stderr, ignoreErrors) {
   //（forEach(c.log) 点名）；全局 console 即 instanceof（custom instanceof）。
   if (!(this instanceof Console)) return new Console(stdout, stderr, ignoreErrors);
   {
-    // Node 双形态：Console(stream[, stderr]) / Console({ stdout, stderr })。
+    // Node 双形态：Console(stream[, stderr]) / Console({ stdout, stderr,
+    // ignoreErrors, colorMode, inspectOptions, groupIndentation })。
+    // 位置形态无 colorMode（恒 'auto'）；options 形态逐项解构（真机口径）。
     let groupIndentation;
+    let colorMode = 'auto';
+    let colorModeRaw;
+    let inspectOptions;
     if (stdout !== null && typeof stdout === "object" && typeof stdout.write !== "function") {
       const __opts = stdout;
+      stdout = __opts.stdout;
+      stderr = __opts.stderr;
       // options 形态取 ignoreErrors 本体（真机解构口径；旧实现误读第二位置参数）。
       ignoreErrors = __opts.ignoreErrors;
-      groupIndentation = stdout.groupIndentation;
-      // inspectOptions 非对象即 ARG_TYPE（真机 validateObject 口径 +
-      // common.invalidArgTypeHelper 文案）。
-      if (stdout.inspectOptions !== undefined &&
-          (typeof stdout.inspectOptions !== "object" || stdout.inspectOptions === null)) {
-        const __iv = stdout.inspectOptions;
-        const __recv = __iv == null ? ` Received ${__iv}`
-          : ` Received type ${typeof __iv} (${inspect(__iv)})`;
-        const e = new TypeError(
-          `The "options.inspectOptions" property must be of type object.${__recv}`);
-        e.code = "ERR_INVALID_ARG_TYPE";
-        throw e;
-      }
-      stderr = stdout.stderr;
-      stdout = stdout.stdout;
+      colorModeRaw = __opts.colorMode;
+      if (colorModeRaw !== undefined) colorMode = colorModeRaw;
+      inspectOptions = __opts.inspectOptions;
+      groupIndentation = __opts.groupIndentation;
     }
     // 流校验（真机口径：stderr 缺省跟 stdout；无 write 即
     // ERR_CONSOLE_WRITABLE_STREAM，面 stdout/stderr）。
@@ -65,6 +62,35 @@ function Console(stdout, stderr, ignoreErrors) {
       e.code = "ERR_CONSOLE_WRITABLE_STREAM";
       throw e;
     }
+    // 选项校验（真机逐字：colorMode 白名单；groupIndentation 整数 0..1000；
+    // inspectOptions 非对象即 ARG_TYPE，colors 与显式 colorMode 互斥）。
+    validateOneOf(colorMode, 'colorMode', ['auto', true, false]);
+    if (groupIndentation !== undefined) {
+      validateInteger(groupIndentation, 'groupIndentation', 0, 1000);
+    }
+    let __optionsMap = null;
+    if (inspectOptions !== undefined) {
+      validateObject(inspectOptions, 'options.inspectOptions');
+      const __isMap = (v) => {
+        try { return Object.prototype.toString.call(v) === '[object Map]'; }
+        catch { return false; }
+      };
+      __optionsMap = __isMap(inspectOptions) ? inspectOptions : new Map([
+        [stdout, inspectOptions],
+        [stderr, inspectOptions],
+      ]);
+      // 真机口径：任一流选项带 colors 即与显式 colorMode 冲突（raw 判定，
+      // colorMode 缺省 'auto' 不触发）。
+      for (const __o of __optionsMap.values()) {
+        if (__o != null && (typeof __o === 'object' || typeof __o === 'function') &&
+            __o.colors !== undefined && colorModeRaw !== undefined) {
+          const e = new TypeError('Option "options.inspectOptions.color" cannot be used in ' +
+            'combination with option "colorMode"');
+          e.code = 'ERR_INCOMPATIBLE_OPTION_PAIR';
+          throw e;
+        }
+      }
+    }
   this._stdout = stdout ?? null;
   this._stderr = stderr ?? null;
   // 真机口径：ignoreErrors 缺省 true（`new Console({stdout})` 即吞写错；
@@ -76,7 +102,10 @@ function Console(stdout, stderr, ignoreErrors) {
     // 组缩进（node 口径：实例级 indent 层数 × groupIndentation 空格，缺省 2；
     // group(label) 先按当前层打印 label 再进一层，groupEnd 退一层）。
     this._indent = 0;
-    this._groupIndent = groupIndentation === undefined ? 2 : Number(groupIndentation);
+    this._groupIndent = groupIndentation === undefined ? 2 : groupIndentation;
+    // 着色与 per-stream 检查选项（node kColorMode/kGetInspectOptions 口径）。
+    this._colorMode = colorMode;
+    this._inspectOptionsMap = __optionsMap;
     for (const __m of __CONSOLE_METHODS) {
       // 动态查 this（子类重写优先）；包箭头（天然不可 new，真机口径）+
       // 显式正名（箭头成员赋值不推断）。
@@ -104,9 +133,61 @@ Object.defineProperty(Console, Symbol.hasInstance, {
   configurable: true,
 });
 Console.prototype._pad = function(text) {
+  // 真机 kWriteToConsole 口径：先各 `\n` 后补缩进再整体前缀（空行亦垫空格）。
   if (!this._indent) return text;
   const p = " ".repeat(this._indent * this._groupIndent);
-  return String(text).split("\n").map((l) => l ? p + l : l).join("\n");
+  text = String(text);
+  if (text.includes("\n")) text = text.split("\n").join(`\n${p}`);
+  return p + text;
+};
+// 着色判定（node internal/util/colors.shouldColorize 同形：FORCE_COLOR 走
+// 进程 TTY 色深，否则 isTTY 且无 getColorDepth 即真、有则 >2）。
+function __shouldColorize(stream) {
+  try {
+    if (typeof process !== 'undefined' && process.env &&
+        process.env.FORCE_COLOR !== undefined) {
+      let __d;
+      try {
+        const __t = process.stdout;
+        __d = (__t && typeof __t.getColorDepth === 'function') ? __t.getColorDepth() : undefined;
+      } catch {}
+      if (__d !== undefined) return __d > 2;
+    }
+  } catch {}
+  try {
+    if (!stream || !stream.isTTY) return false;
+    if (typeof stream.getColorDepth === 'function') {
+      try { return stream.getColorDepth() > 2; } catch { return false; }
+    }
+    return true;
+  } catch { return false; }
+}
+// per-stream 检查选项（node kGetInspectOptions 同形：colorMode auto 即按流
+// 判定；Map 形态按流取（miss 即无色）；colors 缺省回填当次判定色）。
+Console.prototype._inspectOpts = function(stream) {
+  let color = this._colorMode;
+  if (color === 'auto') color = __shouldColorize(stream);
+  const __map = this._inspectOptionsMap;
+  if (__map) {
+    let o;
+    try { o = __map.get(stream); } catch { o = undefined; }
+    if (o !== undefined && o !== null && (typeof o === 'object' || typeof o === 'function')) {
+      if (o.colors === undefined) {
+        try { o.colors = color; } catch {}
+      }
+      return o;
+    }
+  }
+  return color ? { colors: true } : {};
+};
+// 单参字符串 fast path（真机 kFormatForStdout 同形；余走 formatWithOptions）。
+Console.prototype._fmtOut = function(args) {
+  if (args.length === 1 && typeof args[0] === 'string') return args[0];
+  return formatWithOptions(this._inspectOpts(this._stdout), ...args);
+};
+Console.prototype._fmtErr = function(args) {
+  if (args.length === 1 && typeof args[0] === 'string') return args[0];
+  return formatWithOptions(this._inspectOpts(this._stderr), ...args);
 };
 // 栈溢出判定（node internal/errors.isStackOverflowError 同形：与本引擎实爆的
 // RangeError 按 name+message 比对；引擎无关——SpiderMonkey 文案非 V8 形）。
@@ -181,14 +262,22 @@ Console.prototype._w = function(stream, text, fb) {
   // 无可用流回落全局（真机 TypeError，宽松记档；回落方向与方法一致）。
   fb(text);
 };
-Console.prototype._out = function(...args) { const t = this._pad(format(...args)); this._w(this._stdout, t, (s) => g.log(s)); };
-Console.prototype._err = function(...args) { const t = this._pad(format(...args)); this._w(this._stderr, t, (s) => g.error(s)); };
+Console.prototype._out = function(...args) { const t = this._pad(this._fmtOut(args)); this._w(this._stdout, t, (s) => g.log(s)); };
+Console.prototype._err = function(...args) { const t = this._pad(this._fmtErr(args)); this._w(this._stderr, t, (s) => g.error(s)); };
 Console.prototype.log = function(...args) { this._out(...args); };
 Console.prototype.info = function(...args) { this._out(...args); };
 Console.prototype.debug = function(...args) { this._out(...args); };
 Console.prototype.warn = function(...args) { this._err(...args); };
 Console.prototype.error = function(...args) { this._err(...args); };
-Console.prototype.dir = function(obj) { this._out(obj); };
+Console.prototype.dir = function(obj, options) {
+  // 真机口径：customInspect 恒关 + per-stream 选项 + 调用方 options 覆盖。
+  const t = this._pad(inspect(obj, {
+    customInspect: false,
+    ...this._inspectOpts(this._stdout),
+    ...options,
+  }));
+  this._w(this._stdout, t, (s) => g.log(s));
+};
 Console.prototype.dirxml = function(...args) { this._out(...args); };
 Console.prototype.trace = function(...args) { this._err("Trace:", ...args); };
 Console.prototype.table = function(data) { this._out(data); };

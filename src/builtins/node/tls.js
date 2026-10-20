@@ -469,7 +469,11 @@ class TLSSocket extends Socket {
         ? __pemOf(mo.secureContext?.context?.ca)
         : (__pemOf(mo.ca) ?? (__defaultCA !== null ? __defaultCA.join("\n") : undefined));
       if (ca !== undefined) wire.ca = ca;
-      wire.rejectUnauthorized = mo.rejectUnauthorized !== false;
+      // node 构造路径默认：exports.connect 归一后恒显式；裸 TLSSocket 直连缺省假
+      // （wrap.js:954 `!!options.rejectUnauthorized`），显式值恒优先。
+      wire.rejectUnauthorized = mo.rejectUnauthorized !== undefined
+        ? !!mo.rejectUnauthorized
+        : !!this.__viaConnectApi;
     }
     if (this.ALPNProtocols !== undefined) {
       wire.alpnB64 = Buffer.from(this.ALPNProtocols).toString("base64");
@@ -496,12 +500,21 @@ class TLSSocket extends Socket {
   }
   __pump(r) {
     if (!r) return;
+    // 中止错先冲 alert 字节（close-error 套件：对端据 alert 判握手失败，不派 secure）。
+    if (r.out) {
+      try { this.__wrapped.write(Buffer.from(r.out, "base64")); } catch { /* 坏载荷即弃 */ }
+    }
     if (r.err !== undefined && r.err !== null) {
-      // rustls 协议错 → node/OpenSSL 码映射（复用直拨面映射表）。
+      // rustls 协议错 → node/OpenSSL 码映射（复用直拨面映射表）；中止携带的
+      // 校验原文同步授权位（旧捕获路径经 secure 面落位，此处等价）。
+      if (r.verifyErr !== undefined && r.verifyErr !== null && String(r.verifyErr) !== __NAME_MISMATCH) {
+        this.__verifyErr = __handshakeErr(String(r.verifyErr), __sniHost(this));
+        this.authorized = false;
+        this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
+      }
       this.destroy(__handshakeErr(String(r.err), __sniHost(this)));
       return;
     }
-    if (r.out) this.__wrapped.write(Buffer.from(r.out, "base64"));
     if (r.plain) this.__ingestData(Buffer.from(r.plain, "base64"));
     // 包裹面校验捕获（名失配哨兵走身份校验定夺；链错原文映射；处置收口见 secure 面）。
     if (r.verifyErr !== undefined && r.verifyErr !== null && this.__verifyErr === null) {

@@ -478,6 +478,53 @@ setTimeout(() => console.log("end-ok"), 2500);
 }
 
 #[test]
+fn tls_close_error_reports() {
+    // node 硬失败口径：客户端链错（无 ca 自签）握手发 alert 中止——客户端 error +
+    // close 带错，服务端无 secureConnection、仅 tlsClientError（非 null）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "s.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+let srvSecure = 0, srvClientErr = 0;
+const server = tls.createServer({{ key, cert }}, () => {{ srvSecure++; }});
+server.on("tlsClientError", () => {{ srvClientErr++; }});
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  // 报错：无 ca 自签 → 链错硬失败。
+  const c = tls.connect({{ port, host: "127.0.0.1" }});
+  c.on("error", (e) => console.log("cli-error", e.code, c.authorized));
+  c.on("close", (err) => {{
+    console.log("cli-close", !!err, c.authorized);
+    // alert 落定需半个轮转：稍候再读服务端计数（自签 helper 恒 DEPTH_ZERO 系）。
+    setTimeout(() => {{
+      console.log("srv-secure", srvSecure);
+      console.log("srv-clienterr", srvClientErr > 0);
+      server.close();
+    }}, 500);
+  }});
+}});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#
+        ),
+    );
+    assert!(out.contains("cli-error DEPTH_ZERO_SELF_SIGNED_CERT false"), "out: {out}");
+    assert!(out.contains("cli-close true false"), "out: {out}");
+    assert!(out.contains("srv-secure 0"), "out: {out}");
+    assert!(out.contains("srv-clienterr true"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn tls_verify_verdict_precedes_flush() {
     // node onConnectSecure 口径：裁决（捕获错/身份校验）先于应用字节上网；
     // 须销毁即预连写随 socket 弃置——服务端零字节（checkServerIdentity 套件幻影请求根因）。

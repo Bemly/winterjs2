@@ -163,10 +163,14 @@ impl TlsWrapEngine {
 
 /// node TLSSocket 口径：证书校验失败**不**中止握手——错误捕获后照常完成，
 /// 由 JS 'secure' 侧（onConnectSecure / ssl.verifyError）决定处置。
+/// 例外（close-error 套件）：`abort` 为真（即要求校验）且为链错（非名失配哨兵）
+/// 时返回 Err 中止握手——rustls 依例发出 fatal alert，对端不再派发
+/// secureConnection（OpenSSL 同形）；名失配恒捕获走 JS `checkServerIdentity`。
 #[derive(Debug)]
 struct CaptureVerifier {
     inner: std::sync::Arc<crate::builtins::node::tls_v1::V1FallbackVerifier>,
     caught: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    abort: bool,
 }
 
 /// 主机名失配哨兵（node 口径：证书链错由 OpenSSL 在握手期硬失败，
@@ -200,6 +204,13 @@ impl rustls::client::danger::ServerCertVerifier for CaptureVerifier {
         {
             Ok(v) => Ok(v),
             Err(e) => {
+                if self.abort && !is_name_mismatch(&e) {
+                    // 硬失败：记原文供授权位映射后中止——rustls 发 fatal alert。
+                    if let Ok(mut slot) = self.caught.lock() {
+                        *slot = Some(e.to_string());
+                    }
+                    return Err(e);
+                }
                 if let Ok(mut slot) = self.caught.lock() {
                     *slot = Some(if is_name_mismatch(&e) {
                         NAME_MISMATCH_SENTINEL.to_string()
@@ -266,10 +277,12 @@ pub(crate) fn parse_alpn(b64: Option<&str>) -> Vec<Vec<u8>> {
     out
 }
 
-/// 捕获式客户端配置（node TLSSocket 口径：校验照跑、失败不中止握手——错误捕获后
-/// 随握手完成点回传 JS 处置；WebPki + X.509 v1 兜底，见 tls_v1）。
+/// 捕获式客户端配置（node TLSSocket 口径：校验照跑；`reject` 为真时链错中止
+/// 握手并发 alert（close-error 套件），名失配恒捕获；为假时全捕获由 JS 处置；
+/// WebPki + X.509 v1 兜底，见 tls_v1）。
 pub(crate) fn capture_client_config(
     ca_pem: Option<&str>,
+    reject: bool,
 ) -> Result<(rustls::ClientConfig, std::sync::Arc<std::sync::Mutex<Option<String>>>), String> {
     let caught: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
     let mut roots = rustls::RootCertStore::empty();
@@ -304,6 +317,7 @@ pub(crate) fn capture_client_config(
             .with_custom_certificate_verifier(std::sync::Arc::new(CaptureVerifier {
                 inner: v1,
                 caught: caught.clone(),
+                abort: reject,
             }))
             .with_no_client_auth(),
         caught,
@@ -326,7 +340,7 @@ fn wrap_client_config(
             Default::default(),
         ));
     }
-    capture_client_config(ca_pem)
+    capture_client_config(ca_pem, reject)
 }
 
 fn set_rval_str(cx: &mut JSContext, frame: &Frame, s: &str) {
@@ -376,6 +390,11 @@ fn engine_result(e: &mut TlsWrapEngine, pre_plain: Vec<u8>) -> String {
             None,
         );
         info = serde_json::from_str(&info_str).ok();
+    } else if e.err.is_some() {
+        // 中止错亦带校验原文（非哨兵恒为链错）供 JS 授权位映射；info 不发。
+        if let Ok(mut slot) = e.caught.lock() {
+            verify_err = slot.take();
+        }
     }
     serde_json::json!({
         "out": b64_opt(&out),

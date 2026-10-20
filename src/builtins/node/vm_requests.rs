@@ -137,6 +137,49 @@ fn extend_to_with_keyword(js: &str, s: u32) -> Option<u32> {
 /// 动态 `import(spec, opts?)` 的 `with`/`assert` 子句空格化（SM153 仅认 `type`
 /// 键、其余键加载期即拒；V8 视属性为不透明，真机回调照见原文属性）。
 /// 含非 `type` 键的 options 对象整体空格化（换行保留，行列恒等）；纯 `type`
+/// 顶层 await 探测（`SourceTextModule#hasTopLevelAwait` 面；真机 V8 口径）。
+/// 模块顶层（函数体外；类静态块计入，方法/getter/setter/构造器不计）
+/// 出现 `await` 即 true。`async function` 体的 await 不算。
+/// 解析失败 → false。
+pub fn has_top_level_await(source: &str, ext: &str) -> bool {
+    use oxc::ast_visit::Visit;
+    use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
+    let allocator = Allocator::default();
+    let path = std::path::PathBuf::from(format!("vm_tla.{ext}"));
+    let source_type = SourceType::from_path(&path)
+        .map(|t| t.with_module(true))
+        .unwrap_or_else(|_| SourceType::mjs());
+    let ret = Parser::new(&allocator, source, source_type).parse();
+    if ret.fatal_error {
+        return false;
+    }
+    struct Grab<'a> {
+        fn_spans: Vec<oxc::span::Span>,
+        await_spans: Vec<oxc::span::Span>,
+        phantom: std::marker::PhantomData<&'a ()>,
+    }
+    impl<'a> Visit<'a> for Grab<'a> {
+        fn visit_function(&mut self, it: &oxc::ast::ast::Function<'a>, flags: oxc::syntax::scope::ScopeFlags) {
+            self.fn_spans.push(it.span);
+            oxc::ast_visit::walk::walk_function(self, it, flags);
+        }
+        fn visit_arrow_function_expression(&mut self, it: &oxc::ast::ast::ArrowFunctionExpression<'a>) {
+            self.fn_spans.push(it.span);
+            oxc::ast_visit::walk::walk_arrow_function_expression(self, it);
+        }
+        fn visit_await_expression(&mut self, it: &oxc::ast::ast::AwaitExpression<'a>) {
+            self.await_spans.push(it.span);
+            oxc::ast_visit::walk::walk_await_expression(self, it);
+        }
+    }
+    let mut grab = Grab { fn_spans: Vec::new(), await_spans: Vec::new(), phantom: std::marker::PhantomData };
+    grab.visit_program(&ret.program);
+    // 任一 await 落在全部函数体之外即顶层。
+    grab.await_spans.iter().any(|a| {
+        !grab.fn_spans.iter().any(|f| f.start <= a.start && a.end <= f.end)
+    })
+}
+
 /// 子句保留（JSON 模块引擎面用）；非字面量 options 不动（attrs 侧回空）。
 /// 无需剥离/解析失败 → None（调用方用原文）。
 pub fn strip_dynamic_with(source: &str, ext: &str) -> Option<String> {
@@ -522,5 +565,19 @@ mod tests {
         // 正常：无子句/解析失败即 None。
         assert!(strip_dynamic_with("import(\"x\")", "js").is_none());
         assert!(strip_dynamic_with("import(", "js").is_none());
+    }
+
+    #[test]
+    fn vm_top_level_await_faces() {
+        // 正常：顶层 await 即 true。
+        assert!(has_top_level_await("export const a = 1;\nawait 0;", "js"));
+        // 正常：纯声明/异步函数体即 false。
+        assert!(!has_top_level_await("export const a = 1;", "js"));
+        assert!(!has_top_level_await("export async function f() { await 0; }", "js"));
+        assert!(!has_top_level_await("const f = async () => await 1;", "js"));
+        // 边界：类静态块计入（真机 TLA 口径）。
+        assert!(has_top_level_await("class C { static { await 1; } }", "js"));
+        // 报错：解析失败即 false。
+        assert!(!has_top_level_await("export const =", "js"));
     }
 }

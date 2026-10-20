@@ -208,6 +208,34 @@ pub unsafe extern "C" fn vm_mod_deps(
     true
 }
 
+/// 顶层 await 探测（`__wjs2_vm_mod_tla(code, identifier)` → boolean；纯解析，
+/// 无状态。扩展名按 identifier 后缀定方言，规则同编译）。
+/// UNSAFE-BOUNDARY: 实参 Frame rooted 后读（§4.80）；覆盖
+/// `tests/node/vm.rs::vm_module_tla_faces`（经黑盒三件）。
+pub unsafe extern "C" fn vm_mod_tla(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let code = match arg_string(&mut cx, &frame, 0, "vm module") {
+        Some(s) => s,
+        None => return false,
+    };
+    let identifier = arg_string(&mut cx, &frame, 1, "vm module").unwrap_or_default();
+    // ext 规则同编译（identifier 点后缀，无点/超长/非标按 js；见上）。
+    let ext = identifier.rsplit('.').next().filter(|e| {
+        identifier.contains('.')
+            && e.len() <= 5
+            && !e.is_empty()
+            && e.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    requests::has_top_level_await(&code, ext.unwrap_or("js")).to_jsval(&mut cx, frame.rval_mut());
+    true
+}
+
 /// 链接模块：`__wjs2_vm_link(modId[, sessionJson])` → undefined。
 /// 无会话即零导入旧路（`load_dependencies` + `ModuleLink`；带导入仍拒绝——
 /// JS 壳将会话路由到图路，此处为防御）；有会话走链接器图（见下）。

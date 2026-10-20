@@ -600,12 +600,26 @@ export function createContext(contextObject = {}, options = {}) {
   // jsdom 29（vitest jsdom 环境）拿它当 window 直装 DOM 全局。
   // 注意：新 global 只有 SpiderMonkey 标准内建（Object/Array/Symbol 等），
   // 无 winterjs2 主域扩展（process/console/Buffer 等）——真机 vanilla 口径（§4.90 同源）。
+  // options 形状先校验（真机 validateObject 先行；DONT 路径同样校验）。
+  if (options === null || ((typeof options !== "object" && typeof options !== "function"))) {
+    const err = new TypeError(`The "options" argument must be of type object. Received ${__recv(options)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  // 上下文级 importModuleDynamically（referrer-realm 余件：referrer 不可辨识的
+  // 动态 import 走本回调；create 前校验，失败即抛不建仓）。
+  const cDynMode = __dynModeOf(options.importModuleDynamically);
+  const cDynCb = cDynMode === "custom" ? options.importModuleDynamically : undefined;
+  const cDynMain = cDynMode === "main" ? "1" : "0";
   if (contextObject === __dontCtx) {
     const id = __vmCall(() => __wjs2_vm_create());
     const g = __vmCall(() => __wjs2_vm_global(id));
     __vmStdKeys(g).id = id;
+    __vmCall(() => __wjs2_vm_dyn_reg_ctx(id, g, cDynCb, cDynMain));
     return g;
   }
+  // 已 contextify 即原样返回（真机：options 不读；上方形状校验已过）。
+  if (isContext(contextObject)) return contextObject;
   if (contextObject !== null && (typeof contextObject !== "object" && typeof contextObject !== "function")) {
     const err = new TypeError(`The "contextObject" argument must be of type object. Received type ${typeof contextObject}`);
     err.code = "ERR_INVALID_ARG_TYPE";
@@ -626,7 +640,6 @@ export function createContext(contextObject = {}, options = {}) {
   }
   // codeGeneration 校验（codegen 套件点名；undefined 即默认全开）。
   const cg = __vmCodegen(options.codeGeneration, "codeGeneration");
-  if (isContext(contextObject)) return contextObject;
   const name = typeof options.name === "string" ? options.name : undefined;
   void name;
   if (options.microtaskMode !== undefined && options.microtaskMode !== "afterEvaluate") {
@@ -639,6 +652,9 @@ export function createContext(contextObject = {}, options = {}) {
   __vmSnapshot(id, contextObject);
   if (contextObject !== null && contextObject !== undefined) __syncIn(id, contextObject);
   __vmCodegenShadows(id, cg);
+  // 上下文级 importModuleDynamically（merge-note linker 余件 referrer-realm：
+  // referrer 不可辨识的动态 import 走本回调；函数/undefined/符号三态与 Script 同口径）。
+  __vmCall(() => __wjs2_vm_dyn_reg_ctx(id, contextObject, cDynCb, cDynMain));
   __vmAutoRelease(contextObject, id);
   return contextObject;
 }

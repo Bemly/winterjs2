@@ -528,6 +528,9 @@ unsafe extern "C" fn load_hook(
 ) -> bool {
     // SAFETY: 引擎回调提供的 raw cx 有效
     let mut cx = unsafe { wrap_cx(cx_raw) };
+    // incumbent 先抓（§4.1 进主 realm 前；vm 动态导入的上下文兜底用——
+    // hook 触发时 cx 即在 referrer realm，进主 realm 后即丢，见 4.311）。
+    let incumbent = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx.raw_cx()) };
     // hook 触发时不保证在 realm 内，先重进 global（§4.1 铁律）
     let global = state::global();
     rooted!(&in(cx) let global_root: *mut JSObject = global);
@@ -559,6 +562,7 @@ unsafe extern "C" fn load_hook(
             payload_val,
             line,
             col_one,
+            incumbent,
         ) {
             return done;
         }

@@ -55,6 +55,22 @@ function __isModuleLive(m) {
   return (typeof m === "object" && m !== null) || typeof m === "function";
 }
 
+// 异步图传递闭包（hasAsyncGraph 面；link/instantiate 落定时机算一次，复用
+// 时读缓存。`__tla` 为本模块静态标记；`__linkReqs` 为 linkRequests 绑定；
+// `__tlaClosure` 为已 linker 链接者的记忆；环用 seen 集截断）。
+function __vmTlaOf(m, seen) {
+  if (!m || typeof m.__tla !== "boolean" || seen.has(m.__id)) return false;
+  seen.add(m.__id);
+  if (m.__tla === true || m.__tlaClosure === true) return true;
+  const reqs = m.__linkReqs;
+  if (Array.isArray(reqs)) {
+    for (const d of reqs) {
+      if (d && __vmTlaOf(d, seen)) return true;
+    }
+  }
+  return false;
+}
+
 // inspect 名牌原型（`util.inspect` 按 `constructor.name` 打头；真机三字段体）。
 const __vmInspectProtos = new Map();
 function __vmInspectTag(name) {
@@ -218,6 +234,9 @@ export class SourceTextModule extends Module {
     this.__depCache = undefined;
     this.__reqCache = undefined;
     this.__modReqCache = undefined;
+    // 顶层 await 静态标记（hasTopLevelAwait 面；async 图闭包在 link/instantiate 落定）。
+    this.__tla = __vmCall(() => __wjs2_vm_mod_tla(code, identifier));
+    this.__tlaClosure = false;
     // cachedData 接受并记忆匹配结论（存根：内容哈希比对，见 createCachedData）。
     this.__cachedRejected = undefined;
     if (options.cachedData !== undefined) {
@@ -284,6 +303,19 @@ export class SourceTextModule extends Module {
       });
     }
     return this.__modReqCache;
+  }
+  // 顶层 await 探测（真机口径：仅本模块源码，构造期静态判定，不含依赖）。
+  hasTopLevelAwait() {
+    this.__assertThis();
+    return this.__tla === true;
+  }
+  // 异步图探测（真机口径：本模块及传递依赖任一含 TLA；未实例化即抛）。
+  hasAsyncGraph() {
+    this.__assertThis();
+    if (this.__status === "unlinked" || this.__status === "linking") {
+      __modErr("ERR_VM_MODULE_STATUS", "Module status must be instantiated");
+    }
+    return this.__tlaClosure === true;
   }
   get namespace() {
     this.__assertThis();
@@ -396,6 +428,8 @@ export class SourceTextModule extends Module {
     __vmCall(() => __wjs2_vm_link(this.__id, JSON.stringify({ modules, edges })));
     for (const w of seen.values()) {
       if (w.__status === "unlinked" || w.__status === "linking") w.__status = "linked";
+      // 连带落定的依赖同样结算异步图闭包（hasAsyncGraph 面；entry 与依赖同权）。
+      if (w.__tlaClosure !== true) w.__tlaClosure = __vmTlaOf(w, new Set());
     }
     return undefined;
   }
@@ -439,6 +473,8 @@ export class SourceTextModule extends Module {
           throw e;
         }
         this.__status = "linked";
+        // 零导入图即自身（TLA 闭包 = 自身标记）。
+        this.__tlaClosure = this.__tla === true;
       });
     }
     // linker BFS（transitive；每 (referrer, 请求键) 调一次；异步 linker 顺序
@@ -497,6 +533,8 @@ export class SourceTextModule extends Module {
     }
     for (const w of seen.values()) {
       if (w.__status === "unlinked" || w.__status === "linking") w.__status = "linked";
+      // 连带落定的依赖同样结算异步图闭包（hasAsyncGraph 面；entry 与依赖同权）。
+      if (w.__tlaClosure !== true) w.__tlaClosure = __vmTlaOf(w, new Set());
     }
     return undefined;
   }
@@ -639,7 +677,10 @@ export class SyntheticModule extends Module {
       Object.defineProperty(ns, n, { enumerable: true, configurable: true, get: () => this.__exports[n] });
     }
     this.__ns = Object.freeze(ns);
-    // 包装 + 命名空间进 native 注册（回调返回 identity 比对用，merge-note #2）。
+    // Synthetic 无 TLA（evaluateCallback 作普通函数跑）；包装 + 命名空间进
+    // native 注册（回调返回 identity 比对用，merge-note #2）。
+    this.__tla = false;
+    this.__tlaClosure = false;
     __vmCall(() => __wjs2_vm_dyn_reg_ns(this, this.__ns));
     __vmHideFields(this);
   }

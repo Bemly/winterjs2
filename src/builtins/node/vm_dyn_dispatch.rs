@@ -106,9 +106,13 @@ struct DynCall {
     source: String,
 }
 
-/// referrer 匹配（记录 → 函数 → 脚本帧；无命中即 None → 主 loader 路）。
-/// 前置：cx 有效；referrer 为 hook 调用期内有效的脚本指针。
-fn dyn_match(cx: &mut JSContext, referrer: *mut JSScript) -> Option<DynCall> {
+/// referrer 匹配（记录 → 函数 → 脚本帧 → incumbent 上下文；无命中即 None →
+/// 主 loader 路）。
+/// incumbent 兜底（referrer-realm 轮）：referrer 不可辨识时（eval 微任务等），
+/// 按 hook 入口 realm 归属 vm 上下文即用其回调（真机 referrer null 即走上下文回调）。
+/// 前置：cx 有效；referrer 为 hook 调用期内有效的脚本指针；
+/// incumbent 为 hook 入口 realm global（可空 → 跳过兜底）。
+fn dyn_match(cx: &mut JSContext, referrer: *mut JSScript, incumbent: *mut JSObject) -> Option<DynCall> {
     // 模块路：编译期定址脚本指针比对（求值后引擎清记录侧槽，此处自持根，
     // 指针恒稳；只比地址不解引用，恒安全，见 4.293）。
     for (id, script) in state::vm_mod_scripts() {
@@ -154,6 +158,37 @@ fn dyn_match(cx: &mut JSContext, referrer: *mut JSScript) -> Option<DynCall> {
                 DynCall { callback, referrer, main_loader, ctx, source }
             })
         })
+    }).or_else(|| {
+        // incumbent 兜底：referrer 未命中任一路（eval 微任务等），按 hook 入口
+        // realm 归属 vm 上下文即用其回调；主域/未知即 None（主 loader）。
+        if incumbent.is_null() {
+            return None;
+        }
+        rooted!(&in(cx) let incumbent_root: *mut JSObject = incumbent);
+        let found = state::vm_ctx_all()
+            .into_iter()
+            .find(|(_, g)| *g == incumbent_root.get())
+            .map(|(id, _)| id);
+        let Some(ctx) = found else {
+            return None;
+        };
+        match state::vm_dyn_get_ctx(ctx) {
+            // 未注册：上下文无回调 → 缺失错（主 loader 不回落）。
+            None => Some(DynCall {
+                callback: UndefinedValue(),
+                referrer: UndefinedValue(),
+                main_loader: false,
+                ctx,
+                source: String::new(),
+            }),
+            Some((referrer, callback, main_loader)) => Some(DynCall {
+                callback,
+                referrer,
+                main_loader,
+                ctx,
+                source: String::new(),
+            }),
+        }
     })
 }
 
@@ -170,9 +205,10 @@ pub fn vm_dyn_import(
     payload: JSVal,
     _line: u32,
     _col: u32,
+    incumbent: *mut JSObject,
 ) -> Option<bool> {
     rooted!(&in(cx) let payload_root = payload);
-    let call = dyn_match(cx, referrer)?;
+    let call = dyn_match(cx, referrer, incumbent)?;
     // 主 loader 直通（USE_MAIN_CONTEXT_DEFAULT_LOADER 符号）。
     if call.main_loader {
         return None;
@@ -287,24 +323,27 @@ pub fn vm_dyn_import(
 }
 
 /// async 回调：开票 + `__wjs2_vm_dyn_then(resultPromise, ticket)` 帮忙。
+/// 帮忙函数住主 global；进主 realm 查调（票据 realm 可能为 vm 上下文）。
 fn dyn_commit_async(
     cx: &mut JSContext,
-    global: *mut JSObject,
+    _global: *mut JSObject,
     payload: *mut JSObject,
     ctx: u64,
     source_phase: bool,
     result_promise: *mut JSObject,
 ) -> Option<bool> {
-    rooted!(&in(cx) let global_root: *mut JSObject = global);
     rooted!(&in(cx) let result_root: *mut JSObject = result_promise);
     let ticket = state::vm_dyn_ticket_open(payload, ctx, source_phase);
     rooted!(&in(cx) let mut ticket_v_root = UndefinedValue());
     ticket.to_string().to_jsval(cx, ticket_v_root.handle_mut());
     rooted!(&in(cx) let ticket_v = ticket_v_root.get());
-    let helper = get_prop_value(cx, global_root.get(), c"__wjs2_vm_dyn_then")?;
+    rooted!(&in(cx) let main_root: *mut JSObject = state::global());
+    let mut main_realm = AutoRealm::new_from_handle(cx, main_root.handle());
+    let cx: &mut JSContext = &mut main_realm;
+    let helper = get_prop_value(cx, main_root.get(), c"__wjs2_vm_dyn_then")?;
     rooted!(&in(cx) let helper_root = helper);
     rooted!(&in(cx) let result_v = ObjectValue(result_root.get()));
-    crate::jsapi_glue::call_two(cx, global_root.get(), helper_root.get(), result_v.get(), ticket_v.get())?;
+    crate::jsapi_glue::call_two(cx, main_root.get(), helper_root.get(), result_v.get(), ticket_v.get())?;
     Some(true)
 }
 
@@ -411,15 +450,30 @@ fn dyn_is_ns(cx: &mut JSContext, raw: *mut JSObject) -> bool {
 }
 
 /// 记录落定（link + evaluate；TLA 挂帮忙；与 dyn_done/dyn_eval_done 共用）。
+/// realm 纪律：一切记录操作进记录所属 compartment（跨域回调返回异域模块时，
+/// referrer realm 与记录 realm 可能不一致，就地操作即断言崩，见 4.312）。
 fn dyn_commit_record(
     cx: &mut JSContext,
-    global: *mut JSObject,
     payload: *mut JSObject,
     record: *mut JSObject,
 ) -> bool {
-    rooted!(&in(cx) let global_root: *mut JSObject = global);
     rooted!(&in(cx) let payload_root: *mut JSObject = payload);
     rooted!(&in(cx) let record_root: *mut JSObject = record);
+    let rec_ctx = record_ctx_of(record);
+    let gptr = if rec_ctx == state::VM_MAIN_CTX {
+        state::global()
+    } else {
+        match super::vm::lookup_global(cx, rec_ctx) {
+            Some(p) => p,
+            None => {
+                report_error(cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
+                return false;
+            }
+        }
+    };
+    rooted!(&in(cx) let global_root: *mut JSObject = gptr);
+    let mut realm = AutoRealm::new_from_handle(cx, global_root.handle());
+    let cx: &mut JSContext = &mut realm;
     // SAFETY: record 有效 rooted；realm 内同步 link（幂等，已验证）
     if !unsafe { ModuleLink(cx, record_root.handle()) } {
         let exc = take_pending_exception(cx).unwrap_or_else(|| {
@@ -473,7 +527,7 @@ fn dyn_commit_record(
                         record_root.get(),
                         false,
                     );
-                    dyn_then_helper(cx, global_root.get(), rval_obj.get(), ticket, true)
+                    dyn_then_helper(cx, rval_obj.get(), ticket, true)
                 }
             };
         }
@@ -491,20 +545,23 @@ fn record_ctx_of(record: *mut JSObject) -> u64 {
 }
 
 /// 求值帮忙（`__wjs2_vm_dyn_evalThen(evalPromise, ticket)`；缺席即报失败）。
+/// 帮忙函数住主 global（vm_modules.js 接线处），一律按主域查找。
 fn dyn_then_helper(
     cx: &mut JSContext,
-    global: *mut JSObject,
     eval_promise: *mut JSObject,
     ticket: u64,
     is_eval: bool,
 ) -> bool {
-    rooted!(&in(cx) let global_root: *mut JSObject = global);
     rooted!(&in(cx) let eval_root: *mut JSObject = eval_promise);
     rooted!(&in(cx) let mut ticket_v_root = UndefinedValue());
     ticket.to_string().to_jsval(cx, ticket_v_root.handle_mut());
     rooted!(&in(cx) let ticket_v = ticket_v_root.get());
     let name = if is_eval { c"__wjs2_vm_dyn_evalThen" } else { c"__wjs2_vm_dyn_then" };
-    let helper = match get_prop_value(cx, global_root.get(), name) {
+    // 帮忙函数住主 global；进主 realm 查（票据 realm 可能为 vm 上下文）。
+    rooted!(&in(cx) let main_root: *mut JSObject = state::global());
+    let mut main_realm = AutoRealm::new_from_handle(cx, main_root.handle());
+    let cx: &mut JSContext = &mut main_realm;
+    let helper = match get_prop_value(cx, main_root.get(), name) {
         Some(h) => h,
         None => {
             report_error(cx, "ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING: vm dynamic import helper missing");
@@ -515,7 +572,7 @@ fn dyn_then_helper(
     rooted!(&in(cx) let eval_v = ObjectValue(eval_root.get()));
     crate::jsapi_glue::call_two(
         cx,
-        global_root.get(),
+        main_root.get(),
         helper_root.get(),
         eval_v.get(),
         ticket_v.get(),
@@ -524,9 +581,25 @@ fn dyn_then_helper(
 }
 
 /// 命名空间直解（source-phase 即 NOT_MODULE，真机口径）。
+/// realm 纪律同记录落定（进记录所属 compartment；调用方 realm 可能为 referrer 域）。
 fn dyn_commit_ns(cx: &mut JSContext, payload: *mut JSObject, record: *mut JSObject) -> bool {
     rooted!(&in(cx) let payload_root: *mut JSObject = payload);
     rooted!(&in(cx) let record_root: *mut JSObject = record);
+    let rec_ctx = record_ctx_of(record);
+    let gptr = if rec_ctx == state::VM_MAIN_CTX {
+        state::global()
+    } else {
+        match super::vm::lookup_global(cx, rec_ctx) {
+            Some(p) => p,
+            None => {
+                report_error(cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
+                return false;
+            }
+        }
+    };
+    rooted!(&in(cx) let global_root: *mut JSObject = gptr);
+    let mut realm = AutoRealm::new_from_handle(cx, global_root.handle());
+    let cx: &mut JSContext = &mut realm;
     // SAFETY: record 有效 rooted；返回命名空间由记录保活
     let ns = unsafe { GetModuleNamespace(cx, record_root.handle()) };
     if ns.is_null() {
@@ -564,7 +637,7 @@ fn dyn_commit_value(
             }
         }
         DynOutcome::Invalid => dyn_fail_not_module(cx, global, payload),
-        DynOutcome::Record(rec) => dyn_commit_record(cx, global, payload, rec),
+        DynOutcome::Record(rec) => dyn_commit_record(cx, payload, rec),
     }
 }
 

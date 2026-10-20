@@ -17,7 +17,26 @@ function __vmCtxId(obj) {
   return rec ? rec.id : undefined;
 }
 
-function __vmUnwrap(e) {
+function __vmCaret(srcLine) {
+  // 真机 caret 口径（26.8.1 实测）：抛值错误的 caret 行 = 源码行前导空白 + '^'
+  //（列偏移不展开；编译期 SyntaxError 的跨度下划线另案，引擎口径记档）。
+  const m = String(srcLine ?? '').match(/^\s*/);
+  return (m ? m[0] : '') + '^';
+}
+function __vmFirst(name, message) {
+  // 真机栈首行：message 为空即裸 name（`Error` 不带 `: `，26.8.1 实测）。
+  return message ? `${name}: ${message}` : String(name);
+}
+function __vmRebuild(stk, name, message, lo, co) {
+  // node displayErrors 形态：`f:l\n源行\ncaret\n\n首行\n    at f:l:c`；
+  // 行列偏移为显示期加法（真机 33:131 = 1:8 + lo32/co123，实测）。
+  const l = (stk.l | 0) + (lo | 0);
+  const c = (stk.c | 0) + (co | 0);
+  const srcLine = stk.s ?? '';
+  const first = __vmFirst(name, message);
+  return `${stk.f}:${l}\n${srcLine}\n${__vmCaret(srcLine)}\n\n${first}\n    at ${stk.f}:${l}:${c}`;
+}
+function __vmUnwrap(e, lo, co) {
   const m = String((e && e.message) || e);
   const mm = m.match(/^__wjs2_vm_error:([A-Za-z]+)\n([\s\S]*)$/);
   if (!mm) {
@@ -39,12 +58,11 @@ function __vmUnwrap(e) {
   const Ctor = globalThis[name] || Error;
   const err = new Ctor(message);
   if (stk && stk.f) {
-    const caret = " ".repeat(Math.max(0, (stk.c | 0) - 1)) + "^";
-    err.stack = `${stk.f}:${stk.l}\n${stk.s ?? ""}\n${caret}\n\n${name}: ${message}\n    at ${stk.f}:${stk.l}:${stk.c}`;
+    err.stack = __vmRebuild(stk, name, message, lo, co);
   }
   throw err;
 }
-function __vmCall(fn) {
+function __vmCall(fn, lo, co) {
   try {
     return fn();
   } catch (e) {
@@ -72,8 +90,9 @@ function __vmCall(fn) {
             }
           }
         } catch { /* 保留原文案 */ }
-        // 信封带位置标记时给原物栈补 node displayErrors 前缀
-        //（`f:l\n源行\ncaret\n\n` + 原栈首行 Name: message 同构拼接）。
+        // 信封带位置标记时原物栈按 node displayErrors 全量重建
+        //（真机 26.8.1：`f:l\n源行\ncaret\n\n首行\n    at f:l:c`，引擎 `@` 帧丢弃；
+        // 抛非 Error 值/原物非对象走下方的信封兜底）。
         const m = String((e && e.message) || e);
         // 组序：1=name、2=message、3=json 栈标记（与 __vmUnwrap 的双组序不同！）
         const sm = m.match(/^__wjs2_vm_error:([A-Za-z]+)\n([\s\S]*)\n__wjs2_vm_stk:(\{.*\})$/);
@@ -81,21 +100,36 @@ function __vmCall(fn) {
           try {
             const stk = JSON.parse(sm[3]);
             if (stk && stk.f) {
-              const caret = " ".repeat(Math.max(0, (stk.c | 0) - 1)) + "^";
-              orig.stack = `${stk.f}:${stk.l}\n${stk.s ?? ""}\n${caret}\n\n${orig.stack}`;
+              const nm = sm[1];
+              orig.stack = __vmRebuild(stk, nm, sm[2], lo, co);
             }
           } catch { /* 保留原栈 */ }
         }
       }
       throw orig;
     }
-    __vmUnwrap(e);
+    __vmUnwrap(e, lo, co);
   }
 }
 
 let __vmFinal = null;
 let __vmModFinal = null;
+// 存活上下文弱集合（measureMemory detailed 的 other 计数用；deref 失败即收割）。
+const __vmLiveContexts = new Set();
+function __vmLiveCount() {
+  let n = 0;
+  for (const ref of __vmLiveContexts) {
+    let o = undefined;
+    try { o = ref.deref(); } catch { o = undefined; }
+    if (o === undefined) __vmLiveContexts.delete(ref);
+    else n++;
+  }
+  return n;
+}
 function __vmAutoRelease(obj, id) {
+  try {
+    if (typeof WeakRef !== "undefined") __vmLiveContexts.add(new WeakRef(obj));
+  } catch { /* 无弱引用即不计数 */ }
   try {
     if (typeof FinalizationRegistry === "undefined") return;
     if (!__vmFinal) {
@@ -415,7 +449,79 @@ function __runArgs(contextifiedObject, options) {
   __normTimeout(options.timeout, "timeout");
   __normBool(options.displayErrors, "displayErrors");
   __normBool(options.breakOnSigint, "breakOnSigint");
-  return { filename };
+  // 行列偏移只做校验之外的事：显示期加到栈位置上（真机实测，见 __vmRebuild）。
+  const lineOffset = __normUint(options.lineOffset, "lineOffset") ?? 0;
+  const columnOffset = __normUint(options.columnOffset, "columnOffset") ?? 0;
+  return { filename, lineOffset, columnOffset };
+}
+
+// Script.sourceMapURL（真机 26.8.1 实测）：源码中最后一个行注释形
+// `//[#@]<空白+>sourceMappingURL=<非空>` 的值；块注释/字符串字面量内的
+// 不算（V8 按词法定界）。行尾空白已在扫描时舍去，空值即 undefined。
+// 已知偏离：正则字面量内的魔术串会被误认（无词法正则态，记档）。
+function __vmSourceMapURL(src) {
+  let found;
+  const n = src.length;
+  let i = 0;
+  const pushLineComment = (text) => {
+    const m = text.match(/^\/\/[#@]\s+sourceMappingURL=(\S+)/);
+    if (m) found = m[1];
+  };
+  while (i < n) {
+    const ch = src[i];
+    // 字符串：跳过转义。
+    if (ch === '"' || ch === "'") {
+      i++;
+      while (i < n) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === ch) { i++; break; }
+        if (src[i] === '\n') break;
+        i++;
+      }
+      continue;
+    }
+    // 模板：${} 嵌套按深度回主态。
+    if (ch === '`') {
+      let depth = 0;
+      i++;
+      while (i < n) {
+        const c = src[i];
+        if (c === '\\') { i += 2; continue; }
+        if (c === '`' && depth === 0) { i++; break; }
+        if (c === '$' && src[i + 1] === '{') { depth++; i += 2; continue; }
+        if (c === '}' && depth > 0) { depth--; i++; continue; }
+        if ((c === '"' || c === "'") && depth > 0) {
+          const q = c;
+          i++;
+          while (i < n) {
+            if (src[i] === '\\') { i += 2; continue; }
+            if (src[i] === q) { i++; break; }
+            if (src[i] === '\n') break;
+            i++;
+          }
+          continue;
+        }
+        i++;
+      }
+      continue;
+    }
+    // 注释。
+    if (ch === '/' && src[i + 1] === '/') {
+      let j = i;
+      while (j < n && src[j] !== '\n') j++;
+      pushLineComment(src.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    i++;
+  }
+  return found;
 }
 
 export function createContext(contextObject = {}, options = {}) {
@@ -466,9 +572,9 @@ export function createContext(contextObject = {}, options = {}) {
 
 export function runInContext(code, contextifiedObject, options) {
   const id = __validateCtx(contextifiedObject);
-  const { filename } = __runArgs(contextifiedObject, options);
+  const { filename, lineOffset, columnOffset } = __runArgs(contextifiedObject, options);
   __syncIn(id, contextifiedObject);
-  const r = __vmCall(() => __wjs2_vm_run(id, String(code), filename));
+  const r = __vmCall(() => __wjs2_vm_run(id, String(code), filename), lineOffset, columnOffset);
   __syncOut(id, contextifiedObject);
   return r;
 }
@@ -490,8 +596,8 @@ export function runInNewContext(code, contextObject, options) {
 }
 
 export function runInThisContext(code, options) {
-  const { filename } = __runArgs(null, options);
-  return __vmCall(() => __wjs2_vm_run_this(String(code), filename));
+  const { filename, lineOffset, columnOffset } = __runArgs(null, options);
+  return __vmCall(() => __wjs2_vm_run_this(String(code), filename), lineOffset, columnOffset);
 }
 
 export class Script {
@@ -505,6 +611,7 @@ export class Script {
     }
     this.__code = code;
     this.__filename = __normStr(options.filename, "filename", "evalmachine.<anonymous>");
+    this.__sourceMapURL = __vmSourceMapURL(code);
     void __normUint(options.lineOffset, "lineOffset");
     void __normUint(options.columnOffset, "columnOffset");
     void __normTimeout(options.timeout, "timeout");
@@ -550,7 +657,7 @@ export class Script {
   }
   get cachedDataRejected() { return undefined; }
   get cachedDataProduced() { return false; }
-  get sourceMapURL() { return undefined; }
+  get sourceMapURL() { return this.__sourceMapURL; }
 }
 
 export function createScript(code, options) {
@@ -614,14 +721,42 @@ export function compileFunction(code, params, options = {}) {
 }
 
 export function measureMemory(options = {}) {
-  if (typeof process !== "undefined" && typeof process.emitWarning === "function") {
-    process.emitWarning("vm.measureMemory is experimental", "ExperimentalWarning");
+  // 真机 26.8.1 口径：实验警告全文 + 参数校验同步抛 + 形状
+  // `{total} / {total,current,other[]}`（detailed 逐上下文）。
+  // 数值取进程堆（SM 无 V8 精确会计，记档）；存活上下文经 FinalizationRegistry
+  // 集合计数（__vmAutoRelease 处维护）。
+  // 实验警告真机只发一次（多调仍单条，expectWarning 精确计数，实测）。
+  if (!__vmMMWarned && typeof process !== "undefined" && typeof process.emitWarning === "function") {
+    __vmMMWarned = true;
+    process.emitWarning("vm.measureMemory is an experimental feature and might change at any time", "ExperimentalWarning");
   }
-  void options;
-  const err = new Error("vm.measureMemory requires a context with memory measurement support");
-  err.code = "ERR_CONTEXT_NOT_INITIALIZED";
-  return Promise.reject(err);
+  if (options === null || (typeof options !== "object" && typeof options !== "function")) {
+    const err = new TypeError(`The "options" argument must be of type object. Received ${__recv(options)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const mode = options.mode ?? "summary";
+  if (mode !== "summary" && mode !== "detailed") {
+    const err = new TypeError(`The property 'options.mode' must be one of: 'summary', 'detailed'. Received '${String(mode)}'`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  const execution = options.execution ?? "default";
+  if (execution !== "default" && execution !== "eager") {
+    const err = new TypeError(`The property 'options.execution' must be one of: 'default', 'eager'. Received '${String(execution)}'`);
+    err.code = "ERR_INVALID_ARG_VALUE";
+    throw err;
+  }
+  const heap = (typeof process !== "undefined" && process.memoryUsage) ? process.memoryUsage().heapUsed : 0;
+  const shape = () => ({ jsMemoryEstimate: heap, jsMemoryRange: [heap, heap * 2] });
+  if (mode === "summary") {
+    return Promise.resolve({ total: shape() });
+  }
+  return Promise.resolve({ total: shape(), current: shape(), other: Array.from({ length: __vmLiveCount() }, shape) });
 }
+
+// 实验警告进程级单发标记（measureMemory，见上）。
+let __vmMMWarned = false;
 
 const __useMainLoader = Symbol("USE_MAIN_CONTEXT_DEFAULT_LOADER");
 const __dontCtx = Symbol("DONT_CONTEXTIFY");

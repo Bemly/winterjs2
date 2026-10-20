@@ -31,8 +31,8 @@ console.log("v-micro", sb2.px === 1);
 console.log("v-std", vm.runInNewContext("typeof Object") === "function", vm.runInNewContext("typeof console") === "undefined");
 console.log("v-const", typeof vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER, typeof vm.constants.DONT_CONTEXTIFY);
 console.log("v-timeout", vm.runInNewContext("1 + 1", {}, { timeout: 100 }) === 2);
-const mm = await vm.measureMemory().then(() => "no", (e) => e.code);
-console.log("v-mm", mm === "ERR_CONTEXT_NOT_INITIALIZED");
+const mm = await vm.measureMemory({ mode: "summary" });
+console.log("v-mm", typeof mm.total.jsMemoryEstimate === "number", Array.isArray(mm.total.jsMemoryRange));
 "#,
     );
     assert!(
@@ -51,7 +51,7 @@ console.log("v-mm", mm === "ERR_CONTEXT_NOT_INITIALIZED");
     assert!(out.contains("v-std true true"), "out: {out}");
     assert!(out.contains("v-const symbol symbol"), "out: {out}");
     assert!(out.contains("v-timeout true"), "out: {out}");
-    assert!(out.contains("v-mm true"), "out: {out}");
+    assert!(out.contains("v-mm true true"), "out: {out}");
     dir.close().unwrap();
 }
 
@@ -442,6 +442,96 @@ console.log("err-ref", refMsg === "zz is not defined");
         "err-ref true",
     ] {
         assert!(text.lines().any(|l| l == line), "missing: {line}\nout: {text}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn vm_source_map_and_memory_surface() {
+    // sourceMapURL 魔术注释口径 + measureMemory 形状/校验（真机 26.8.1 对拍）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+// 正常：末行魔术注释取值。
+const s1 = new vm.Script("var x = 1;\n//# sourceMappingURL=b.json");
+console.log("map-ok", s1.sourceMapURL === "b.json");
+// 报错沿：畸形注释/空值即 undefined。
+const s2 = new vm.Script("var x = 1;\n// sourceMappingURL=b.json");
+const s3 = new vm.Script("//# sourceMappingURL=");
+console.log("map-bad", s2.sourceMapURL === undefined, s3.sourceMapURL === undefined);
+// 边界：字符串字面量内的魔术串不算。
+const s4 = new vm.Script("var s = \"//# sourceMappingURL=q.json\";");
+console.log("map-str", s4.sourceMapURL === undefined);
+// 正常：summary / detailed 形状。
+const sum = await vm.measureMemory({ mode: "summary", execution: "eager" });
+const det = await vm.measureMemory({ mode: "detailed" });
+console.log("mm-sum", typeof sum.total.jsMemoryEstimate === "number", Array.isArray(sum.total.jsMemoryRange));
+console.log("mm-det", typeof det.total.jsMemoryEstimate === "number", typeof det.current.jsMemoryEstimate === "number", Array.isArray(det.other));
+// 报错：非法参数同步抛码。
+const bad = (f) => { try { f(); return "no"; } catch (e) { return e.code || "(nocode)"; } };
+console.log("mm-bad", bad(() => vm.measureMemory(null)), bad(() => vm.measureMemory("summary")), bad(() => vm.measureMemory({ mode: "random" })), bad(() => vm.measureMemory({ execution: "random" })));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "map-ok true",
+        "map-bad true true",
+        "map-str true",
+        "mm-sum true true",
+        "mm-det true true true",
+        "mm-bad ERR_INVALID_ARG_TYPE ERR_INVALID_ARG_TYPE ERR_INVALID_ARG_VALUE ERR_INVALID_ARG_VALUE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn vm_error_stack_display() {
+    // vm 抛错栈 displayErrors 形态：首行 filename:line + caret + 空行 + 首帧。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+// 正常：文件名首行 + 源码行 + 首帧。
+try { vm.runInNewContext("throw new Error(\"foo\");", {}, { filename: "t.vm" }); } catch (e) {
+  const lines = e.stack.split("\n");
+  console.log("stk", lines[0] === "t.vm:1", lines[1] === "throw new Error(\"foo\");", lines[4] === "Error: foo", lines[5].trim() === "at t.vm:1:7");
+}
+// 报错沿：空 message 首行裸名。
+try { vm.runInNewContext("throw new Error()", {}, { filename: "t.vm" }); } catch (e) {
+  console.log("stk-empty", e.stack.split("\n")[4] === "Error");
+}
+// 边界：行列偏移显示期相加。
+const ctx = vm.createContext({});
+try { vm.runInContext(" throw new Error()", ctx, { filename: "e.js", lineOffset: 32, columnOffset: 123 }); } catch (e) {
+  const lines = e.stack.split("\n");
+  console.log("stk-off", lines[0] === "e.js:33", /^ \^/.test(lines[2]), /e\.js:33:131/.test(lines[5]));
+}
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "stk true true true true",
+        "stk-empty true",
+        "stk-off true true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
     dir.close().unwrap();
 }

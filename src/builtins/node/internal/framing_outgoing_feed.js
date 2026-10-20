@@ -387,6 +387,11 @@
             } catch (e) {
               process.nextTick(() => { throw e; });
             }
+            // llhttp abort-on-freeParser 口径（parser-freed-during-execute 套件）：
+            // handler 内同步关 socket（close→释解析器/destroy）即停，管线余段
+            // 不再解析（node：同一 execute 内余消息被弃）。释旗在 317 行刚清零，
+            // 此处真即用户关所致；正常形（res.end 异步收尾）不受影响。
+            if (sock.destroyed || sock.__parserFreed === true) return;
           } else {
             // 417 默认路径：响应立即收尾；后续体字节走丢弃泵（st.req 为 null）。
             res.end();

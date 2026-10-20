@@ -632,7 +632,8 @@ export class IncomingMessage extends Readable {
   set client(v) { this.socket = v; }
   // node lib/_http_incoming.js _addHeaderLine（matchKnownFields 套件）：
   // 单例首个赢（含 undefined 占位）、set-cookie 数组、cookie '; '、其余 ', '。
-  // dest 缺席即落自身 headers（内部复用）。
+  // joinDuplicateHeaders:true 压过单值表（authorization 合并形），cookie/
+  // set-cookie 仍走各自通道。dest 缺席即落自身 headers（内部复用）。
   _addHeaderLine(field, value, dest) {
     const target = dest ?? this.headers;
     const lk = String(field).toLowerCase();
@@ -641,7 +642,7 @@ export class IncomingMessage extends Readable {
       target[lk].push(value);
       return;
     }
-    if (__SINGLETON_HEADERS.has(lk)) {
+    if (__SINGLETON_HEADERS.has(lk) && !this.joinDuplicateHeaders) {
       if (!Object.prototype.hasOwnProperty.call(target, lk)) target[lk] = value;
       return;
     }

@@ -202,7 +202,6 @@
         // agent-close/timeout-option 系套件断言）。
         this.destroy();
       };
-      console.log("DBG-REQ-ATTACH-ERR", sock && sock.constructor && sock.constructor.name);
       sock.on("error", __sockOnError);
       sock.__reqSockOnError = __sockOnError;
       // node 计数口径：'socket' 事件时仅 own+agent（=2）——req 面 end 监听递延

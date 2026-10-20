@@ -535,6 +535,25 @@ pub(crate) async fn serve_conn<S>(
     loop {
         tokio::select! {
                 r = &mut conn => {
+                    // 连接级协议错（FRAME_SIZE 等）即会话 error（goaway-cleanup
+                    // 套件点名 ERR_HTTP2_ERROR；干净收尾/传输错保持静默）。
+                    if let Err(e) = &r {
+                        let (_, rst) = h2_err_msg_rst(e);
+                        if matches!(rst, Some(1) | Some(3) | Some(6) | Some(9)) {
+                            let _ = ev_tx.send(NetEvent {
+                                id: server_id,
+                                kind: NetKind::H2Stream {
+                                    stream_id: conn_id,
+                                    what: "sessionError".into(),
+                                    payload: serde_json::json!({
+                                        "code": "ERR_HTTP2_ERROR",
+                                        "msg": "Protocol error",
+                                    })
+                                    .to_string(),
+                                },
+                            });
+                        }
+                    }
                     let _ = r;
                 break;
             }

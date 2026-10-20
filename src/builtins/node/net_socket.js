@@ -379,11 +379,24 @@ class Socket extends EventEmitter {
         try { this.__srvFeed(u8); } catch { /* 喂体错由服务端收口 */ }
         return;
       }
-      if (this.__paused) { this.__pauseBuf.push(u8); return; }
+      if (this.__paused) {
+        this.__pauseBuf.push(u8);
+        this.__maybeReadable();
+        return;
+      }
       this.bytesRead += u8.length;
       // 先暂存后冲刷（迟挂监听不丢字节；挂载竞态下仍保序——直发会反超暂存）。
       this.__dataBuf.push(u8);
       this.__flushData();
+      // 无 data 监听（未流动）即 readable（autoselect 嗅探口）。
+      if ((typeof this.listenerCount !== "function" || this.listenerCount("data") === 0) &&
+          this.__dataBuf.length > 0) this.__maybeReadable();
+    };
+    // 到包即 readable（有监听才发，微任务递延防重入）。
+    this.__maybeReadable = () => {
+      if (typeof this.listenerCount === "function" && this.listenerCount("readable") > 0) {
+        queueMicrotask(() => { try { this.emit("readable"); } catch {} });
+      }
     };
     this.push = (chunk, encoding) => {
       if (chunk === null || chunk === undefined) {
@@ -415,7 +428,23 @@ class Socket extends EventEmitter {
       this.__ingestData(u8);
       return true;
     };
-    this.read = () => null;
+    // node 读嗅探（autoselect）：read(n) 按需取缓冲（不足照取，无即 null）、unshift 回填。
+    this.read = (n) => {
+      const want = n == null ? undefined : Number(n);
+      if (want !== undefined && !(want > 0)) return null;
+      const src = [...this.__dataBuf, ...this.__pauseBuf];
+      this.__dataBuf = []; this.__pauseBuf = [];
+      const all = Buffer.concat(src.map((b) => Buffer.from(b)));
+      if (!all.length) return null;
+      const k = want === undefined ? all.length : Math.min(want, all.length);
+      if (k < all.length) this.__dataBuf.unshift(all.slice(k));
+      const out = all.slice(0, k);
+      return this.__dec ? this.__dec.write(out) : out;
+    };
+    this.unshift = (c) => {
+      if (c != null) this.__dataBuf.unshift(c instanceof Uint8Array ? c : __chunkU8(c));
+      return this;
+    };
     this._readableState = { endEmitted: false, length: 0 };
   }
   connect(...args) {

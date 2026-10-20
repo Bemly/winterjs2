@@ -281,3 +281,74 @@ caseSrc.forEach(([src, want, errWant], i) => {
     assert!(!stdout.contains("e-unexpected"), "out: {stdout}");
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_cleanup_handles() {
+    // 正常：worker 内 `server._handle.fd` 为真 fd（number），退出后该 fd
+    // 已关（fstatSync 抛 EBADF——node test-worker-cleanup-handles）。
+    // 边界：Windows 形 -1 豁免分支（本平台恒走 EBADF 断言）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import fs from "node:fs";
+import { Server } from "node:net";
+import { Worker, isMainThread, parentPort } from "node:worker_threads";
+if (isMainThread) {
+  const w = new Worker("const { Server } = require('node:net'); const { parentPort } = require('node:worker_threads'); const server = new Server(); server.listen(0); setTimeout(() => parentPort.postMessage(server._handle.fd), 200); server.unref();", { eval: true });
+  let fd = null;
+  w.on("message", (fd_) => { console.log("srv-fd", typeof fd_ === "number"); fd = fd_; });
+  w.on("exit", () => {
+    if (fd === -1) return;
+    try { fs.fstatSync(fd); console.log("srv-closed", false); }
+    catch (e) { console.log("srv-closed", e.code === "EBADF"); }
+  });
+} else {
+  console.log("in-worker", false);
+}
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in ["srv-fd true", "srv-closed true"] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn worker_messaging_timeout_faces() {
+    // 正常：目标线程饥饿（忙循环）即 ERR_WORKER_MESSAGING_TIMEOUT 拒
+    //（node test-worker-messaging-errors-timeout 意图；该件另用 Atomics.wait
+    // 致饥饿——本引擎 SM 拒一切线程 wait（主线程同错），另案，不属本面）。
+    // 边界：超时后迟到回执不炸（terminate 收尾）；短超时 0 即拒（既有 tmEdgeZero 覆）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { postMessageToThread, Worker } from "node:worker_threads";
+const w = new Worker("process.on('workerMessage', () => {}); const t = Date.now(); while (Date.now() - t < 3000);", { eval: true });
+await new Promise((r) => setTimeout(r, 200));
+try { await postMessageToThread(w.threadId, 0, 500); console.log("msg-timeout NO-TIMEOUT"); }
+catch (e) { console.log("msg-timeout", e.code === "ERR_WORKER_MESSAGING_TIMEOUT"); }
+await w.terminate();
+console.log("msg-timeout-done");
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in ["msg-timeout true", "msg-timeout-done"] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    dir.close().unwrap();
+}

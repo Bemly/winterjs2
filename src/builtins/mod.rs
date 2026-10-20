@@ -271,6 +271,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_net_reset", Some(node::net::net_reset), 1),
             // cluster-1 传柄：dup 监听 fd（见 net_pumps::net_dup_listen）。
             ("__wjs2_net_dup_listen", Some(node::net::net_dup_listen), 1),
+            // cleanup-handles：server._handle.fd 活读（见 net_pumps::net_server_fd）。
+            ("__wjs2_net_server_fd", Some(node::net::net_server_fd), 1),
             // cluster-2 裸柄：真绑 + 预留（见 net_pumps::net_tcp_wrap_bind）。
             ("__wjs2_net_tcp_wrap_bind", Some(node::net::net_tcp_wrap_bind), 2),
             // 10a：ref 真计数（net/dgram 共用）

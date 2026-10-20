@@ -165,28 +165,35 @@ pub(crate) fn net_rst_purge(id: u64) {
 }
 
 // ── server 监听 fd 记账（cluster-1 传柄 dup 用；RST 面同款静态）──────────────
-/// server id → 监听 fd（TCP listen-bind 成功点记；take/dup 后摘除或 close 即清）。
-fn net_srv_fds() -> &'static Mutex<HashMap<u64, i32>> {
-    static MAP: OnceLock<Mutex<HashMap<u64, i32>>> = OnceLock::new();
+/// (会话序号, server id) → 监听 fd（TCP listen-bind 成功点记；take/dup 后摘除
+/// 或 close 即清。会话键：各会话 id 计数器各自从零起，裸 id 跨会话必撞——
+/// cleanup-handles 套件 worker/主会话各持表，必须会话隔离）。
+fn net_srv_fds() -> &'static Mutex<HashMap<(u64, u64), i32>> {
+    static MAP: OnceLock<Mutex<HashMap<(u64, u64), i32>>> = OnceLock::new();
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 会话键（调用方会话的序号 + server id；记/取/清三方同口径）。
+fn net_srv_key(id: u64) -> (u64, u64) {
+    (session_seq(), id)
 }
 
 /// 记录 server 监听 fd。
 pub fn net_srv_fd_record(id: u64, fd: i32) {
     if let Ok(mut m) = net_srv_fds().lock() {
-        m.insert(id, fd);
+        m.insert(net_srv_key(id), fd);
     }
 }
 
 /// 取 server 监听 fd（只读；dup 不摘，close 清）。
 pub fn net_srv_fd_get(id: u64) -> Option<i32> {
-    net_srv_fds().lock().ok().and_then(|m| m.get(&id).copied())
+    net_srv_fds().lock().ok().and_then(|m| m.get(&net_srv_key(id)).copied())
 }
 
 /// 清 server 监听 fd（close/purge）。
 pub fn net_srv_fd_clear(id: u64) {
     if let Ok(mut m) = net_srv_fds().lock() {
-        m.remove(&id);
+        m.remove(&net_srv_key(id));
     }
 }
 

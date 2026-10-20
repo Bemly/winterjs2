@@ -48,6 +48,7 @@ class __ServerClass extends EventEmitter {
   // 用户 `.call(handle, …)` 改绑不影响）；连接创建逻辑收敛 __acceptConn，
   // __ev connection 经此进入（套件包装 onconnection 即被调用）。
   __setupHandle() {
+    const self = this;
     this._handle = { onconnection: (err, clientHandle) => {
       const payload = this.__pendingConnPayload; this.__pendingConnPayload = null;
       if (err) { this.emit("error", err); return; }
@@ -60,6 +61,16 @@ class __ServerClass extends EventEmitter {
         try { clientHandle.setNoDelay(true); } catch {}
       }
       this.__acceptConn(payload);
+    },
+    // 监听 fd 活读（cleanup-handles 套件：worker 内 server._handle.fd 为真 fd，
+    // 退出即关；bind 前/已清即 -1，真机 Windows 口径）。
+    get fd() {
+      try {
+        const id = self.__id;
+        if (!id) return -1;
+        const v = Number(__wjs2_net_server_fd(id));
+        return Number.isInteger(v) && v >= 0 ? v : -1;
+      } catch { return -1; }
     } };
   }
   __acceptConn(payload) {

@@ -521,3 +521,44 @@ function configSecureContext(context, options = {}, name = 'options') {
     context.setSessionTimeout(sessionTimeout);
   }
 }
+
+// ── 身份校验算法族（node lib/tls.js checkServerIdentity；与 tls.js 同模块拼接，导出唯一）──
+// 暂存旧实现（SAN/IP 优先、无 SAN 回落 CN；通配仅最左单层）；node 原文移植随后落此。
+function __hostMatch(pattern, host) {
+  const p = String(pattern).toLowerCase(), h = String(host).toLowerCase();
+  if (p.startsWith("*.")) {
+    const i = h.indexOf(".");
+    return i > 0 && h.slice(i + 1) === p.slice(2);
+  }
+  return p === h;
+}
+export function checkServerIdentity(hostname, cert) {
+  const subject = cert?.subject ?? {};
+  const alt = String(cert?.subjectaltname ?? "");
+  const dns = [], ips = [];
+  for (const part of alt.split(/,\s*/)) {
+    if (part.startsWith("DNS:")) dns.push(part.slice(4));
+    else if (part.startsWith("IP Address:")) ips.push(part.slice(11));
+  }
+  let valid, reason;
+  if (__isIP(hostname)) {
+    valid = ips.includes(hostname);
+    if (!valid) reason = `IP: ${hostname} is not in the cert's list: ${ips.join(", ")}`;
+  } else if (dns.length > 0) {
+    valid = dns.some((d) => __hostMatch(d, hostname));
+    if (!valid) reason = `Host: ${hostname}. is not in the cert's altnames: ${alt}`;
+  } else {
+    const cn = subject.CN;
+    valid = Array.isArray(cn) ? cn.some((c) => __hostMatch(c, hostname)) : (cn !== undefined && __hostMatch(cn, hostname));
+    if (!valid) reason = cn === undefined ? "Cert does not contain a DNS name" : `Host: ${hostname}. is not cert's CN: ${cn}`;
+  }
+  if (!valid) {
+    const e = new Error(`Hostname/IP does not match certificate's altnames: ${reason}`);
+    e.code = "ERR_TLS_CERT_ALTNAME_INVALID";
+    e.reason = reason;
+    e.host = hostname;
+    e.cert = cert;
+    return e;
+  }
+  return undefined;
+}

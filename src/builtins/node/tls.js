@@ -895,46 +895,7 @@ export function setDefaultCACertificates(certs) {
 // node 口径：bundled/root 证书 PEM 无尾换行，且 getCACertificates('bundled') 即同一冻结数组。
 export const rootCertificates = Object.freeze(__certsOf("bundled").map((c) => c.replace(/\n+$/, "")));
 
-// node tls.checkServerIdentity：SAN(DNS/IP) 优先、无 SAN 回落 CN；通配仅最左单层。
-function __hostMatch(pattern, host) {
-  const p = String(pattern).toLowerCase(), h = String(host).toLowerCase();
-  if (p.startsWith("*.")) {
-    const i = h.indexOf(".");
-    return i > 0 && h.slice(i + 1) === p.slice(2);
-  }
-  return p === h;
-}
-export function checkServerIdentity(hostname, cert) {
-  const subject = cert?.subject ?? {};
-  const alt = String(cert?.subjectaltname ?? "");
-  const dns = [], ips = [];
-  for (const part of alt.split(/,\s*/)) {
-    if (part.startsWith("DNS:")) dns.push(part.slice(4));
-    else if (part.startsWith("IP Address:")) ips.push(part.slice(11));
-  }
-  let valid, reason;
-  if (__isIP(hostname)) {
-    valid = ips.includes(hostname);
-    if (!valid) reason = `IP: ${hostname} is not in the cert's list: ${ips.join(", ")}`;
-  } else if (dns.length > 0) {
-    valid = dns.some((d) => __hostMatch(d, hostname));
-    if (!valid) reason = `Host: ${hostname}. is not in the cert's altnames: ${alt}`;
-  } else {
-    const cn = subject.CN;
-    valid = Array.isArray(cn) ? cn.some((c) => __hostMatch(c, hostname)) : (cn !== undefined && __hostMatch(cn, hostname));
-    if (!valid) reason = cn === undefined ? "Cert does not contain a DNS name" : `Host: ${hostname}. is not cert's CN: ${cn}`;
-  }
-  if (!valid) {
-    const e = new Error(`Hostname/IP does not match certificate's altnames: ${reason}`);
-    e.code = "ERR_TLS_CERT_ALTNAME_INVALID";
-    e.reason = reason;
-    e.host = hostname;
-    e.cert = cert;
-    return e;
-  }
-  return undefined;
-}
-
+// node tls.checkServerIdentity：见 tls_context.js（校验算法族；导出经同模块拼接保持）。
 export const DEFAULT_ECDH_CURVE = "auto";
 export const DEFAULT_MIN_VERSION = "TLSv1.2";
 export const DEFAULT_MAX_VERSION = "TLSv1.3";

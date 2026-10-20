@@ -266,7 +266,7 @@ pub fn dispatch(
 }
 
 /// 数值 id 实参（字符串形态，§4.33 约定）。
-fn arg_id(cx: &mut JSContext, frame: &Frame, i: u32) -> Option<u64> {
+pub(crate) fn arg_id(cx: &mut JSContext, frame: &Frame, i: u32) -> Option<u64> {
     if frame.argc() <= i {
         report_error(cx, "TypeError: worker port needs an id");
         return None;
@@ -761,63 +761,14 @@ pub unsafe extern "C" fn env_get(
     true
 }
 
-use super::worker_term::{term_request, worker_route};
+use super::worker_term::term_request;
 pub use super::worker_term::{
     WorkerBoot, term_bind_cx, term_install, term_slot_register,
     term_tls_bind, term_tls_flagged, worker_boot_from_slot, worker_booted,
     worker_spawn,
 };
+pub use super::worker_messaging::{worker_attach, worker_post, worker_tid};
 
-
-/// 登记 Worker JS 目标。`__wjs2_worker_attach(workerId, target)` → undefined。
-pub unsafe extern "C" fn worker_attach(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同 port_pair
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let id = match arg_id(&mut cx, &frame, 0) {
-        Some(id) => id,
-        None => return false,
-    };
-    if frame.argc() < 2 || !frame.arg(1).is_object() {
-        report_error(&mut cx, "TypeError: worker attach needs a target object");
-        return false;
-    }
-    state::worker_target_add(id, frame.arg(1));
-    frame.set_rval(UndefinedValue());
-    true
-}
-
-/// 主→worker 投递（parentPort 收）。`__wjs2_worker_post(workerId, json)` → boolean。
-pub unsafe extern "C" fn worker_post(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同 port_pair
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let id = match arg_id(&mut cx, &frame, 0) {
-        Some(id) => id,
-        None => return false,
-    };
-    if frame.argc() < 2 {
-        report_error(&mut cx, "TypeError: worker postMessage needs a message");
-        return false;
-    }
-    let json = value_to_string(&mut cx, frame.arg(1));
-    let ok = match worker_route(id) {
-        Some((inbox, parent)) => inbox
-            .send(WorkerEvent::PortMsg { to: parent, json })
-            .is_ok(),
-        None => false,
-    };
-    frame.set_rval(mozjs::jsval::BooleanValue(ok));
-    true
-}
 
 /// 终止 worker（`WTerminate`；退出码经 `WExit` 事件回传，恒 1）。
 /// 10f：置共享旗 + 请求引擎中断（忙循环斩断，见 term_request）——idle 路径
@@ -859,24 +810,6 @@ pub unsafe extern "C" fn worker_set_ref(
     let refed = frame.argc() >= 2 && value_to_string(&mut cx, frame.arg(1)) == "1";
     state::worker_set_ref(id, refed);
     frame.set_rval(UndefinedValue());
-    true
-}
-
-/// worker 线程 id。`__wjs2_worker_tid(workerId)` → 数字串（已退出即空串）。
-pub unsafe extern "C" fn worker_tid(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同 port_pair
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let id = match arg_id(&mut cx, &frame, 0) {
-        Some(id) => id,
-        None => return false,
-    };
-    use mozjs::conversions::ToJSValConvertible as _;
-    state::worker_tid(id).map(|t| t.to_string()).unwrap_or_default().to_jsval(&mut cx, frame.rval_mut());
     true
 }
 

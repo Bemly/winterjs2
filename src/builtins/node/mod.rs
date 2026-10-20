@@ -82,6 +82,7 @@ pub mod v8;
 pub mod vm;
 mod vm_error;
 pub mod worker;
+mod worker_messaging;
 mod worker_term;
 pub mod zlib;
 mod zlib_engine;

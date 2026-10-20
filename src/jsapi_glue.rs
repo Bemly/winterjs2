@@ -208,6 +208,56 @@ pub fn get_prop_u32(
 }
 
 /// 向引擎上报错误（JS_ReportErrorASCII 是 printf 风格，需转义 %）。
+/// UNSAFE-BOUNDARY: 抛具名 JS 错误（`new Ctor(message)`；`pending` 透传）。
+/// 前置：cx 在 realm 内；ctor 名为全局构造器（TypeError/RangeError 等）。
+/// 覆盖：`tests/node/vm.rs::module_surface_faces`（TypeError 名校验）。
+pub fn throw_named_error(cx: &mut JSContext, ctor: &CStr, message: &str) {
+    throw_coded_error(cx, ctor, None, message);
+}
+
+/// UNSAFE-BOUNDARY: 抛带 code 的具名 JS 错误（node `ERR_*` 口径）。
+/// 前置：同上；覆盖：同上（code 校验）。
+pub fn throw_coded_error(cx: &mut JSContext, ctor: &CStr, code: Option<&str>, message: &str) {
+    rooted!(&in(cx) let global_root: *mut JSObject =
+        unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx.raw_cx()) });
+    if global_root.is_null() {
+        report_error(cx, message);
+        return;
+    }
+    let Ok(cstr) = std::ffi::CString::new(message) else {
+        report_error(cx, message);
+        return;
+    };
+    let Some(ctor_v) = get_prop_value(cx, global_root.get(), ctor) else {
+        report_error(cx, message);
+        return;
+    };
+    rooted!(&in(cx) let ctor_root = ctor_v);
+    rooted!(&in(cx) let mut msg_v = UndefinedValue());
+    cstr.to_string_lossy().to_jsval(cx, msg_v.handle_mut());
+    rooted!(&in(cx) let msg_root = msg_v.get());
+    if let Some(exc) = reflect_construct(cx, ctor_root.get(), &[msg_root.get()]) {
+        if let Some(code) = code {
+            rooted!(&in(cx) let exc_root = exc);
+            if exc_root.is_object() {
+                rooted!(&in(cx) let obj_root: *mut JSObject = exc_root.get().to_object());
+                if let Ok(ck) = std::ffi::CString::new("code") {
+                    use mozjs::conversions::ToJSValConvertible as _;
+                    rooted!(&in(cx) let mut code_v = UndefinedValue());
+                    code.to_jsval(cx, code_v.handle_mut());
+                    let _ = define_prop(cx, obj_root.get(), &ck, code_v.get());
+                }
+            }
+            set_pending_exception(cx, exc_root.get());
+        } else {
+            set_pending_exception(cx, exc);
+        }
+    } else {
+        let _ = take_pending_exception(cx);
+        report_error(cx, message);
+    }
+}
+
 pub fn report_error(cx: &mut JSContext, msg: &str) {
     let escaped = msg.replace('%', "%%");
     let Ok(c) = CString::new(escaped) else {

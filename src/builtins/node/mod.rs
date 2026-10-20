@@ -62,6 +62,7 @@ pub mod repl;
 pub mod require;
 pub mod require_prelude;
 mod require_cjs;
+mod require_module;
 pub mod sqlite;
 pub mod stream;
 pub mod stream_consumers;

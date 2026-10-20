@@ -37,6 +37,9 @@ fn resolver(cond: Cond) -> &'static Resolver {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            // `--preserve-symlinks` 置位即不展开（symlinked-peer 套件点名；
+            // 缺省跟随 oxc 默认展开，与 canonical_file_url 同开关）。
+            symlinks: !preserve_symlinks(),
             // TS 约定：`./foo.js` 可指向 `./foo.ts` 源码
             extension_alias: [
                 (".js".to_string(), vec![".ts".to_string(), ".tsx".to_string(), ".js".to_string()]),
@@ -58,10 +61,35 @@ fn is_file_url_exists(url: &Url) -> bool {
     url.to_file_path().map(|p| p.is_file()).unwrap_or(false)
 }
 
+/// `--preserve-symlinks` 是否生效（node 口径：置位即不展开 symlink，
+/// 模块路径按字面走；与 `--no-preserve-symlinks` 取最后出现者，缺省关）。
+/// 直读进程 argv（剥除发生在 CLI 层，原始 argv 保留，子进程各自独立；进程级
+/// 一次性缓存，argv 不可变）。
+fn preserve_symlinks() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let mut keep = false;
+        let mut seen = false;
+        for a in std::env::args().skip(1) {
+            if a == "--preserve-symlinks" {
+                keep = true;
+                seen = true;
+            } else if a == "--no-preserve-symlinks" {
+                keep = false;
+                seen = true;
+            } else if a == "--" {
+                break;
+            }
+        }
+        seen && keep
+    })
+}
+
 /// file: URL 规范化为真实路径（symlink 展开；不存在则原样返回）。
 /// 模块同一性按真实路径计，否则 `/var` 与 `/private/var` 会被当成两个模块（§4.12）。
+/// `--preserve-symlinks` 置位即跳过展开（symlinked-peer 套件点名）。
 fn canonical_file_url(url: &Url) -> Url {
-    if url.scheme() != "file" {
+    if url.scheme() != "file" || preserve_symlinks() {
         return url.clone();
     }
     let Ok(p) = url.to_file_path() else {

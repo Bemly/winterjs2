@@ -266,10 +266,22 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
                 if cli.watch {
                     return scripts::run_file_watch(&path, &cli.args, settings.log.color).await;
                 }
-                let source = std::fs::read_to_string(&path).map_err(|source| Error::IoRead {
-                    path: path.clone(),
-                    source,
-                })?;
+                let source = match std::fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // 缺失入口 node 口径（main-fail 套件点名）：
+                        // `Error: Cannot find module '<entry>'` + MODULE_NOT_FOUND。
+                        eprintln!("Error: Cannot find module '{target}'");
+                        eprintln!("[MODULE_NOT_FOUND]");
+                        return Err(Error::Exit(1));
+                    }
+                    Err(source) => {
+                        return Err(Error::IoRead {
+                            path: path.clone(),
+                            source,
+                        });
+                    }
+                };
                 let filename = path.to_string_lossy().into_owned();
                 return runtime::run(&source, &filename, runtime::Mode::Script, &cli.args).await;
             }

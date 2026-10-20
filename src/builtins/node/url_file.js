@@ -6,14 +6,18 @@ import { parse as qsParse, stringify as qsStringify } from 'node:querystring';
 // 10f：punycode 懒加载（顶层 import 会在 require('node:url') 时连带求值
 // node:punycode，提前触发 DEP0040；真机同款懒加载，test-punycode.js 点名）。
 import { createRequire } from 'node:module';
-const __urlRequire = createRequire('node:url');
+let __urlRequire = null;
+function __getUrlRequire() {
+  if (__urlRequire === null) __urlRequire = createRequire(import.meta.url);
+  return __urlRequire;
+}
 let __puny = null;
 function __punyToASCII(s) {
-  if (__puny === null) __puny = __urlRequire('node:punycode');
+  if (__puny === null) __puny = __getUrlRequire()('node:punycode');
   return __puny.toASCII(s);
 }
 function __punyToUnicode(s) {
-  if (__puny === null) __puny = __urlRequire('node:punycode');
+  if (__puny === null) __puny = __getUrlRequire()('node:punycode');
   return __puny.toUnicode(s);
 }
 import errors from 'node:internal/errors';

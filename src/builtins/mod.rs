@@ -521,6 +521,11 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_require_from", Some(node::require::require_from), 2),
             ("__wjs2_require_resolve_from", Some(node::require::require_resolve_from), 2),
             ("__wjs2_cjs_compile", Some(node::require::cjs_compile), 3),
+            ("__wjs2_cjs_live", Some(node::require::cjs_live), 2),
+            ("__wjs2_require_cache_delete", Some(node::require::require_cache_delete), 1),
+            ("__wjs2_require_cache_has", Some(node::require::require_cache_has), 1),
+            ("__wjs2_require_cache_get", Some(node::require::require_cache_get), 1),
+            ("__wjs2_require_cache_set", Some(node::require::require_cache_set), 2),
             ("__wjs2_builtin_modules", Some(node::require::builtin_modules_json), 0),
             // Phase 9j: CJS 互操作垫片（import 命中 CJS → export default）
             ("__wjs2_require_cjs_by_url", Some(node::require::require_cjs_by_url), 1),

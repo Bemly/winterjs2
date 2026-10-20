@@ -101,8 +101,13 @@ class Http2ServerStream extends Duplex {
   }
   // node onStreamClose：close 事件由 destroy 机制单发（§事件单发）
   __abort() {
-    if (this.__closed || this.__destroyed) return;
-    this.__abortDownstream();
+    if (this.__closed || this.__destroyed || this.__aborted) return;
+    this.__aborted = true;
+    // 先自发 'aborted'（server-socket-destroy 套件点名），再级联下游
+    //（顺序：stream aborted → req aborted → close；旧路径漏发自事件）。
+    this.emit("aborted");
+    if (this.__req && !this.__cleanClose) this.__req.__onAborted();
+    if (this.__res && !this.__res.destroyed) this.__res.__destroySilent();
     this.destroy();
   }
   __abortDownstream() {

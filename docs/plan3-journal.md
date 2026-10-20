@@ -1979,5 +1979,113 @@ G1/G2/G3/G9 已收官。）
 - 构建：sweep base19 正用 `target/debug`，本轮一律 `CARGO_TARGET_DIR=~/wjs-data/target-alt`
  （Xcode libclang），未碰主构建目录。
 
+## 2026-10-20 base19 全域基线（base18 之后 ~99 提交，mixed-binary，SAME0 2397/3528）
+
+- 运行（`scripts/sweep-bg.py start --prefix test- --tag base19 --jobs 2
+  --wjs target/debug/winterjs2 --thread-id 3599 --port-base 29999`，缺省
+  `docs/bun-scope.txt`，node 缓存开，超时 25s）：19:41 起 → 20:42:26 完，
+  elapsed 3655.8s（~61min），3528/3528 无 abort。工件
+  `~/wjs-data/sweep/base19/`（经软链实为 `~/.wjs-sweep/base19/`：
+  status.json/results.log/worker.log/monitor.log/debug/）。node v26.8.1，
+  缓存 3994 条。看门狗全程未越线（procs≤7、pressure=1、free 50–60%；
+  load 20:14 spike 到 301 系他 lane 并行构建，未触发 abort 条件；
+  系统盘 106→72GB 系他 lane 活动，本任务未清盘——开工时 100GB 余量充足）。
+- 总表（`scripts/sweep-report.py base19`）：SAME0 **2397** / SAME1 206 /
+  DIFF 841 / TIMEOUT 84（绿 2397/3528=68%）。base18：2284/203/925/116（65%）。
+  Δ：绿 **+113**、DIFF **-84**、TIMEOUT **-32**、SAME1 +3；
+  真实欠账（DIFF+TIMEOUT）1041→**925（-116）**。
+- 域级绿变化（base18→base19，头条）：http2 98→**122**（+24，TIMEOUT 50→25）、
+  tls 84→**93**（+9，TIMEOUT 25→14）、https 16→**46**（+30）、whatwg 13→**45**
+  （+32）、vm 46→**67**（+21）、worker 57→**76**（+19）、console 5→**15**（+10）、
+  util 9→**15**（+6）、webcrypto 1→**4**（+3）、readline 7→**10**（+3）、
+  crypto 62→63、http 322→325、event 23→24、mime 0→1；
+  下滑：fs 282→246（**-36，真回归，见下**）、stream 173→169（-4）、
+  zlib 50→46（-4）、net 96→95、child 72→71、repl 55→54、process 70→69、
+  stdio 2→1、pipe 7→6；其余持平。plan3 §0.3 表待用户确认后才改。
+- 逐件翻转（两版 results.log 对位）：base18 红 1244 → base19 红 1131；
+  转绿 **180**（http2 32、whatwg 32、https 31、vm 21、worker 19、console 10、
+  tls 10、util 7、http 6、readline 5、webcrypto 3、crypto/event/fs/mime 各 1；
+  归 wave-1/2/3 + R16b/C2/C3 各 lane）；新红 **67**（分类见下）。
+  种翻转：TIMEOUT→DIFF 15、DIFF→TIMEOUT 6（双向，load 抖动）、
+  TIMEOUT→SAME1 2（http2-close-while-writing、http2-server-rst-stream，
+  node 侧同红，口径差）、DIFF→SAME1 1
+  （http2-compat-serverrequest-trailers，R16b 已记 node 自红）。
+
+### base19 mixed-binary 说明（先前报告已同步 parent，此处落盘为准）
+
+- 19:39 本任务构建（HEAD db1152a）→ sweep 前 ~1410 件（~40%，monitor.log：
+  20:02:58 done=1406 → 20:03:14 done=1420）→ 他 lane 20:03:02 重编
+  `target/debug/winterjs2`（HEAD 806b5eb，size 319509832，
+  md5 6decde08079abc54ef32d0c9e08eb122）→ 后 ~2118 件（~60%）新二进制。
+  在飞 ±2 件误差。base19=mixed（决议：跑完不停，冻结后重跑纯净 base19b）。
+- **构建污染（本任务过程失误，pitfall 草稿见本节末）**：19:39 构建前未查
+  `git status`，工作区含他 lane **未提交**的 open 重写代码（事后合入为
+  22f2db2，19:57）。取证：sweep-time debug 堆栈 `at open (node:fs:3048:22)` /
+  `(node:fs:3049:26)` + `ReferenceError: m is not defined @ node:fs:3064:3`，
+  bundle 行号验算 2658（fs_base943+streams591+sync9c436+fdsync688）+406
+  （`void m;` 在 fs_async 行）=3064 精确命中；旧包同行是 `read()` 函数体，
+  不可能报 `open` 帧——故旧二进制**已含**重写代码。旧=脏树构建，
+  不能当 db1152a 纯净构建解读（前报“db1152a 构建”作废，以此为准）。
+
+### 新红 67 分类（回归 vs 口径差/抖动）
+
+- **A. 真回归·单根因 54 件 → 归 http2 respond-file lane（22f2db2，
+  自述“未编译验证”）**：`export const open = __cb1(openSync…)` 被重写成
+  固定位 `args[1]=flags/args[2]=mode`，三宗罪全经实测复现——
+  ① 2 参形 `(path,cb)`→`invalid flag 'function…'`（test-fs-open.js:41 等）；
+  ② 3 参形 `(path,flags,cb)`→`mode received function`
+  （writeFile/chmod 经 open 下游；chmod 本体仍是 `__cb1(chmodSync)` 无辜，
+  其测试内调 `fs.open` 被连带）；
+  ③ 遗留裸行 `void m;`→4 参形及一切常规 open 报
+  `ReferenceError: m is not defined`。名单：fs **37**
+  （append-file/chmod-mask/chmod/empty-readStream/null-bytes/open-no-close/
+  open/read-offset-null/read-stream/readfile-fd/ready-event-stream/
+  sir-writes-alot/stat/stream-construct-compat×4/stream-destroy-emit-error/
+  stream-double-close/truncate/write-buffer/write-file/write-negativeoffset/
+  write-optional-params/write-stream×11/writefile-with-fd/
+  writestream-open-write）+ m 下游 **17**
+  （http-get-pipeline-problem/http-pipe-fs/pipe-file-to-http/
+  readline-async-iterators×2/stdio-pipe-stderr/stream-flatMap/
+  stream-preprocess/stream-promises/stream-readable-unpipe-resume/
+  zlib-brotli/zlib-concat-gzip/zlib-gzip/zlib-zstd/
+  http2-compat-client-upload-reject/http2-compat-serverrequest-pipe/
+  http2-pipe）。修一处回 ~54 件。
+- **B. 同 commit sendfile 面 4 件**（同 lane）：http2-respond-file-fd-leak /
+  respond-file-fd / respond-file-filehandle（NGHTTP2_PROTOCOL_ERROR×2 +
+  assert×1）/ compat-serverresponse-finished（assert）。
+- **C. TIMEOUT 抖动 6 件**（load 301 期，双向翻转佐证，复判另轮）：
+  http-agent/https-agent/net-bytes-written-large/
+  process-exit-code-validation/util-inspect-long-running/
+  http2-compat-socket-destroy-delayed。
+- **D. 单件 3**：tls-close-error（复跑仍红，非 m，归 tls lane 复判）；
+  child-process-exec-maxbuf（复跑已绿 rc=0，flake）；repl-tab-complete-
+  on-editor-mode（wjs=0/node=1，node 侧 MUSTCALL flake，口径差）。
+- 校验：54+4+6+3=67 ✓。
+
+### Top10 欠账域（按清单件差额 DIFF+TIMEOUT 降序，base19 原始口径）
+
+1. http2：n256 绿122 差额122（DIFF97+T25）双红12；2. tls：n185 绿93
+   差额92（78+14）；3. fs：n333 绿246 差额76（75+1）双红11
+   （**A 类修复后差额≈39，退居第 6**）；4. net：n138 绿95 差额42；
+   5. http：n389 绿325 差额41 双红23；6. crypto：n120 绿63 差额40
+   双红17；7. worker：n110 绿76 差额34；8. child：n100 绿71 差额29；
+   9. vm：n95 绿67 差额28；10. webcrypto：n39 绿4 差额22 双红13。
+- 后续：工作区分拆+代码冻结 → 修 A/B（http2 lane）→ 干净树重编 →
+  全域 base19b（届时 plan3 §0.3 换表请用户确认）。
+
+### pitfall 草稿（4.N 待编号，sweep-owner 构建纯度——本次失误，请入卷人定编号）
+
+- 症状：sweep 基线混入未提交 lane 代码的回归（fs 37 连红），构建时
+  HEAD（db1152a）干净但二进制脏，事后对 file-history 完全无解，险些误判
+  为“已合入回归”让无辜 lane 背锅。
+- 根因：`cargo build` 编译的是**工作区**不是 HEAD；多 lane 并行时工作区
+  常脏（本轮 20+ 未提交修改），sweep-owner 直接 `cargo build` 即把他人
+  半成品 bake 进基线二进制。
+- 修法：sweep-owner 构建前必 `git status --short`，非空即停（多 lane 下
+  stash 风险高，首选等干净窗口 / 让各 lane 先 commit+push）。本次若守此条，
+  19:39 即会停下。
+- 复现：base19（旧二进制含未提交 open 重写，堆栈 bundle 行号为证）。
+- 铁律：**sweep 基线构建只认干净树**（status 非空不构建、不起 sweep）。
+
 
 

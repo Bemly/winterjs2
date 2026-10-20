@@ -1867,4 +1867,95 @@ G1/G2/G3/G9 已收官。）
   respond-file×3 另起，journal:1544/1562），以 `~/wjs-data/sweep/base18/results.log`
   `TIMEOUT wjs=142 test-http2-*` 50 行为准销账。
 
+## 2026-10-20 whatwg9+worker真共享对齐复核（自主定级，不问拍板）
+
+> 口径（parent 更新）：行为默认对齐 node（`~/node-test/lib/` 原文）+ Bun（范围/形态），以文档证据
+> 自行定级记档，不再问用户拍板。本段只追加 journal，不碰 http2/vm/console/sweep 四 lane 文件。
+> 真机对照：node v26.8.1 vs 本仓 `./target/debug/winterjs2`（Oct 20 构建，不重编避免并行冲突）；
+> 守门：冒烟 5/5（`40+2/await-setTimeout/URL.search/TextEncoder/fetch-data` 全过，本段工作区实测）、
+> `check-naming: ok`、`check-lines: ok（最大 1000 src/state/mod.rs）`。
+
+### whatwg 9（L-E 余件，journal:1537 “7 internal-tree/infra + canparse V8 内禀 + custom-inspect 双动”）
+
+> 范围：9 件全在 `docs/bun-scope.txt`（`^test-whatwg-` 55 行内，逐件 `grep -qx` 实测 IN scope）；
+> base18 `test-whatwg-*` 40 DIFF 中本 9 为 L-E 复核 bound/续啃件，余 31 归 C 续啃不在本段。
+
+- W1 `test-whatwg-readablebytestream.js` → 记 bound（范围外）。
+  Node：`require('internal/webstreams/util')` 取 `kState` 探流控制器内部态（测试头 3 行
+  `// Flags: --expose-internals`，`~/node-test/lib/internal/webstreams/util.js:57 kState`）。
+  Bun：清单在列但 Bun 亦无 internal 树可逐字搬（`bun-compat.md:15-22`“没有一行是可逐字搬的”；
+  `bun-parity.md:1305-1306` webstreams 余件“需 expose-internals loader 特性，记档”同族）。
+  对齐定义：`internal/*` 按既有范围外（journal:1557）不做；本件 `Cannot find module
+  'internal/webstreams/util'` 即偏离对齐，无续啃形态。
+- W2–W6 adapters ×5（to-readablestream/to-readablewritablepair/to-streamduplex/
+  to-streamwritable/to-writablestream）→ 记 bound（范围外）。
+  Node：`require('internal/webstreams/adapters')` 取 `newReadableStreamFromStreamReadable` 等
+  做 node 流↔web 流桥（`~/node-test/lib/internal/webstreams/adapters.js` 整文件即桥）。
+  Bun：同 W1（清单在列 + 无 internal 树 + parity 记档同族）。
+  对齐定义：同 W1，`Cannot find module 'internal/webstreams/adapters'` 即偏离对齐。
+- W7 `test-whatwg-webstreams-coverage.js` → 记 bound（范围外）。
+  Node：`require('internal/webstreams/util')` 取 `isPromisePending` 做品牌检查
+  （`util.js:398 isPromisePending`，测试 `assert(!isPromisePending({}))` 三行即契约）。
+  Bun/对齐：同 W1。
+- W8 `test-whatwg-url-canparse.js` → 记 bound（引擎墙 + 范围外双重）。
+  Node：`URL.canParse` 经 `bindingUrl.canParse` 直调 C++ ada 绑定
+  （`~/node-test/lib/internal/url.js:1213-1228`，双重载 + 无参抛 `ERR_MISSING_ARGS`），测试另以
+  `%OptimizeFunctionOnNextCall` 围 JS 壳测快路径（测试头 `--allow-natives-syntax` + 注释
+  “Only javascript methods can be optimized through %OptimizeFunctionOnNextCall”）。
+  Bun：`bun-compat.md:63` url 🟢（常规 parse 形态），但 `%…` V8 内禀 Bun（JSC）亦无，
+  属跨引擎不可比（`bun-parity.md:487-500` vm ①类同理，记档口径）。
+  对齐定义：`URL.canParse` 常规形（`node -e` 实测 `typeof canParse==='function'` 且本仓
+  `--eval 'new URL(…).href'` 同绿）即对齐；`%OptimizeFunctionOnNextCall` 快路径断言永不实现，
+  该件整体记 bound。
+- W9 `test-whatwg-url-custom-inspect.js` → 续啃（双动可达，不 bound）。
+  Node：`URL.prototype[inspect.custom]` 按 12 键展开（href/origin/protocol/username/password/
+  host/hostname/port/pathname/search/searchParams/hash，`internal/url.js:935-959`，
+  另 `depth<0` 坍缩 + `showHidden` 挂 context，journal:1538 fix-forward 已归一 USP 同族语义）。
+  Bun：url 🟢（`bun-compat.md:63`），此形态 Bun 有。
+  真机对照：node rc=0 全绿；wjs 输出 `'URL {}'`（空壳，`strictEqual` 首断即红，base18
+  `Expected values to be strictly equal`），复现确认。
+  对齐定义（续啃验收）：prelude 给 `URL` 补 `[inspect.custom]`（12 键 + depth<0 + showHidden，
+  走 Rust url-crate getter 真值，searchParams 复用 USP 归一后形态），`util.inspect(url)` 逐字
+  等于 node 多行形（含 `URLSearchParams { 'que' => 'ry' }` 内嵌）即算对齐；在此之前不记 bound。
+
+### worker 真共享三件（journal:1476-1479/1514/1556；Bun 🟡副本语义即偏离）
+
+- R1 SAB 真共享（`test-worker-message-channel-sharedarraybuffer` /
+  `test-worker-workerdata-sharedarraybuffer` / `test-worker-message-port-wasm-threads` 连带）→ 记 bound（引擎墙）。
+  Node：SAB 跨线程真共享内存（workerData/端口投递零拷贝，`~/node-test/lib/internal/worker/messaging.js`
+  传输 + `clone_dom_exception.js` 误形还原）。
+  Bun：worker 🟡（`bun-compat.md:80`），本仓与 Bun 同档：wire 存 byteLength 按
+  `BYTES_PER_ELEMENT` 折算 + `k:"sab"` 品牌信封装副本语义（`bun-parity.md:1641-1646` 三轮根因，
+  “真共享内存需跨线程底座，记档”原文即偏离定义）。
+  真机对照：base18 三件 `TextDecoder.decode does not accept SharedArrayBuffer views yet`；
+  主线程 `Atomics.wait` 本仓即抛（下 R3），SAB 视图跨端即 detach/拷贝，复现确认。
+  对齐定义：副本语义 + 跨端 `detached` 文案 exact（`bun-parity.md:1631-1640` 二轮错误形状批）
+  即偏离对齐；真共享（futex 可见性 + SAB 视图零拷贝解码）需跨线程 GC 底座，不开轮。
+- R2 WASM Module 跨线程（`test-worker-message-port-wasm-module`）→ 记 bound（引擎墙）。
+  Node：`WebAssembly.Module` 可经端口投递（结构化克隆扩展）。
+  Bun：worker 🟡同档，无 WASM 跨线程主张（`bun-parity.md:1677-1679`“wasm 系列另案”）。
+  真机对照：base18 `first argument must be a WebAssembly.Module`（本仓拒收），复现确认。
+  对齐定义：抛类型错（不炸进程）即偏离对齐；真跨线程 Module 句柄需 SM 多 realm 共享编译产物，不开轮。
+- R3 `Atomics.wait`（`test-worker-messaging-errors-timeout:37` /
+  `test-worker-unref-from-message-during-exit:16` / `test-atomics-wake`）→ 记 bound（引擎墙）。
+  Node：主线程可定时 wait（实测 `node -e Atomics.wait(…,10)` 回 `ok`），worker 线程可 futex 等待。
+  Bun：worker 🟡；`bun-parity.md:1674`“Atomics.wait 2 件：worker 内 futex 等待（引擎 SM 面）”即同族记档。
+  真机对照：本仓主线程即抛 `waiting is not allowed on this thread`
+  （`--eval Atomics.wait(…,10)` 实测），worker 线程同错 + SAB 缺失双墙（journal:1514）。
+  对齐定义：TIMEOUT 机制黑盒已证（journal:1514“TIMEOUT 机制本身黑盒已证”），`Atomics.wait`
+  一律抛指定错即偏离对齐；真 futex 等待需 SM 线程阻塞原语，不开轮。
+
+### 定级记档（三列表）
+
+- bound（偏离即对齐）：W1–W8（7 internal + canparse 快路径）/ R1–R3（SAB 副本语义 + WASM 拒收 +
+  Atomics.wait 抛错）。证据：node-lib 行号见上 + `bun-compat.md:15-22,63,80` +
+  `bun-parity.md:1305-1306,1631-1646,1674,1677-1679` + journal:1537/1476-1479/1514/1556 +
+  base18 results.log 上列各行 + 本段真机对照。
+- 续啃（修到某形态才算对齐）：W9 custom-inspect（prelude `[inspect.custom]` 12 键 +
+  url-crate 真值，`util.inspect(url)` 多行逐字一致）；余 whatwg 31（encoding/events/BYOB/
+  searchparams 簇，C 轮路径）不在本段，仍归 C 队列。
+- 另轮/范围外：`--expose-internals` loader 特性、`--allow-natives-syntax` V8 内禀、
+  sea/wasi（journal:1557 维持否决），永不进对齐验收。
+
+
 

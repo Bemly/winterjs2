@@ -365,6 +365,62 @@ console.log("methods", typeof sites[0].getFileName, typeof sites[0].getLineNumbe
 }
 
 #[test]
+fn util_getcallsites_options() {
+    // 正常：frameCount 截断、对象形态 options、scriptId string；
+    // 报错：frameCount 非整数/越界 OOR、非法 options 体/第二参 ARG_TYPE、
+    // sourceMap 非布尔 ARG_TYPE；边界：stackTraceLimit=0 不影响捕获、
+    // host 帧（node:util 自身）恒不在 [0]。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { getCallSites } from "node:util";
+function inner() { return getCallSites(); }
+const t = (f) => { try { f(); return "NO-THROW"; } catch (e) { return e.code; } };
+console.log("host0:" + (inner()[0].functionName === "inner"));
+console.log("cap:" + (inner().length >= 1 && getCallSites(1).length === 1));
+console.log("sid:" + (typeof inner()[0].scriptId === "string"));
+console.log("bad36:" + t(() => getCallSites(3.6)));
+console.log("bad201:" + t(() => getCallSites(201)));
+console.log("badneg:" + t(() => getCallSites(-1)));
+console.log("badarr:" + t(() => getCallSites([])));
+console.log("badobj2:" + t(() => getCallSites({}, {})));
+console.log("bad210:" + t(() => getCallSites(10, 10)));
+console.log("badsm:" + t(() => getCallSites({ sourceMap: 1 })));
+console.log("opts-ok:" + (getCallSites({}).length >= 1 && getCallSites(1, {}).length === 1));
+const lim = Error.stackTraceLimit;
+Error.stackTraceLimit = 0;
+console.log("limit0:" + (getCallSites().length > 0));
+Error.stackTraceLimit = lim;
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "host0:true",
+        "cap:true",
+        "sid:true",
+        "bad36:ERR_OUT_OF_RANGE",
+        "bad201:ERR_OUT_OF_RANGE",
+        "badneg:ERR_OUT_OF_RANGE",
+        "badarr:ERR_INVALID_ARG_TYPE",
+        "badobj2:ERR_INVALID_ARG_TYPE",
+        "bad210:ERR_INVALID_ARG_TYPE",
+        "badsm:ERR_INVALID_ARG_TYPE",
+        "opts-ok:true",
+        "limit0:true",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn util_deep_separator_depth() {
     // 10f 套件点名修：skipPrototype 第三参 + 装箱槽判定 + numericSeparator + %s + depth。
     let dir = assert_fs::TempDir::new().unwrap();

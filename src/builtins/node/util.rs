@@ -15,9 +15,8 @@
 //! - `isDeepStrictEqual` 为务实重写（comparisons.js 引擎的严格面算法，含
 //!   循环引用 memo/无序 Map/Set/TypedArray 内容/原型同一性/Object.is 数值）；
 //!   宽松 `isDeepEqual` 非公开面未移植。
-//! - `styleText` 逐字移植（node lib/util.js：replaceCloseCode 嵌套语义、hex
-//!   24-bit 色、别名表、validateStream/stream 校验、FORCE_COLOR 优先矩阵）。
-//! - 未移植（后续切片按需）：`getCallSites`/`markPromiseAsHandled`/`aborted`/
+//! - `styleText` 逐字移植（lib/util.js：replaceCloseCode 嵌套、hex 24-bit、别名表、stream 校验）。
+//! - 未移植（后续切片按需）：`markPromiseAsHandled`/`aborted`/transferable 系列
 //!   transferable 系列（引擎绑定）。
 //! - `TextEncoder`/`TextDecoder` 直通全局（本仓 prelude 实现）。
 
@@ -32,6 +31,7 @@ import types from 'node:internal/util/types';
 import {
   validateBoolean,
   validateFunction,
+  validateInteger,
   validateNumber,
   validateObject,
   validateOneOf,
@@ -65,22 +65,63 @@ inspect.colors = inspectModule.inspectColors;
 // 套件经 `sp[util.inspect.custom]` 取用；与 internal/inspect 的 kCustom 同源）。
 inspect.custom = Symbol.for('nodejs.util.inspect.custom');
 
-// ── getCallSites（10f：test/common `mustNotCall` 前置；V8 CallSite 最佳努力）──
-//! 口径：解析 SpiderMonkey `fn@file:line:col` 栈（首帧自身丢弃，[0] 为调用方，
-//! 与 V8 `[1]` 取测试位对齐）；返回数据对象（属性 + 方法双形态）。
-function getCallSites() {
-  const raw = String(new Error().stack || '').split('\n');
+// ── getCallSites（node lib/util.js 口径）──
+//! SM `fn@file:line:col` 栈解析；前导 `node:util` 自身帧丢弃（真机 binding 口径，
+//! 其余内部帧如 ESM loader 如实保留）；scriptId 为进程内脚本名表编号（真机 V8 id）；
+//! sourceMap:true 无底座恒回未映射；`--eval` 名为 `eval.js`（真机 `[eval]`，他域）。
+const __callSiteScriptIds = new Map();
+let __callSiteNextId = 1;
+function __scriptIdFor(name) {
+  let id = __callSiteScriptIds.get(name);
+  if (id === undefined) {
+    id = String(__callSiteNextId++);
+    __callSiteScriptIds.set(name, id);
+  }
+  return id;
+}
+function getCallSites(frameCount = 10, options) {
+  if (options === undefined) {
+    if (typeof frameCount === 'object') {
+      options = frameCount;
+      validateObject(options, 'options');
+      if (options.sourceMap !== undefined) validateBoolean(options.sourceMap, 'options.sourceMap');
+      frameCount = 10;
+    } else {
+      options = {};
+    }
+  } else {
+    validateObject(options, 'options');
+    if (options.sourceMap !== undefined) validateBoolean(options.sourceMap, 'options.sourceMap');
+  }
+  validateInteger(frameCount, 'frameCount', 1, 200);
+  // stackTraceLimit 不得影响捕获量（binding 侧直取）：SM `.stack` 服从上限，
+  // 临时抬至所需量后复原（单线程无交错）。
+  const __prevLimit = Error.stackTraceLimit;
+  let __raised = false;
+  let raw;
+  try {
+    if (typeof __prevLimit === 'number' && __prevLimit < frameCount + 1) {
+      try { Error.stackTraceLimit = frameCount + 1; __raised = true; } catch {}
+    }
+    raw = String(new Error().stack || '').split('\n');
+  } finally {
+    if (__raised) { try { Error.stackTraceLimit = __prevLimit; } catch {} }
+  }
   const out = [];
-  for (let i = 1; i < raw.length; i++) {
+  for (let i = 0; i < raw.length && out.length < frameCount; i++) {
     const m = raw[i].match(/^(.*)@(.*):(\d+):(\d+)$/);
     if (!m) continue;
+    // host 帧过滤：前导本模块帧（自身；转调多个一并）丢弃，后续原样保留。
+    if (out.length === 0 && m[2] === 'node:util') continue;
     const fnName = m[1] === '' ? undefined : m[1];
     const file = m[2];
     const line = Number(m[3]);
     const col = Number(m[4]);
+    const scriptId = __scriptIdFor(file);
     out.push({
       functionName: fnName,
       scriptName: file,
+      scriptId,
       lineNumber: line,
       column: col,
       getFunctionName() { return fnName; },
@@ -170,11 +211,9 @@ function promisify(original) {
   if (original[kCustomPromisifiedSymbol]) {
     const fn = original[kCustomPromisifiedSymbol];
     validateFunction(fn, 'util.promisify.custom');
-    // 真机口径：custom 实现与原同名（node 各域 custom 均正名定义，如 fs.js
-    // `function exists`、child `assignFunctionName(orig.name, …)`）。
-    // 本仓个别 custom 为匿名函数表达式（fs.exists/child exec 系，他域文件，
-    // 本 lane 不碰），此处回填原名——已正名即 no-op，他域在定义处补正名后
-    // 此兜底恒不触发。
+  // 真机口径：custom 实现与原同名（node 各域 custom 均正名定义）。
+  // 本仓个别 custom 为匿名函数（fs.exists/child exec 系，他域文件不碰），此处回填
+  // 原名——已正名即 no-op，他域在定义处补正名后此兜底恒不触发。
     try {
       if (fn.name !== original.name) {
         Object.defineProperty(fn, 'name', { value: original.name, configurable: true });
@@ -459,20 +498,18 @@ function debuglog(set, cb) {
   return fn;
 }
 
-// ── styleText（node lib/util.js 逐字移植）────────────────────────────────
-// 预计算转义常量；dim/bold 共用 close 22（keepClose 保留嵌套）。
+// ── styleText（node lib/util.js 逐字移植；预计算转义，dim/bold 共用 close 22）──
 const __styleEscape = '\u001b[';
 const __styleEscapeEnd = 'm';
 const __styleHexCloseSeq = `${__styleEscape}39${__styleEscapeEnd}`;
 function __codesToStyle(codes) {
-  const openNum = codes[0];
   return {
-    openSeq: `${__styleEscape}${openNum}${__styleEscapeEnd}`,
+    openSeq: `${__styleEscape}${codes[0]}${__styleEscapeEnd}`,
     closeSeq: `${__styleEscape}${codes[1]}${__styleEscapeEnd}`,
-    keepClose: openNum === 2 || openNum === 1,
+    keepClose: codes[0] === 2 || codes[0] === 1,
   };
 }
-// 嵌套同色 close 码回填外层 open（尾部 close 不动；真机逐字）。
+// 嵌套同色 close 码回填外层 open（尾部 close 不动）。
 function __replaceCloseCode(str, closeSeq, openSeq, keepClose) {
   const closeLen = closeSeq.length;
   let index = str.indexOf(closeSeq);
@@ -485,9 +522,7 @@ function __replaceCloseCode(str, closeSeq, openSeq, keepClose) {
     if (afterClose < str.length) {
       result += str.slice(lastIndex, index) + replacement;
       lastIndex = afterClose;
-    } else {
-      break;
-    }
+    } else break;
     index = str.indexOf(closeSeq, lastIndex);
   } while (index !== -1);
   return result + str.slice(lastIndex);
@@ -495,13 +530,9 @@ function __replaceCloseCode(str, closeSeq, openSeq, keepClose) {
 const __hexColorRegExp = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 function __hexToRgb(hex) {
   let hexStr;
-  if (hex.length === 4) {
-    hexStr = hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
-  } else if (hex.length === 7) {
-    hexStr = hex.slice(1);
-  } else {
-    throw new ERR_OUT_OF_RANGE('hex', '#RGB or #RRGGBB', hex);
-  }
+  if (hex.length === 4) hexStr = hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+  else if (hex.length === 7) hexStr = hex.slice(1);
+  else throw new ERR_OUT_OF_RANGE('hex', '#RGB or #RRGGBB', hex);
   return Buffer.from(hexStr, 'hex');
 }
 function __isNodeStream(obj) {
@@ -517,22 +548,18 @@ function __isWritableStream(obj) {
   return !!(obj && !__isNodeStream(obj) && typeof obj.getWriter === 'function' &&
     typeof obj.abort === 'function');
 }
-// 着色判定（colors.js shouldColorize + getColorDepth 的 NO_COLOR/TERM=dumb
-// 回落近似；FORCE_COLOR 优先，真机口径）。
+// 着色判定（shouldColorize + NO_COLOR/TERM=dumb 回落近似；FORCE_COLOR 优先）。
 function __styleShouldColorize(stream) {
   try {
-    if (typeof process !== 'undefined' && process.env &&
-        process.env.FORCE_COLOR !== undefined) {
-      try {
-        if (stream && typeof stream.getColorDepth === 'function') {
-          return stream.getColorDepth() > 2;
-        }
-      } catch {}
-      return true;
-    }
-    if (process.env.NODE_DISABLE_COLORS !== undefined ||
-        process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb') {
-      return false;
+    if (typeof process !== 'undefined' && process.env) {
+      if (process.env.FORCE_COLOR !== undefined) {
+        try {
+          if (stream && typeof stream.getColorDepth === 'function') return stream.getColorDepth() > 2;
+        } catch {}
+        return true;
+      }
+      if (process.env.NODE_DISABLE_COLORS !== undefined ||
+          process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb') return false;
     }
   } catch {}
   try {
@@ -547,9 +574,7 @@ function __styleShouldColorize(stream) {
 function styleText(formatArg, text, options) {
   const validateStream = options?.validateStream ?? true;
   validateString(text, 'text');
-  if (options !== undefined) {
-    validateObject(options, 'options');
-  }
+  if (options !== undefined) validateObject(options, 'options');
   validateBoolean(validateStream, 'options.validateStream');
 
   let skipColorize;
@@ -623,11 +648,10 @@ function toUSVString(input) {
   return `${input}`.toWellFormed();
 }
 
-// ── parseEnv（dotenv 语义；真机 26.8.2 差分钉住，plan 9j）───────────────────
-// 行按 \n 切；trim 后空行/`#` 跳过；`export ` 前缀剥离；首个 `=` 分键值
-// （空键/无 `=` 丢弃）；值 trim 后首字符为引号（`"`/`'`/backtick）则扫到同種
-// 闭引号（可跨行吞后续行；永不闭合则首行原文、后续行照常解析），双引号内容
-// 只展开 `\n`，单引号/backtick 原文；其余（非引号）在首个 `#` 处截断再去尾空格。
+// ── parseEnv（dotenv 语义；真机 26.8.2 差分钉住）────────────────────────────
+// 行按 \n 切；空行/`#`/export 前缀/`=` 分键值；值首字符为引号（`"`/`'`/backtick）
+// 则扫到同種闭引号（可跨行；双引号只展 `\n`，单引号/backtick 原文）；余者在首个
+// `#` 处截断去尾空格；结果 null 原型 + ASCII 排序（`__proto__` 键 defineProperty）。
 function parseEnv(content) {
   validateString(content, 'content');
   const entries = new Map();
@@ -643,8 +667,7 @@ function parseEnv(content) {
     if (key === '') continue;
     let val = line.slice(idx + 1).trim();
     const q = val[0];
-    // 引号三形（真机口径：backtick 与单引号同为原文（不展开 `\n`），双引号
-    // 只展开 `\n`；闭合跨行吞后续行；闭合后尾文丢弃）。
+    // 引号三形（真机口径：backtick 与单引号同为原文；双引号只展 `\n`）。
     if (q === '"' || q === "'" || q === '`') {
       let end = val.indexOf(q, 1);
       let j = i;
@@ -666,9 +689,7 @@ function parseEnv(content) {
     }
     entries.set(key, val);
   }
-  // 真机行为：结果为 null 原型对象（`__proto__: null`；deepStrictEqual 点名），
-  // 键按 ASCII 排序（`B=1\nA=2` → A,B；大小写敏感，大写在前）。
-  // `__proto__` 键走 defineProperty（赋值会触发原型 setter，真机 C++ 为自有属性）。
+  // 结果 null 原型 + ASCII 排序；`__proto__` 键走 defineProperty（真机 C++ 自有属性）。
   const obj = { __proto__: null };
   for (const k of [...entries.keys()].sort()) {
     if (k === '__proto__') {

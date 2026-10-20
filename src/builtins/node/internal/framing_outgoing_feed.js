@@ -935,6 +935,10 @@ export function withClientRequest(openSocket, flavor) {
       } else if (this.agent !== null) {
         this.agent.__acquire(this, host, port, extra, (sock, reused) => this.__attach(sock, reused));
       } else {
+        // node 口径 agent:false 即临时默认 agent 同路（含 servername 归一，
+        // strict 套件 Host 头进 SNI/校验名；host 先归一如 _http_client）。
+        if (extra.host === undefined) extra.host = host;
+        __normalizeServerName(extra, this);
         this.__attach(openSocket(host, port, extra), false);
       }
     }

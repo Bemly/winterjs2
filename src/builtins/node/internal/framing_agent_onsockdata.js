@@ -648,6 +648,33 @@ Agent.prototype.__init = function (options = {}) {
 // node 口径：createConnection 是 agent 的建连钩（默认 = net.createConnection，
 // 同步回值、不调 cb——cb 由 createSocket 的 oncreate 统一收口）；测试以假
 // Duplex 覆盖做黑洞/依此注入 socket。同步回值与 cb 双形态由 createSocket 兜。
+// node 口径 normalizeServerName/calculateServerName（lib/internal/http/agent.js）：
+// servername 未给（'' 除外）即取 Host 头（去端口/去框），IP 即 ''（不隐式 SNI）。
+// https 校验与 SNI 名源（strict 套件：headers.host=agent1 即验 agent1，
+// 无头即 options.host；127.0.0.1 类 IP 永不隐式 SNI）。
+function __normalizeServerName(options, req) {
+  if (options === null || options === undefined) return;
+  if (options.servername || options.servername === "") return;
+  let __sn = options.host;
+  try {
+    const __hh = (req !== null && req !== undefined && typeof req.getHeader === "function")
+      ? req.getHeader("host") : undefined;
+    if (__hh !== undefined && __hh !== null) {
+      const __hhs = String(__hh);
+      if (__hhs.charCodeAt(0) === 91) {
+        const __idx = __hhs.indexOf("]");
+        __sn = __idx === -1 ? __hhs : __hhs.substring(1, __idx);
+      } else {
+        __sn = __hhs.split(":", 1)[0];
+      }
+    }
+  } catch { /* 取头失败即回落 options.host */ }
+  // IP 不隐式 SNI（node net.isIP；v4 全数字点分/v6 含冒号近似）。
+  // 归一为空即不赋值（node 传 '' 下沉 tls.connect 再回落 host；本仓 native
+  // 拒空串 SNI——client-get-url 套件 127.0.0.1 实录；键位本就不含 ''，零可观测差）。
+  if (typeof __sn === "string" && (/^[\d.]+$/.test(__sn) || __sn.includes(":"))) __sn = "";
+  if (__sn !== undefined && __sn !== null && __sn !== "") options.servername = __sn;
+}
 Agent.prototype.createConnection = function (options, cb) {
   // 首参数字即端口（socket-encoding-error 套件 createConnection(port, cb) 形）。
   if (typeof options === "number") options = { port: options };
@@ -657,6 +684,8 @@ Agent.prototype.createConnection = function (options, cb) {
 // 同步回值与 cb 双形态，settled 旗防双取）；用户可整体覆写（agent-close 套件
 // `createSocket = (req, options, cb) => cb(err)` → req 'error' + 销毁）。
 Agent.prototype.createSocket = function (req, options, cb) {
+  // servername 归一（上式；strict 套件 Host 头进 SNI/校验名）。
+  __normalizeServerName(options, req);
   let settled = false;
   const oncreate = (err, s) => {
     settled = true;
@@ -806,6 +835,9 @@ Agent.prototype.__unpool = function (sock) {
 // 取空闲或新建；满额则排队（release 时续行）。onSocket(sock, reused)。
 // 建连统一走 createSocket 钩（req, options, cb 三参——用户覆写点）。
 Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
+  // servername 归一须在键算前（node createSocket 口径：键含归一后 servername，
+  // Host 头不同即分池；strict 套件 agent1 两路分池）。
+  if (extra !== null && extra !== undefined) __normalizeServerName(extra, req);
   const key = this.getName({ host, port, ...(extra ?? {}) });
   // node 口径：freeSockets 键只在真入池后存在——取用不得侧效应建空数组
   //（agent.freeSockets[name] === undefined 断言，agent-keepalive 套件）。

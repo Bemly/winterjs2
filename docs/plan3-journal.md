@@ -1536,3 +1536,22 @@ G1/G2/G3/G9 已收官。）
 - L-D vm-triage（timeout 四件 + 描述符两件转绿）：中断回调一发制 + 看门续发 + 模块 rejected-completion 转码认领；syncOut 三旗回写 + vm_set 重定义清旗。余：linker/membrane/每-context 队列/宿主 import/SM 文案/TLA 无 API/跨域，一律引擎墙记档；blackbox 17/17。
 - L-E loader-json（encoding-singlebyte 29/28，余 import.meta.dirname）：ESM `.json` 走 export-default 合成（transpile.rs +39，loader 18/18）；whatwg 9 红复核 bound（7 internal-tree/infra + canparse V8 内禀 + custom-inspect 需 prelude+url-crate 双动）；console/util 全量 triage 表交付（ignoreErrors 簇 4 件 + inspect-core 缺口 + 5 小校验）。
 - 主仓 fix-forward 两件：USP 初始化归一（序列 key-presence 判定/定长二元组/record 含 symbol 键/Map 去重）+ USP inspect 面（含迭代器余项/depth<0 坍缩/`inspect.custom` 导出）。
+
+## 2026-10-20 wave-3 五道合流（R19）
+
+- L-A tls B-3（CSI unfqdn/链锚补齐×2 转绿）：CSI 族纯搬移 tls.js→tls_context.js 后按 node 原文移植（unfqdn/RFC6125/IDNA/IP 规范化）；服务端出示链（ca 作 extra chain）+ getPeerCertificate 锚补齐。SNI 双件记引擎墙（addContext 未下沉 Rust resolver）。
+- L-B framing+https（connect-address-family 6/6 + unix-socket + globalAgent + create-connection + free 全绿，附带 autoselectfamily）：https 两 dial 闭包吞 lookup/family → net.connect+tls.wrap 改道；setHost/getName 键分层；并发 write+end 空包竞速（net 自动回 FIN 抢跑）+ agent free 缺失。http 36/36 零回归。
+- L-C http2-C3（connect-method-extended/upload/propagate/server-socket-destroy/cancel/many-writes/destroy-order/listeners-warning 转绿 + abort/close/flushheaders/serverresponse-end/close-idle 保持）：h2_client/h2_head 拆分 + http2_faces 黑盒。余：socket-close TIMEOUT 未解；respond-file×3 另起（WIP 半截重构已弃）；early-hints×2 卡 uncaughtException runtime 投递；push 成功路 bound。
+- L-D vm linker（link/link-shared/linking-requests×3/modulerequests/instantiate 7 件转绿）：JS 壳 BFS + native 会话 hook 换装 + with-属性空格化 + moduleRequests 真属性。synthetic 命名依赖记引擎墙（缺 CreateNamedSyntheticModule/SetSyntheticModuleExport）；basic/errors 各剩一件（importModuleDynamically/initializeImportMeta，需 modules/loader 配合）。
+- L-E console/util/inspect/json（ignoreErrors 簇×3/stack-overflow/group/tty-colors×2/styleText/signal/sleep/deprecate/promisify/backticks/getCallSites/dirname 全绿）：encoding-singlebyte 29→57。余：formatTime（debuglog）、promisify-custom-names（stream eos 别名）、getcallsites（自跳）、dotenv（CLI --env-file）、util-format null-proto（inspect bound）。
+
+## 2026-10-20 B-bound 拟稿（待用户一票否决，证据见各轮 journal）
+
+- push 系 17 件：Web 已死特性（hyper 服务端无 push API；createPushResponse 错误双路径已 exact）。
+- ALTSVC/ORIGIN：hyper 无帧级 API。
+- 帧错映射（goaway/窗口溢出/SETTINGS 内省/max-settings 等约 6+24 中部分）：hyper/h2 内部记账无 JS 钩。
+- diagnostics-channel http2 系 9+：无 channel 插桩面。
+- tls 7 件：随 P2-tls（ALPNCallback/DHE/renegotiation 等 rustls 无对应物）。
+- tls sni-N：rustls-pki-types 无 raw-SNI（DnsName 无非校验构造）。
+- SAB 真共享 + WASM Module 跨线程 + worker Atomics.wait：引擎墙（SM 限制）。
+- V8 内禀（%PrepareFunctionFor.../--allow-natives-syntax）、internal/* 树（--expose-internals 剥离）、sea/wasi：范围外。

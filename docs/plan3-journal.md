@@ -2945,3 +2945,33 @@ G1/G2/G3/G9 已收官。）
 - 三件套：模块级 internal_spec_table（alias+len 84）+ 黑盒 validation 2 /
   medium 4 / cli quiet 4 + 冒烟 5/5；UNSAFE-BOUNDARY 2 natives
   （child_unref/ref，detached-faces 覆盖）。
+
+## 2026-10-21 lane/http2 续 C（px11 收尾：抑发+泵半关+拆级联；raw-close 转绿）
+
+- px11 所指（"需钉 px11" 解码）：`~/wjs-data/probe/h2c-connect.mjs`（CONNECT 隧道
+  EOS-before-200 形；node 真机双向通）+ pitfalls 4.322。非 flake 件——机制性红，
+  不走 flake-classify。
+- 前任半截 hunk 验纯：h2_client 抑 EOS 意图成立但两处未落地——① `!__opened` 路
+  `__openNow(null)` 把攒体带进 open，Rust 非流式 open 即排 `End`（EOS 照发 pre-200）；
+  ② streaming 路直发 pre-200 DATA 经 hyper CONNECT 体黑洞抛弃（下）。net 两 hunk
+  （end 侧 rehold + ev 侧 `!__ended` 守卫）成对成立，直推 session-cleanup 3/3 转绿。
+- 根因链（hyper 源码 + 线抓帧双实证）：① hyper h2 客户端永不驱动 CONNECT 请求体
+  （`poll_pipe`: `is_connect` 即无 PipeToSendStream，`send_request(req,false)` 后体
+  通道即孤儿——tap 证 open 体不上线）；② 200 前 EOS 即无 upgrade 对（4.322）；
+  ③ 应答后桥写有效（tap 证 DATA 上线）；④ immediate-FIN 形结构性输竞速（200 后
+  flush 天生晚一 RTT，目标接通即 FIN 即 proxy socket 先死）→ connect-method 书面偏离。
+- 落码：JS 全量抑发（HEADERS-only open + 写侧缓冲 + END 递延，应答后桥 flush+补 END；
+  扩展 CONNECT/已应答/trailers 原路径；Rust 隧道永不 eager-End 兜底）+ 隧道先决议再发
+  response 事件（消 response 处理器内写竞速）+ 双泵半关续读（写关后仍服务读侧，双侧皆
+  关才退）+ 泵 JoinHandle 入表（H2RespondReset/会话收尾 abort，保 4.321 拆除级联；
+  无此则 proxy 套件功能过但进程永生——已实证回退）。
+- 验证：冒烟 5/5；patient 双向 TARGET-OK+CLIENT-OK（rc=0）；proxy-over-h2 回绿；
+  session-cleanup 3/3（base19b DIFF→绿，raw-close 收官）；connect-method 仍红
+  （target-end ""，fast-red 非 hang，即偏离口）；extended 绿；cant-turn-off 黑白盒
+  双 flaky（基线 3/12 vs 本轮 1/14，p≈0.3，无系统机制——毒化 waiter 竞速，记档观察）；
+  net_ 24/24（含新件）、http_ 35/35、https_ 12/12、tls_ 15/15、cluster_ 6/6；
+  goaway-opaquedata 红如基（B3 bound）；mce-http 定级 http lane（传输已对齐，
+  缺第二 clientError）；buffersize 另案（与 base19b 同签名，POST close-after-end
+  写回调序）；net.rs 1036 超千行系 HEAD 遗留（本轮新黑盒独立成文件，未加重）。
+- 黑盒 +3：http2_tunnel.{deferred_end_patient,teardown_clean}、
+  net_rawclose.end_after_fin_survives；守门 check-lines（除 net.rs 遗留）+ naming 双过。

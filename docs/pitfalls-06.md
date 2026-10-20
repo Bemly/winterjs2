@@ -496,3 +496,22 @@
 - 复现：加字段不加翻译，`--run <file>` 即报 `--lang` 取值错。
 - 推广铁律：**Cli 字段与翻译同提交**——i18n mut 环后相对顺序是解析正确
   的前置条件；未翻译字段即便显示正常也会毒化整表。
+
+### 4.327 hyper CONNECT 体黑洞与隧道半关泵续命（2026-10-21，http2 lane）
+
+- 症状：CONNECT 隧道上行字节三种死法：①随头体不上线（tap 零 DATA）；② 200 前
+  EOS 即无升级（4.322）；③递延 END 后下行尾包丢失（patient 下游 hang）/ 泵长生
+  致 proxy 套件进程永生。
+- 根因：① hyper h2 客户端 `poll_pipe` 对 `is_connect` 不建 body 管道——请求体通道
+  先天孤儿（读 hyper 源码 `send_request(req, !is_connect && eos)` 处确认）；
+  ② 4.322 机制成立（EOS 先行即 Pending 永不决议）；③泵 `Out(None) 即 break` 在
+  半关常态下早退（己方 END 消费后对端数据翌至）；④直改③则拆除级联断（4.321 依赖
+  句柄丢弃→close_notify→对端 END——泵永生即级联永挂）。
+- 修法：JS 全量抑发（HEADERS-only + 缓冲 + 应答后桥 flush/补 END）+ 隧道先决议再发
+  响应事件 + 双泵半关续读（双侧皆关才退）+ 泵 JoinHandle 入表（reset/收尾 abort，
+  正常半关泵自退不走此表）。退路：immediate-FIN 形结构性不可胜（DATA 只能 200 后
+  发）→ 书面偏离，不硬拗（另见 4.319 判据）。
+- 复现：px11（immediate-FIN `""` 快红）vs patient（双 OK）；proxylog 全过但进程
+  永生（泵 linger 取证：cli outClosed 后读永 pending、srv 零变迁）。
+- 推广铁律：**半关泵的生死两面**——写关续读保尾包，拆除靠显式 abort 保级联；
+  只改一面即拆东墙补西墙，泵生命周期必须双表（自退 + 外杀）。

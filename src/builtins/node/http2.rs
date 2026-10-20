@@ -372,6 +372,10 @@ pub(crate) async fn serve_conn<S>(
     // per-conn 生命周期，随 task 结束释放。
     let tunnel_fut: TunnelFuts = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let tunnel_out: TunnelOuts = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    // 隧道泵句柄（半关续读常驻；RST/收尾 abort 保拆除级联，半关自退不走此表）。
+    let tunnel_tasks: Arc<std::sync::Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let tunnel_tasks_drv = tunnel_tasks.clone();
     let tunnel_fut_drv = tunnel_fut.clone();
     let tunnel_out_drv = tunnel_out.clone();
     let seq = Arc::new(std::sync::atomic::AtomicU64::new(1));
@@ -572,9 +576,10 @@ pub(crate) async fn serve_conn<S>(
                                 let (otx, orx) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
                                 tunnel_out_drv.lock().await.insert(stream_id, otx);
                                 let ev_body = ev_tx.clone();
-                                tokio::spawn(pump_upgrade_body(
+                                let ph = tokio::spawn(pump_upgrade_body(
                                     up, orx, ev_body, server_id, stream_id,
                                 ));
+                                tunnel_tasks_drv.lock().unwrap().insert(stream_id, ph);
                             } else {
                                 drop(up);
                                 let _ = ev_tx.send(NetEvent {
@@ -691,6 +696,10 @@ pub(crate) async fn serve_conn<S>(
                                 )
                                 .await;
                             }
+                            // 隧道泵同 abort（保拆除级联；半关续读走 End 路泵自退）。
+                            if let Some(h) = tunnel_tasks.lock().unwrap().remove(&stream_id) {
+                                h.abort();
+                            }
                         }
                     }
                     Some(NetCmd::Close) => {
@@ -732,6 +741,10 @@ pub(crate) async fn serve_conn<S>(
     if proto_err {
         // 兜底：循环已退出（对端先关）而 waiter 未注帧时补注；写失败即静默。
         injector.inject_proto_error().await;
+    }
+    // 隧道泵收尾：abort 残留（泵自退竞速无妨），禁半关续读拖收尾成永生。
+    for (_, h) in tunnel_tasks.lock().unwrap().drain() {
+        h.abort();
     }
     // 连接退出：未收尾的流对 server 补发 aborted（target 在 server close 前仍在，
     // 时序竞态由 JS 侧 server close 处理器兜底）。

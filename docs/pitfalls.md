@@ -289,6 +289,7 @@
 - 4.324 会话级协议错事件（2026-10-21，http2 lane）
 - 4.325 CANCEL-RST 收尾剃刀竞态（2026-10-21，http2 lane）
 - 4.326 Cli 加字段必须配 en+zh 翻译（2026-10-21，child lane）
+- 4.327 hyper CONNECT 体黑洞与隧道半关泵续命（2026-10-21，http2 lane）
 
 ## 条目
 

@@ -43,6 +43,19 @@ class ClientHttp2Stream extends Duplex {
   __openNow(extraBody, streaming = false) {
     __clientOpenNow(this, extraBody, streaming);
   }
+  // CONNECT 隧道抑发（2026-10-21，http2 lane，4.322 对侧·4.326 修正）：
+  // hyper 不驱动 CONNECT 请求体（无 body 管道；随头的体直接抛弃）且 200 前见
+  // EOS 即不建 upgrade 对（致命）。node（nghttp2）无此接管，隧道双向通。
+  // 修法：隧道形 CONNECT（无 :protocol 的纯隧道；RFC 8441 扩展 CONNECT 除外）
+  // 应答前只发 HEADERS（open 空体），写侧全缓冲、END 递延；应答到达后经升级桥
+  // flush DATA + 补 END（2xx 建隧道半关、非 2xx 语义闭合）。已应答/trailers 形原路径。
+  // 极限：immediate-FIN 形（目标接通即 FIN）仍输竞速（DATA 只能 200 后发，天生晚
+  // 一 RTT），connect-method 套件书面偏离；耐心对端全双工通（黑盒见证）。
+  __connectDeferEnd() {
+    if (this.__responseReceived || this.__waitTrailers) return false;
+    const h = this.sentHeaders ?? {};
+    return String(h[":method"] ?? "").toUpperCase() === "CONNECT" && h[":protocol"] === undefined;
+  }
   _write(chunk, encoding, cb) {
     // 已开流直发块；悬置期缓冲（connect 冲刷）；单发流写即错。
     if (this.__ended || (!this.__streaming && this.__opened)) {
@@ -50,6 +63,13 @@ class ClientHttp2Stream extends Duplex {
       return;
     }
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk), "write");
+    if (this.__connectDeferEnd()) {
+      // 隧道抑 EOS 期：写侧只缓冲（hyper 不驱动 CONNECT 请求体，直发即弃；
+      // 应答后经升级桥补发，见 __onResponse）。
+      this.__pendingBody.push(u8);
+      queueMicrotask(cb);
+      return;
+    }
     if (this.__opened) {
       try {
         __wjs2_h2_data(this.__session.__id, this.id, __b64enc(u8));
@@ -65,27 +85,44 @@ class ClientHttp2Stream extends Duplex {
   _final(cb) {
     this.__ended = true;
     if (!this.__opened) {
-      this.__openNow(null);
-    } else if (this.__streaming) {
-      // 流式收尾：余块刷出 + END（waitTrailers 由 sendTrailers 收尾，此处跳过）。
-      if (this.__pendingBody.length > 0) {
-        let total = 0;
-        for (const b of this.__pendingBody) total += b.length;
-        const flat = new Uint8Array(total);
-        let off = 0;
-        for (const b of this.__pendingBody) { flat.set(b, off); off += b.length; }
+      if (this.__connectDeferEnd()) {
+        // 隧道抑 EOS：HEADERS-only 开流（hyper 不驱动 CONNECT 请求体，
+        // 体随头即被抛弃；攒体由 JS 持有、应答后经升级桥补发）。
+        // 空体仍非流式（Rust 空隧道本就不 End），有体用 streaming 形开流。
+        const __held = this.__pendingBody;
         this.__pendingBody = [];
-        try {
-          __wjs2_h2_data(this.__session.__id, this.id, __b64enc(flat));
-        } catch {
-          this.__detachFromSession();
-        }
+        this.__openNow(null, __held.length > 0);
+        this.__pendingBody = __held;
+        this.__deferEnd = true;
+      } else {
+        this.__openNow(null);
       }
-      if (!this.__waitTrailers && this.__session?.__id) {
-        try {
-          __wjs2_h2_end(this.__session.__id, this.id, "[]");
-        } catch {
-          this.__detachFromSession();
+    } else if (this.__streaming) {
+      // 隧道抑 EOS：抑期攒体（_write 已缓冲）不出线、END 递延，
+      // 应答后一并补（__onResponse）。
+      if (this.__connectDeferEnd()) {
+        this.__deferEnd = true;
+      } else {
+        // 流式收尾：余块刷出 + END（waitTrailers 由 sendTrailers 收尾，此处跳过）。
+        if (this.__pendingBody.length > 0) {
+          let total = 0;
+          for (const b of this.__pendingBody) total += b.length;
+          const flat = new Uint8Array(total);
+          let off = 0;
+          for (const b of this.__pendingBody) { flat.set(b, off); off += b.length; }
+          this.__pendingBody = [];
+          try {
+            __wjs2_h2_data(this.__session.__id, this.id, __b64enc(flat));
+          } catch {
+            this.__detachFromSession();
+          }
+        }
+        if (!this.__waitTrailers && this.__session?.__id) {
+          try {
+            __wjs2_h2_end(this.__session.__id, this.id, "[]");
+          } catch {
+            this.__detachFromSession();
+          }
         }
       }
     }
@@ -106,6 +143,29 @@ class ClientHttp2Stream extends Duplex {
   }
   __onResponse(headers, flags) {
     this.__responseReceived = true;
+    // CONNECT 隧道递延补发（见 __connectDeferEnd）：抑 EOS 期攒体（如有）先拼发
+    // 再补 END（2xx 即隧道半关、非 2xx 语义闭合）。
+    // 会话已亡/流已毁即弃（隧道流永不 EOS、随会话收尾口径）。
+    if (this.__deferEnd) {
+      this.__deferEnd = false;
+      const __sid = this.__session?.__id;
+      if (__sid && !this.destroyed) {
+        try {
+          if (this.__pendingBody.length > 0) {
+            let __total = 0;
+            for (const __b of this.__pendingBody) __total += __b.length;
+            const __flat = new Uint8Array(__total);
+            let __off = 0;
+            for (const __b of this.__pendingBody) { __flat.set(__b, __off); __off += __b.length; }
+            this.__pendingBody = [];
+            __wjs2_h2_data(__sid, this.id, __b64enc(__flat));
+          }
+          __wjs2_h2_end(__sid, this.id, "[]");
+        } catch {
+          this.__detachFromSession();
+        }
+      }
+    }
     // endAfterHeaders 是请求侧标志（HEADERS 帧是否带 END_STREAM），
     // 不由应答 flags 改写（endafterheaders 套件：GET 分开 end 即 false）。
     this.emit("response", headers, flags);

@@ -97,10 +97,13 @@
         // 空闲句柄不 ref 循环；k9/k12 实证：ref() 也留不住，真机照常退出）。
         // 递延一轮：end 监听内同步 destroy/auto-end 的走正常收尾通道，此处只收
         // 无动作的稳定半开；写侧仍可用，Close 派发照常 purge 结算。
+        // raw-close 补（2026-10-21，http2 lane）：end 监听内已同步 end()
+        // （__ended 真，shutdown 在途、close 待定）即非闲置——照 node 口径须
+        // 续命至 close，不摘（摘即 loop 先排空、服务端 FIN 到不了，cleanup 件）。
         if (this.allowHalfOpen && !this.destroyed && this.__id) {
           const __s = this;
           queueMicrotask(() => {
-            if (__s.allowHalfOpen && !__s.destroyed && __s.__id && __s.__peerFin) {
+            if (__s.allowHalfOpen && !__s.destroyed && __s.__id && __s.__peerFin && !__s.__ended) {
               try { __wjs2_net_halfhold(__s.__id); } catch { /* entry gone 即无事 */ }
             }
           });

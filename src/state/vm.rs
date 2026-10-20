@@ -3,6 +3,10 @@
 use super::*;
 use mozjs::jsapi::JSObject;
 
+/// 主 realm 哨兵（无显式 context 的模块归属主域，不建新 global；真机口径）。
+/// vm_next_id 单调递增永不触及此值（u64::MAX），与上下文 id 无交。
+pub const VM_MAIN_CTX: u64 = u64::MAX;
+
 
 // ── vm 上下文（同 Runtime 内多 global，各占新 compartment）────────────────
 ///

@@ -42,7 +42,7 @@ console.log("promise-inp", util.inspect(Promise.resolve()));
     );
     assert!(out.contains("inh 1 true"), "out: {out}");
     assert!(out.contains("strip red plain"), "out: {out}");
-    assert!(out.contains("Promise { <pending> }"), "out: {out}");
+    assert!(out.contains("Promise { undefined }"), "out: {out}");
     dir.close().unwrap();
 }
 

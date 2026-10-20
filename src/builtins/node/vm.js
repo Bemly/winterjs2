@@ -524,6 +524,39 @@ function __vmSourceMapURL(src) {
   return found;
 }
 
+function __vmCodegen(opt, prefix) {
+  // codeGeneration/contextCodeGeneration 校验 + 归一（真机文案逐字，实测）。
+  if (opt === undefined) return undefined;
+  if (opt === null || (typeof opt !== "object" && typeof opt !== "function")) {
+    const err = new TypeError(`The "options.${prefix}" property must be of type object. Received ${__recv(opt)}`);
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  const out = {};
+  for (const k of ["strings", "wasm"]) {
+    const v = opt[k];
+    if (v === undefined) continue;
+    if (typeof v !== "boolean") {
+      const err = new TypeError(`The "options.${prefix}.${k}" property must be of type boolean. Received ${__recv(v)}`);
+      err.code = "ERR_INVALID_ARG_TYPE";
+      throw err;
+    }
+    out[k] = v;
+  }
+  return out;
+}
+function __vmCodegenShadows(id, cg) {
+  // SM 无按 compartment 禁 eval/wasm 开关（setWasm 是 context 级）——目标域内
+  // 装同名遮蔽（仅选项显式 false 的上下文；真机可观察行为一致，记档）。
+  if (!cg) return;
+  if (cg.strings === false) {
+    __vmCall(() => __wjs2_vm_run(id, "globalThis.eval = function () { throw new EvalError('Code generation from strings disallowed for this context'); };", "vm-codegen.js"));
+  }
+  if (cg.wasm === false) {
+    __vmCall(() => __wjs2_vm_run(id, "globalThis.WebAssembly = new Proxy(globalThis.WebAssembly, { get(t, p) { if (p === 'Module') return function () { throw new t.CompileError('Wasm code generation disallowed for this context'); }; return t[p]; } });", "vm-codegen.js"));
+  }
+}
+
 export function createContext(contextObject = {}, options = {}) {
   // Node 24+ DONT_CONTEXTIFY（真机实测语义）：新建独立 context，返回其 global
   // 对象本体——不等于主 globalThis、写入不穿透主域、runInContext("this")===返回值。
@@ -554,6 +587,8 @@ export function createContext(contextObject = {}, options = {}) {
       throw err;
     }
   }
+  // codeGeneration 校验（codegen 套件点名；undefined 即默认全开）。
+  const cg = __vmCodegen(options.codeGeneration, "codeGeneration");
   if (isContext(contextObject)) return contextObject;
   const name = typeof options.name === "string" ? options.name : undefined;
   void name;
@@ -566,6 +601,7 @@ export function createContext(contextObject = {}, options = {}) {
   __vmStdKeys(contextObject).id = id;
   __vmSnapshot(id, contextObject);
   if (contextObject !== null && contextObject !== undefined) __syncIn(id, contextObject);
+  __vmCodegenShadows(id, cg);
   __vmAutoRelease(contextObject, id);
   return contextObject;
 }
@@ -590,8 +626,11 @@ export function runInNewContext(code, contextObject, options) {
       throw err;
     }
   }
-  if (contextObject === undefined) return runInContext(code, createContext({}, options ?? {}), options);
-  const ctx = createContext(contextObject, options ?? {});
+  // run 侧别名 contextCodeGeneration：校验后折成 codeGeneration 交给 createContext。
+  const ccg = __vmCodegen(options.contextCodeGeneration, "contextCodeGeneration");
+  const eff = ccg === undefined ? (options ?? {}) : { ...(options ?? {}), codeGeneration: ccg };
+  if (contextObject === undefined) return runInContext(code, createContext({}, eff), options);
+  const ctx = createContext(contextObject, eff);
   return runInContext(code, ctx, options);
 }
 

@@ -9,6 +9,7 @@
 /// 内嵌 ESM 源（`node:https`；tls 底座 + 共享帧层）。
 pub const SOURCE: &str = r#"
 import * as tls from "node:tls";
+import { codes } from "node:internal/errors";
 import {
   STATUS_CODES, METHODS, maxHeaderSize, IncomingMessage, ServerResponse,
   OutgoingMessage, Agent as BaseAgent, withHttpServer, withClientRequest,
@@ -18,12 +19,22 @@ import {
 
 const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
 const __HttpServerBase = withHttpServer(tls.Server);
+// options 类型门（node https.js Server 构造口径，mirror http.rs __serverOptions：
+// 'foo'/42/true/[] → ERR_INVALID_ARG_TYPE；undefined/null 缺省、函数=监听器）。
+function __serverOptions(args) {
+  const first = args[0];
+  if (first === undefined || first === null) return undefined;
+  if (typeof first === "function") return undefined;
+  if (first !== null && typeof first === "object" && !Array.isArray(first)) return first;
+  throw new codes.ERR_INVALID_ARG_TYPE("options", "object", first);
+}
 // Server（node https.js Server 原文口径）：ALPNProtocols 缺省 ['http/1.1']（经
 // tls.Server 构造器 convertALPNProtocols 落 wire 形）——opts 显式给了
 // ALPNProtocols/ALPNCallback 才不注缺省；其余选项原样透传。
 function Server(...args) {
   let ALPNProtocols = ["http/1.1"];
-  let opts = args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+  const checked = __serverOptions(args);
+  let opts = checked;
   if (typeof args[0] === "function") opts = {};
   else if (opts === undefined) opts = {};
   else if (opts.ALPNProtocols || opts.ALPNCallback) ALPNProtocols = undefined;

@@ -251,7 +251,7 @@ export const writeFile = function (...args) {
   })();
   let p;
   try {
-    p = Promise.resolve(writeFileSync(...rest));
+    p = Promise.resolve(__writeFileMaybeFifo(...rest));
   } catch (e) {
     if (e && typeof e.code === "string" &&
         (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
@@ -262,6 +262,53 @@ export const writeFile = function (...args) {
   }
   __nodeify(p, cb);
 };
+// writeFile 路由：writeFileSync 前序校验逐项预演（enc→signal→flush→fd→path→
+// data，同序；纯函数重复执行无害），FIFO 即非阻塞泵，非 FIFO 全权原函数。
+function __writeFileMaybeFifo(p0, data, opts) {
+  const enc = __fsEncoding(opts);
+  const wsig = __fsSignalCheck(opts);
+  if (wsig && wsig.aborted) throw __fsAbortErr(wsig.reason);
+  const needFlush = __fsFlushOpt(opts);
+  if (__fsFdOf(p0) !== null) return writeFileSync(p0, data, opts);
+  const p = __fsPath(p0, "writeFile");
+  const bytes = __fsDataEnc(data, "writeFile", enc);
+  if (!__fsIsFifoPath(p)) return writeFileSync(p0, data, opts);
+  return new Promise((resolve, reject) => {
+    __fsWriteFileFifo(p, bytes, needFlush, (e) => (e ? reject(e) : resolve()));
+  });
+}
+// FIFO 写泵（error-pipe-offset 套件 writer 侧）：open-nb 轮询 rendezvous 后
+// 写尽；EPIPE（对端已关）等真错即收（套件容忍 EPIPE）。
+function __fsWriteFileFifo(p, bytes, needFlush, done) {
+  const u8 = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  __fsOpenFifoWrite(p, (oe, fd) => {
+    if (oe) { done(oe); return; }
+    let off = 0;
+    const writeTry = () => {
+      if (off >= u8.byteLength) {
+        let fe = null;
+        try {
+          if (needFlush) fsyncSync(fd);
+          closeSync(fd);
+        } catch (e) { fe = e; }
+        __fsDefer(() => done(fe));
+        return;
+      }
+      let n;
+      try {
+        n = writeSync(fd, u8.subarray(off), 0, u8.byteLength - off, null);
+      } catch (e) {
+        if (e && e.code === "EAGAIN") { __fsDefer(writeTry); return; }
+        try { closeSync(fd); } catch {}
+        __fsDefer(() => done(e));
+        return;
+      }
+      off += n;
+      __fsDefer(writeTry);
+    };
+    writeTry();
+  });
+}
 export const appendFile = __cb1(appendFileSync, "appendFile", __id);
 export const stat = __cb1(statSync, "stat", __id);
 export const statfs = __cb1(statfsSync, "statfs", __id);
@@ -336,7 +383,65 @@ export const cp = __cb1((src, dst, opts) => {
   __cpValidateOptions(opts);
   return __cpAsync(src, dst, opts);
 }, "cp", __id);
-export const open = __cb1(openSync, "open", __id);
+export const open = function (...args) {
+  const cb = args[args.length - 1];
+  __vCbArg(cb);
+  // 同步校验与 openSync 同序（flags→mode→path），ARG 系同步抛。
+  const f = __fsFlags(args[1], "open");
+  __fsParseMode(args[2], 0o666);
+  const p = __fsPath(args[0], "open");
+  // FIFO 面（http2 sendfile with-pipe/error-pipe-offset 套件 writer 侧）：
+  // 阻塞 open 会卡死 JS 线程（node 靠线程池消化），故 FIFO 单独走
+  // O_NONBLOCK + setImmediate 轮询；ENXIO/EAGAIN = 对端未到，重试；
+  // 常规路径保持原 __cb1 行为（syncFn 立即执行，操作错走回调）。
+  if (__fsIsFifoPath(p)) {
+    // 方向位沿校验过的 flags（truncate/create 在 FIFO 上即 EINVAL，故剥离；
+    // O_APPEND 无害保留）。
+    const fj = JSON.parse(f);
+    __fsOpenFifo(p, JSON.stringify({
+      read: !!fj.read, write: !!fj.write, append: !!fj.append, nonblock: true,
+    }), cb);
+    return;
+  }
+  void m;
+  let pr;
+  try {
+    pr = Promise.resolve(openSync(...args.slice(0, -1)));
+  } catch (e) {
+    if (e && typeof e.code === "string" &&
+        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+    pr = Promise.reject(e);
+  }
+  __nodeify(pr, cb);
+};
+// FIFO 嗅探（stat 跟随链接；失败即非 FIFO，走常规路径）。
+function __fsIsFifoPath(p) {
+  try {
+    const st = statSync(p);
+    return !!(st && typeof st.isFIFO === "function" && st.isFIFO());
+  } catch {
+    return false;
+  }
+}
+// O_NONBLOCK open 轮询（flagsJson 由调用方按"纯方向位+nonblock"构造）。
+function __fsOpenFifo(p, flagsJson, cb) {
+  const attempt = () => {
+    let fd;
+    try {
+      fd = Number(__fsCall("open", p, () => __wjs2_fs_open(p, flagsJson)));
+    } catch (e) {
+      if (e && (e.code === "ENXIO" || e.code === "EAGAIN")) { __fsDefer(attempt); return; }
+      __fsDefer(() => cb(e));
+      return;
+    }
+    __fsDefer(() => cb(null, fd));
+  };
+  attempt();
+}
+// FIFO 写 open（纯写位 + nonblock）。
+function __fsOpenFifoWrite(p, cb) {
+  __fsOpenFifo(p, '{"write":true,"nonblock":true}', cb);
+}
 export function close(fd, cb) {
   __vFd(fd);
   if (cb === undefined) cb = __nop;

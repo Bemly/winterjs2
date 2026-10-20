@@ -179,105 +179,12 @@ class Http2ServerStream extends Duplex {
     }
     return undefined;
   }
-  // node：fd 可为 number 或 FileHandle（对象须带数值 fd）；错误消息
-  // "The \"fd\" argument must be of type number or an instance of FileHandle."
+  // 投递核见 h2_sendfile.js __h2SendFile（node doSendFileFD/doSendFD 逐字）。
   respondWithFD(fd, headers, options) {
-    if (typeof fd !== "number" &&
-        (fd === null || typeof fd !== "object" || typeof fd.fd !== "number")) {
-      throw __code("ERR_INVALID_ARG_TYPE", "fd", "number or an instance of FileHandle", fd);
-    }
-    return this.respondWithFile(typeof fd === "object" ? fd.fd : fd, headers, options);
+    return __h2SendFile(this, fd, headers, options, true);
   }
   respondWithFile(filename, headers = {}, options = {}) {
-    if (this.destroyed) throw __code("ERR_HTTP2_INVALID_STREAM");
-    if (this.__headersSent) throw __code("ERR_HTTP2_HEADERS_SENT");
-    if (typeof options !== "object" || options === null) {
-      throw __code("ERR_INVALID_ARG_TYPE", "options", "object", options);
-    }
-    if (options.statCheck !== undefined && typeof options.statCheck !== "function") {
-      throw __code("ERR_INVALID_ARG_VALUE", "options.statCheck", options.statCheck);
-    }
-    if (options.onError !== undefined && typeof options.onError !== "function") {
-      throw __code("ERR_INVALID_ARG_VALUE", "options.onError", options.onError);
-    }
-    if (options.offset !== undefined && typeof options.offset !== "number") {
-      throw __code("ERR_INVALID_ARG_VALUE", "options.offset", options.offset);
-    }
-    if (options.length !== undefined && typeof options.length !== "number") {
-      throw __code("ERR_INVALID_ARG_VALUE", "options.length", options.length);
-    }
-    // 204/205/304 禁 payload
-    if (headers[":status"] !== undefined) {
-      const s = +headers[":status"];
-      if (s === 204 || s === 205 || s === 304) {
-        throw __code("ERR_HTTP2_PAYLOAD_FORBIDDEN", s);
-      }
-    }
-    const isFd = typeof filename === "number";
-    let fd = null;
-    let stat;
-    try {
-      fd = isFd ? filename : fs.openSync(filename, "r");
-      stat = fs.fstatSync(fd);
-    } catch (err) {
-      if (!isFd && fd !== null) { try { fs.close(fd, () => {}); } catch {} }
-      if (typeof options.onError === "function") {
-        options.onError(err);
-        return;
-      }
-      // node：stat 失败且无 onError → 流 RST(INTERNAL_ERROR) + 'error'
-      //（fd-invalid 套件：stream/req 双侧 ERR_HTTP2_STREAM_ERROR）
-      this.__rstInternalError();
-      return;
-    }
-    try {
-      const h = { ...headers };
-      // node statCheck 第三参为 {offset, length} 原样（fd-range 套件断言）
-      const statCheckOpts = { offset: options.offset, length: options.length };
-      if (typeof options.statCheck === "function") {
-        if (options.statCheck.call(this, stat, h, statCheckOpts) === false) {
-          if (!isFd) { try { fs.close(fd, () => {}); } catch {} }
-          return;
-        }
-      }
-      if (h[":status"] !== undefined && [204, 205, 304].includes(+h[":status"])) {
-        throw __code("ERR_HTTP2_PAYLOAD_FORBIDDEN", +h[":status"]);
-      }
-      let offset = options.offset ?? 0;
-      let length = options.length ?? (stat.size - offset);
-      if (length < 0) length = stat.size - offset;
-      if (length < 0) length = 0;
-      const shouldSendBody = h[":status"] === undefined || !![200, 201, 202, 203, 206].includes(+h[":status"]) ||
-        (+h[":status"] >= 300 && ![204, 205, 304].includes(+h[":status"]));
-      this.respond(h, {});
-      if (shouldSendBody && length > 0) {
-        const CH = 0x8000;
-        let pos = offset;
-        while (pos < offset + length) {
-          const n = Math.min(CH, offset + length - pos);
-          const buf = Buffer.alloc(n);
-          const r = fs.readSync(fd, buf, 0, n, pos);
-          if (r <= 0) break;
-          if (r < n) {
-            __wjs2_h2_data(this.__conn, this.id, __b64enc(buf.subarray(0, r)));
-            break;
-          }
-          __wjs2_h2_data(this.__conn, this.id, __b64enc(buf));
-          pos += r;
-        }
-      }
-      if (!isFd) { try { fs.close(fd, () => {}); } catch {} }
-      if (!this.writableEnded) this.__finishWritable();
-    } catch (err) {
-      if (!isFd) { try { fs.close(fd, () => {}); } catch {} }
-      if (typeof options.onError === "function") {
-        options.onError(err);
-        return;
-      }
-      // node：校验/读失败无 onError → 错误落流 'error'（fd-leak 套件），
-      // 并 RST 对端（_destroy 统一发送，否则对端流永等响应）
-      this.destroy(err);
-    }
+    return __h2SendFile(this, filename, headers, options, false);
   }
   pushStream(headers, options, cb) {
     // 注：node 门序首位是"对端未开推送即同步抛 PUSH_DISABLED"，但 hyper 服务端不暴露对端

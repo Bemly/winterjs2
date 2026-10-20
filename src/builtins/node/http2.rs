@@ -827,10 +827,12 @@ pub unsafe extern "C" fn h2_reset(
 /// 内嵌 ESM 源（`node:http2`；compat 子集，见头注偏差）。
 
 /// 内嵌 ESM 源（`node:http2`；§0.9 按域分块：`h2_head.js` 基础 +
-/// `h2_server.js` 服务端 + `h2_client.js` 客户端，concat 字节恒等）。
+/// `h2_server.js` 服务端 + `h2_sendfile.js` 文件投递 + `h2_client.js` 客户端，
+/// concat 字节恒等）。
 pub const SOURCE: &str = concat!(
     include_str!("h2_head.js"),
     include_str!("h2_server.js"),
+    include_str!("h2_sendfile.js"),
     include_str!("h2_server_http2server.js"),
     include_str!("h2_client.js"),
 );

@@ -444,3 +444,253 @@ server.listen(0, "127.0.0.1", () => {{
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_sendfile_range_slice() {
+    // respondWithFile offset/length：常规文件自动 content-length（node 覆写口径），
+    // 体为 [offset, offset+length) 切片（range 套件行为面）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "r.mjs",
+        r#"
+import http2 from "node:http2";
+import fs from "node:fs";
+fs.writeFileSync("data.txt", "0123456789abcdef");
+const server = http2.createServer();
+server.on("stream", (stream) => {
+  stream.respondWithFile("data.txt", { "content-type": "text/plain" }, {
+    offset: 8,
+    length: 3,
+    statCheck(stat, headers) { headers["x-size"] = stat.size; },
+  });
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  const req = client.request();
+  req.on("response", (h) => {
+    console.log("len", h["content-length"]);
+    console.log("xsize", h["x-size"]);
+  });
+  req.setEncoding("utf8");
+  let body = "";
+  req.on("data", (c) => { body += c; });
+  req.on("end", () => {
+    console.log("body", JSON.stringify(body));
+    client.close();
+    server.close();
+  });
+  req.end();
+});
+"#,
+    );
+    for line in ["len 3", "xsize 16", "body \"89a\""] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_sendfile_pipe_body() {
+    // respondWithFile FIFO：无 offset/length 即流到 EOF（node offset=-1/length=-1
+    // 口径），statCheck 照调、无 content-length（with-pipe 套件行为面）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import http2 from "node:http2";
+import fs from "node:fs";
+import child_process from "node:child_process";
+const mk = child_process.spawnSync("mkfifo", ["f.pipe"]);
+if (mk.error) { console.log("skip-nomkfifo"); }
+else {
+  const server = http2.createServer();
+  server.on("stream", (stream) => {
+    stream.respondWithFile("f.pipe", { "content-type": "text/plain" }, {
+      onError: (e) => console.log("onerror", e.code),
+      statCheck: () => console.log("statcheck"),
+    });
+  });
+  server.listen(0, () => {
+    const client = http2.connect(`http://localhost:${server.address().port}`);
+    const req = client.request();
+    req.on("response", (h) => console.log("status", h[":status"]));
+    req.setEncoding("utf8");
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      console.log("body", JSON.stringify(body));
+      client.close();
+      server.close();
+    });
+    req.end();
+  });
+  fs.open("f.pipe", "w", (e, fd) => {
+    if (e) { console.log("wopen-err", e.code); return; }
+    fs.writeSync(fd, "Hello, world!\n");
+    fs.closeSync(fd);
+  });
+}
+"#,
+    );
+    for line in ["statcheck", "status 200", "body \"Hello, world!\\n\""] {
+        assert!(out.lines().any(|l| l == line) || out.lines().any(|l| l == "skip-nomkfifo"),
+            "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_sendfile_pipe_offset_noseek() {
+    // respondWithFile FIFO + offset：onError(ERR_HTTP2_SEND_FILE_NOSEEK)，
+    // statCheck 不调，用户可另行 404（error-pipe-offset 套件行为面）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "q.mjs",
+        r#"
+import http2 from "node:http2";
+import fs from "node:fs";
+import child_process from "node:child_process";
+const mk = child_process.spawnSync("mkfifo", ["f.pipe"]);
+if (mk.error) { console.log("skip-nomkfifo"); }
+else {
+  const server = http2.createServer();
+  server.on("stream", (stream) => {
+    stream.respondWithFile("f.pipe", { "content-type": "text/plain" }, {
+      offset: 10,
+      onError: (e) => {
+        console.log("onerror", e.code, e.message);
+        stream.respond({ ":status": 404 });
+        stream.end();
+      },
+      statCheck: () => console.log("statcheck-must-not-fire"),
+    });
+  });
+  server.listen(0, () => {
+    const client = http2.connect(`http://localhost:${server.address().port}`);
+    const req = client.request();
+    req.on("response", (h) => console.log("status", h[":status"]));
+    req.on("end", () => { client.close(); server.close(); });
+    req.end();
+  });
+  fs.writeFile("f.pipe", "Hello, world!\n", () => {});
+}
+"#,
+    );
+    for line in [
+        "onerror ERR_HTTP2_SEND_FILE_NOSEEK Offset or length can only be specified for regular files",
+        "status 404",
+    ] {
+        assert!(out.lines().any(|l| l == line) || out.lines().any(|l| l == "skip-nomkfifo"),
+            "missing {line}; out: {out}");
+    }
+    assert!(!out.lines().any(|l| l == "statcheck-must-not-fire"), "statCheck fired; out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_sendfile_dir_sendfile_error() {
+    // respondWithFile 目录：onError(ERR_HTTP2_SEND_FILE)，statCheck 不调
+    //（error-dir 套件行为面）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "d.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer();
+server.on("stream", (stream) => {
+  stream.respondWithFile(".", { "content-type": "text/plain" }, {
+    onError: (e) => {
+      console.log("onerror", e.code, e.message);
+      stream.respond({ ":status": 404 });
+      stream.end();
+    },
+    statCheck: () => console.log("statcheck-must-not-fire"),
+  });
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  const req = client.request();
+  req.on("response", (h) => console.log("status", h[":status"]));
+  req.on("end", () => { client.close(); server.close(); });
+  req.end();
+});
+"#,
+    );
+    for line in ["onerror ERR_HTTP2_SEND_FILE Directories cannot be sent", "status 404"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(!out.lines().any(|l| l == "statcheck-must-not-fire"), "statCheck fired; out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_sendfile_fd_validation_faces() {
+    // respondWithFD 校验面（fd-errors 套件行为面）：fd 双形外即 ARG_TYPE、
+    // options 三键错型即 ARG_VALUE、204 禁体、已发头、已销毁。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "v.mjs",
+        r#"
+import http2 from "node:http2";
+import fs from "node:fs";
+fs.writeFileSync("a.txt", "hello");
+const fd = fs.openSync("a.txt", "r");
+const server = http2.createServer();
+server.on("stream", (stream) => {
+  for (const bad of [true, {}, [], null, undefined]) {
+    try {
+      stream.respondWithFD(bad, { "content-type": "text/plain" });
+      console.log("fd-nothrow", String(bad));
+    } catch (e) { console.log("fd-throw", e.code); }
+  }
+  for (const [k, v] of [["offset", "x"], ["length", "x"], ["statCheck", "x"]]) {
+    try {
+      stream.respondWithFD(fd, {}, { [k]: v });
+      console.log("opt-nothrow", k);
+    } catch (e) { console.log("opt-throw", k, e.code); }
+  }
+  for (const s of [204, 304]) {
+    try {
+      stream.respondWithFD(fd, { ":status": s });
+      console.log("status-nothrow", s);
+    } catch (e) { console.log("status-throw", s, e.code); }
+  }
+  stream.respond();
+  try { stream.respondWithFD(fd, {}); console.log("sent-nothrow"); }
+  catch (e) { console.log("sent-throw", e.code); }
+  stream.destroy();
+  try { stream.respondWithFD(fd, {}); console.log("dead-nothrow"); }
+  catch (e) { console.log("dead-throw", e.code); }
+  try { stream.respondWithFile("a.txt"); console.log("deadfile-nothrow"); }
+  catch (e) { console.log("deadfile-throw", e.code); }
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  const req = client.request();
+  req.on("error", () => {});
+  req.on("close", () => { client.close(); server.close(); });
+  req.end();
+});
+"#,
+    );
+    for line in [
+        "fd-throw ERR_INVALID_ARG_TYPE",
+        "opt-throw offset ERR_INVALID_ARG_VALUE",
+        "opt-throw length ERR_INVALID_ARG_VALUE",
+        "opt-throw statCheck ERR_INVALID_ARG_VALUE",
+        "status-throw 204 ERR_HTTP2_PAYLOAD_FORBIDDEN",
+        "status-throw 304 ERR_HTTP2_PAYLOAD_FORBIDDEN",
+        "sent-throw ERR_HTTP2_HEADERS_SENT",
+        "dead-throw ERR_HTTP2_INVALID_STREAM",
+        "deadfile-throw ERR_HTTP2_INVALID_STREAM",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(!out.lines().any(|l| l.contains("nothrow")), "unexpected nothrow; out: {out}");
+    dir.close().unwrap();
+}

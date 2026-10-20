@@ -321,6 +321,8 @@ pub unsafe extern "C" fn fs_access(
 }
 
 /// open flags JSON：{read,write,append,truncate,create,createNew}（JS 层解析 flags 字符串）。
+/// nonblock（http2 sendfile FIFO 面）：O_NONBLOCK —— FIFO 读端无写者即成、
+/// 写端无读者即 ENXIO（皆不阻塞 JS 线程；轮询语义由 JS 层承担）。
 #[derive(serde::Deserialize)]
 struct OpenFlags {
     #[serde(default)]
@@ -337,6 +339,8 @@ struct OpenFlags {
     create_new: bool,
     #[serde(default)]
     mode: u32,
+    #[serde(default)]
+    nonblock: bool,
 }
 
 /// `__wjs2_fs_open(path, flagsJson)` → 合成 fd。
@@ -387,11 +391,16 @@ pub unsafe extern "C" fn fs_open(
         o.create_new(true);
     }
     // mode 仅在 create 面生效（unix；非 0 才设，缺省保持 std 0o666 语义）。
+    // nonblock 面（http2 sendfile FIFO）：O_NONBLOCK 经 custom_flags 直通，
+    // 常规文件恒无感（内核忽略），缺省 false 即原行为。
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         if flags.mode != 0 {
             o.mode(flags.mode & 0o7777);
+        }
+        if flags.nonblock {
+            o.custom_flags(libc::O_NONBLOCK);
         }
     }
     match o.open(&path) {

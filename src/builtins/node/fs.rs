@@ -36,6 +36,11 @@ pub fn io_code(e: &std::io::Error) -> &'static str {
             24 => "EMFILE",
             28 => "ENOSPC",
             32 => "EPIPE",
+            6 => "ENXIO", // http2 sendfile FIFO 轮询码（双平台；EAGAIN 见下，macOS 35/Linux 11）
+            #[cfg(target_os = "macos")]
+            35 => "EAGAIN",
+            #[cfg(not(target_os = "macos"))]
+            11 => "EAGAIN",
             36 => "ENAMETOOLONG",
             // ENAMETOOLONG：macOS 63 / Linux 36（超长文件名；cp filename-too-long 套件）。
             // Linux 63 系 ENOSR，不可合并且——cfg 分流。
@@ -936,6 +941,12 @@ mod tests {
         // 10f：priority 面（ESRCH）+ UDS 非 socket（ENOTSOCK=38 实测）
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(3)), "ESRCH");
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(38)), "ENOTSOCK");
+        // http2 sendfile FIFO 轮询码：ENXIO=6 双平台 + EAGAIN（macOS 35/Linux 11）
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(6)), "ENXIO");
+        #[cfg(target_os = "macos")]
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(35)), "EAGAIN");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(io_code(&std::io::Error::from_raw_os_error(11)), "EAGAIN");
         assert_eq!(io_code(&std::io::Error::from_raw_os_error(9999)), "UNKNOWN");
     }
 }

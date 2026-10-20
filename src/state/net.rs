@@ -59,6 +59,11 @@ pub fn net_cmd(id: u64, cmd: crate::builtins::node::net::NetCmd) -> bool {
     with_plain(|p| p.net_sockets.get(&id).is_some_and(|e| e.cmd_tx.send(cmd).is_ok()))
 }
 
+/// 驱动事件发送端（adopt 等无 task 归属的发送者用；无驱动即 None）。
+pub fn net_ev_tx() -> Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::net::NetEvent>> {
+    with_plain(|p| p.net_tx.clone())
+}
+
 /// 置半关旗（读端）；返回是否两侧都已半关（旗已随 purge 清空不重发）。
 pub fn net_half_read(id: u64) -> bool {
     with_plain(|p| {

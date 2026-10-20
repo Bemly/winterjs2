@@ -681,7 +681,7 @@ pub(crate) async fn serve_conn<S>(
 }
 
 pub use super::http2_client::h2_connect;
-pub use super::http2_server::h2_listen;
+pub use super::http2_server::{h2_adopt, h2_adopt_close, h2_adopt_data, h2_listen};
 
 
 /// task 内错误上报（Error + 单次 Close；native 已返回，无 Frame 可用）。

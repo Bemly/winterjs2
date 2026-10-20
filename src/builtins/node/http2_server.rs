@@ -636,3 +636,224 @@ where
         tokio::io::AsyncWrite::poll_shutdown(Pin::new(&mut *guard), cx)
     }
 }
+
+// ── 注入式连接（'connection' 手动 emit；socket-close 套件）───────────────────
+// node：Http2Server 的 connectionListener 对注入 socket 直接建会话（secure
+// 种先服务端 TLS 握手）。本仓 listen 路径自有 accept，此处只承接手动 emit：
+// 通道桥 AdoptIo（读走 inbox channel、写走 adoptData 事件经既有 H2Stream
+// 通道），复用 serve_conn 全套语义（connOpen/connClose/aborted/request）。
+// JS 侧：socket data → h2_adopt_data；socket close → h2_adopt_close（inbox
+// EOF → serve_conn 收尾 → connClose）；写出经 server __ev "adoptData" 落
+// socket.write；connClose 时连带 destroy 注入 socket（见 h2_server_http2server.js）。
+
+/// adopt inbox 表（conn_id → 入站字节发送端；task 退出即摘，不泄漏）。
+static ADOPT_INBOX: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
+> = std::sync::OnceLock::new();
+fn adopt_inbox() -> &'static std::sync::Mutex<
+    std::collections::HashMap<u64, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+> {
+    ADOPT_INBOX.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 通道桥 IO：读←inbox channel（sender 丢弃即 EOF）；写→H2Stream adoptData
+/// 事件（payload = base64，JS 侧落注入 socket）。
+struct AdoptIo {
+    inbox: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    pending: std::collections::VecDeque<u8>,
+    eof: bool,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+    conn_id: u64,
+}
+
+impl tokio::io::AsyncRead for AdoptIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        loop {
+            while buf.remaining() > 0 {
+                if let Some(b) = self.pending.pop_front() {
+                    buf.put_slice(&[b]);
+                } else {
+                    break;
+                }
+            }
+            if !buf.filled().is_empty() || self.eof {
+                return Poll::Ready(Ok(()));
+            }
+            match self.inbox.poll_recv(cx) {
+                Poll::Ready(Some(bytes)) => self.pending.extend(bytes),
+                Poll::Ready(None) => {
+                    self.eof = true;
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for AdoptIo {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        use base64::Engine as _;
+        let payload = format!(
+            "{} {}",
+            self.conn_id,
+            base64::engine::general_purpose::STANDARD.encode(buf)
+        );
+        self.ev_tx
+            .send(NetEvent {
+                id: self.conn_id,
+                kind: NetKind::H2Stream {
+                    stream_id: 0,
+                    what: "adoptData".into(),
+                    payload,
+                },
+            })
+            .map(|()| buf.len())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            .into()
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        // 关闭语义由 serve_conn 尾部 connClose 承载（JS 侧连带 destroy socket）。
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// `__wjs2_h2_adopt(optsJson{tls?,settings?}, peerStr, target)` → conn_id 数字串。
+/// server_id 取 conn_id（adopt 连接独占 target 路由，见 dispatch）。
+pub unsafe extern "C" fn h2_adopt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 || !frame.arg(2).is_object() {
+        report_error(&mut cx, "TypeError: h2 adopt internals missing target");
+        return false;
+    }
+    let opts: ListenOpts =
+        serde_json::from_str(&value_to_string(&mut cx, frame.arg(0))).unwrap_or_default();
+    let peer_str = value_to_string(&mut cx, frame.arg(1));
+    let srv = {
+        let s = opts.settings.unwrap_or_default();
+        super::http2::ServerConnSettings {
+            enable_connect_protocol: s.enable_connect_protocol.unwrap_or(false),
+            max_header_list_size: s.max_header_list_size.or(s.max_header_size),
+        }
+    };
+    let target = frame.arg(2);
+    ensure_provider();
+    // TLS 配置预检（fail fast；h2c 无配置）。
+    let tls_cfg: Option<std::sync::Arc<rustls::ServerConfig>> = match opts.tls {
+        None => None,
+        Some(t) => {
+            let (Some(cert), Some(key)) = (t.cert, t.key) else {
+                report_error(&mut cx, "TypeError: http2 secure server needs { key, cert }");
+                return false;
+            };
+            match crate::builtins::node::tls::server_config_h2(&cert, &key) {
+                Ok(c) => Some(std::sync::Arc::new(c)),
+                Err(e) => {
+                    report_error(&mut cx, &e);
+                    return false;
+                }
+            }
+        }
+    };
+    let Some(ev_tx) = state::net_ev_tx() else {
+        report_error(&mut cx, "OperationError: net driver not installed");
+        return false;
+    };
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        report_error(&mut cx, "OperationError: no async runtime for h2 adopt");
+        return false;
+    };
+    let (conn_id, conn_cmd_rx) = state::net_conn_add();
+    state::net_target_add(conn_id, target);
+    let (in_tx, in_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    adopt_inbox().lock().expect("adopt inbox").insert(conn_id, in_tx);
+    let peer: std::net::SocketAddr = peer_str
+        .parse()
+        .unwrap_or_else(|_| "127.0.0.1:0".parse().expect("literal addr"));
+    let ev2 = ev_tx.clone();
+    handle.spawn(async move {
+        let io = AdoptIo {
+            inbox: in_rx,
+            pending: std::collections::VecDeque::new(),
+            eof: false,
+            ev_tx: ev2.clone(),
+            conn_id,
+        };
+        if let Some(acc) = tls_cfg.map(tokio_rustls::TlsAcceptor::from) {
+            match acc.accept(io).await {
+                Err(_) => {
+                    state::net_purge(conn_id);
+                }
+                Ok(tls) => {
+                    serve_conn(tls, srv, conn_id, conn_id, peer, ev2, conn_cmd_rx).await;
+                }
+            }
+        } else {
+            serve_conn(io, srv, conn_id, conn_id, peer, ev2, conn_cmd_rx).await;
+        }
+        adopt_inbox().lock().expect("adopt inbox").remove(&conn_id);
+    });
+    set_rval_str(&mut cx, &frame, &conn_id.to_string());
+    true
+}
+
+/// `__wjs2_h2_adopt_data(connId, b64)`：入站字节喂 inbox（entry gone 即静默真）。
+pub unsafe extern "C" fn h2_adopt_data(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    // arg(1) 越界即 debug 断言崩（Frame::arg 无 None 形），先门 argc。
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: h2 adopt data: bad args");
+        return false;
+    }
+    let (Some(cid), b64) = (opt_num(&frame, 0), value_to_string(&mut cx, frame.arg(1))) else {
+        report_error(&mut cx, "TypeError: h2 adopt data: bad args");
+        return false;
+    };
+    if let Some(tx) = adopt_inbox().lock().expect("adopt inbox").get(&(cid as u64)) {
+        use base64::Engine as _;
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+            let _ = tx.send(bytes);
+        }
+    }
+    true
+}
+
+/// `__wjs2_h2_adopt_close(connId)`：摘 inbox（读端见 EOF → serve_conn 收尾）。
+pub unsafe extern "C" fn h2_adopt_close(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(cid) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: h2 adopt close: conn id must be a number");
+        return false;
+    };
+    adopt_inbox().lock().expect("adopt inbox").remove(&(cid as u64));
+    true
+}

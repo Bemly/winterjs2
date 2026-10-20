@@ -694,3 +694,57 @@ server.listen(0, () => {
     assert!(!out.lines().any(|l| l.contains("nothrow")), "unexpected nothrow; out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_socket_close_unordered_teardown() {
+    // socket-close 套件行为面：net 明文 socket 手动注入 secure server
+    // （emit connection→服务端 TLS 握手→会话），颠倒拆链（先毁裸 socket、
+    // 后关会话）不挂死不 segfault，客户端正常收尾。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "s.mjs",
+        &format!(
+            r#"
+import net from "node:net";
+import h2 from "node:http2";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+let serverRawSocket;
+let serverH2Session;
+const netServer = net.createServer((socket) => {{
+  serverRawSocket = socket;
+  h2Server.emit("connection", socket);
+}});
+const h2Server = h2.createSecureServer({{ key, cert }}, (req, res) => {{
+  res.writeHead(200);
+  res.end();
+}});
+h2Server.on("session", (s) => {{ serverH2Session = s; }});
+h2Server.on("error", () => {{}});
+netServer.listen(0, "127.0.0.1", () => {{
+  const client = h2.connect(`https://127.0.0.1:${{netServer.address().port}}`, {{ rejectUnauthorized: false }});
+  client.on("error", () => {{}});
+  client.on("close", () => {{ console.log("client-close"); netServer.close(); }});
+  const req = client.request({{ ":method": "GET", ":path": "/" }});
+  req.on("error", () => {{}});
+  req.on("response", (h) => {{
+    console.log("status", h[":status"]);
+    setTimeout(() => {{
+      serverRawSocket.destroy();
+      setTimeout(() => {{ serverH2Session.close(); }}, 10);
+    }}, 10);
+  }});
+  req.resume();
+  req.end();
+}});
+"#
+        ),
+    );
+    for line in ["status 200", "client-close"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

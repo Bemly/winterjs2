@@ -505,6 +505,12 @@ pub(crate) async fn serve_conn<S>(
     tokio::pin!(conn);
     // 连接级协议错误旗（stream_id==0 的 H2RespondReset 置位；坏帧注入见下）。
     let mut proto_err = false;
+    // 优雅期（Close 后）：继续收应答命令直到 conn 结束或 5s 超时——
+    // destroy/close 常先于 H2RespondEnd 到达（_final 递延），旧"到 Close 即
+    // break"丢尾包致零字节（socket-destroy-delayed 根因）。
+    let mut graceful = false;
+    let mut deadline =
+        Box::pin(tokio::time::sleep(std::time::Duration::from_secs(86400 * 365)));
     loop {
         tokio::select! {
                 r = &mut conn => {
@@ -611,12 +617,26 @@ pub(crate) async fn serve_conn<S>(
                             }
                         }
                     }
-                    Some(NetCmd::Close) | None => {
+                    Some(NetCmd::Close) => {
                         tracing::debug!(target: "winterjs2::http2", conn_id, "serve_conn: Close cmd");
+                        if graceful {
+                            // 重复 Close：已在优雅期，继续轮询（conn 收尾或超时分支退出）。
+                            continue;
+                        }
                         // 优雅收尾优先：先 GOAWAY 让在途 HEADERS/END 落盘再断
                         //（flushheaders 套件：server 'finish' 即调 close()，此时 END
                         // 尚在 ChanBody 队列；直接 break 丢尾包，客户端报
-                        // ERR_HTTP2_STREAM_ERROR。排空至多 5s，超时硬断）。
+                        // ERR_HTTP2_STREAM_ERROR）。排空至多 5s，超时硬断。
+                        // 注意不断循环：优雅期内继续收应答命令（见 deadline 分支）。
+                        conn.as_mut().graceful_shutdown();
+                        graceful = true;
+                        deadline.as_mut().reset(
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+                        );
+                    }
+                    // 通道已关（发送端全弃）：pending 已取尽，不会再有新命令，
+                    // 沿旧语义优雅等 conn 收尾（5s 上限）后退出。
+                    None => {
                         conn.as_mut().graceful_shutdown();
                         let _ = tokio::time::timeout(
                             std::time::Duration::from_secs(5),
@@ -627,6 +647,9 @@ pub(crate) async fn serve_conn<S>(
                     }
                     _ => {}
                 }
+            }
+            _ = &mut deadline => {
+                break;
             }
         }
     }

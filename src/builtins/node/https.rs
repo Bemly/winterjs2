@@ -8,6 +8,7 @@
 
 /// 内嵌 ESM 源（`node:https`；tls 底座 + 共享帧层）。
 pub const SOURCE: &str = r#"
+import * as net from "node:net";
 import * as tls from "node:tls";
 import { codes } from "node:internal/errors";
 import {
@@ -19,6 +20,54 @@ import {
 
 const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
 const __HttpServerBase = withHttpServer(tls.Server);
+// https 建连 TLS 选项子集（ClientRequest 直拨与 Agent.__openSocket 共用：
+// socketPath→path；rejectUnauthorized 显式值恒赢 + NODE_TLS_REJECT_UNAUTHORIZED=0
+// 回落（键位只收显式值，override-global-agent 套件）；servername/ca 直透；
+// checkServerIdentity 显式 undefined 即缺席）。
+function __httpsTlsOpts(extra) {
+  const o = extra ?? {};
+  return {
+    // node 口径：socketPath 在场即 UDS（unix-socket 套件；http 侧 openSocket
+    // 同款，tls.connect 读 .path 面）。
+    ...(o.socketPath !== undefined ? { path: o.socketPath } : {}),
+    // node 口径（getAllowUnauthorized）：NODE_TLS_REJECT_UNAUTHORIZED=0 即
+    // 缺省 false（显式值恒赢；警告由帧层统一发一次）。
+    ...(o.rejectUnauthorized !== undefined ? { rejectUnauthorized: o.rejectUnauthorized }
+      : ((typeof process === "object" && process !== null && process.env !== undefined &&
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") ? { rejectUnauthorized: false } : {})),
+    servername: o.servername,
+    ca: o.ca,
+    // node 口径：显式 undefined 即缺席（connect 内有缺省；显式传 undefined 反而触发校验门）。
+    ...(o.checkServerIdentity !== undefined ? { checkServerIdentity: o.checkServerIdentity } : {}),
+  };
+}
+// node 口径（connect-address-family 套件）：https 建连须 honor family/lookup
+// 系拨号选项（http 侧经 net.connect 直传）。tls.connect 直拨面（Rust
+// __wjs2_tls_connect(host, port)）只收 host/port——lookup 函数与 family 暗示
+// 过不去，自定义 lookup（如 'dummy'→::1）即被吞，TCP 错连/复位（握手失败与
+// hang 交替）。拨号影响项在场即先 net.connect 全选项拨号（含 family/
+// localAddress/hints/HE 面），再 tls.connect({socket}) 包裹（P2-tls-b wrap
+// 面）；其余一律走原直拨路（零行为差）。socketPath（UDS）沿旧路——tls.connect
+// 内层 net.Socket 形 dial={...mo} 本就透传 lookup。
+function __httpsDial(host, port, extra) {
+  const o = extra ?? {};
+  const viaNet = o.socketPath === undefined &&
+    (typeof o.lookup === "function" || o.family !== undefined ||
+     o.localAddress !== undefined || o.hints !== undefined ||
+     o.autoSelectFamily !== undefined || o.autoSelectFamilyAttemptTimeout !== undefined);
+  if (!viaNet) return tls.connect({ port, host, ...__httpsTlsOpts(o) });
+  const sock = net.connect({
+    port, host,
+    ...(typeof o.lookup === "function" ? { lookup: o.lookup } : {}),
+    ...(o.family !== undefined ? { family: o.family } : {}),
+    ...(o.localAddress !== undefined ? { localAddress: o.localAddress } : {}),
+    ...(o.hints !== undefined ? { hints: o.hints } : {}),
+    ...(o.autoSelectFamily !== undefined ? { autoSelectFamily: o.autoSelectFamily } : {}),
+    ...(o.autoSelectFamilyAttemptTimeout !== undefined
+      ? { autoSelectFamilyAttemptTimeout: o.autoSelectFamilyAttemptTimeout } : {}),
+  });
+  return tls.connect({ socket: sock, ...__httpsTlsOpts(o) });
+}
 // options 类型门（node https.js Server 构造口径，mirror http.rs __serverOptions：
 // 'foo'/42/true/[] → ERR_INVALID_ARG_TYPE；undefined/null 缺省、函数=监听器）。
 function __serverOptions(args) {
@@ -48,22 +97,7 @@ function Server(...args) {
 Object.setPrototypeOf(Server, __HttpServerBase);
 Server.prototype = __HttpServerBase.prototype;
 const ClientRequest = withClientRequest(
-  (host, port, extra) => tls.connect({
-    port, host,
-    // node 口径：socketPath 在场即 UDS（unix-socket 套件；http 侧 openSocket
-    // 同款，tls.connect 读 .path 面）。
-    ...(extra.socketPath !== undefined ? { path: extra.socketPath } : {}),
-    // node 口径（getAllowUnauthorized）：NODE_TLS_REJECT_UNAUTHORIZED=0 即
-    // 缺省 false（显式值恒赢；警告由帧层统一发一次）。此处回落——键位只收
-    // 显式值（override-global-agent 套件）。
-    ...(extra.rejectUnauthorized !== undefined ? { rejectUnauthorized: extra.rejectUnauthorized }
-      : ((typeof process === "object" && process !== null && process.env !== undefined &&
-          process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") ? { rejectUnauthorized: false } : {})),
-    servername: extra.servername,
-    ca: extra.ca,
-    // node 口径：显式 undefined 即缺席（connect 内有缺省；显式传 undefined 反而触校验门）。
-    ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
-  }),
+  (host, port, extra) => __httpsDial(host, port, extra),
   FLAVOR,
 );
 // Agent 函数式构造器（node 口径：`https.Agent({...})` 无 new 亦合法）。
@@ -73,18 +107,7 @@ function Agent(options = {}) {
 }
 Object.setPrototypeOf(Agent.prototype, BaseAgent.prototype);
 Object.setPrototypeOf(Agent, BaseAgent);
-Agent.prototype.__openSocket = (host, port, extra) => tls.connect({
-  port, host,
-  // 同上：socketPath→path（unix-socket 套件经 Agent 面 createConnection）。
-  ...(extra.socketPath !== undefined ? { path: extra.socketPath } : {}),
-  // 同上：env 缺省回落（键位只收显式值）。
-  ...(extra.rejectUnauthorized !== undefined ? { rejectUnauthorized: extra.rejectUnauthorized }
-    : ((typeof process === "object" && process !== null && process.env !== undefined &&
-        process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") ? { rejectUnauthorized: false } : {})),
-  servername: extra.servername,
-  ca: extra.ca,
-  ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
-});
+Agent.prototype.__openSocket = (host, port, extra) => __httpsDial(host, port, extra);
 // node internal/http/agent.js normalizeServerName 口径：显式 servername（含 '')
 // 恒赢；缺席即取请求 Host 头（去端口/方括号；IP 即 ''——SNI 禁 IP）。
 function __httpsServerName(options, req) {

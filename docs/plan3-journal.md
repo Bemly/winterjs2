@@ -3006,3 +3006,27 @@ G1/G2/G3/G9 已收官。）
 - Top10（base19c 差额）：http2-112、tls-101、fs-46、http-41、crypto-39、
   worker-32、cluster-22、webcrypto-21、diagnostics-21、child-18。
   （child 29→18，P0 兑现；tls/fs 含上述已修 crash 簇，实欠更低。）
+## 2026-10-21 base19d 全域基线（10 lane 合入后，SAME0 2551/3528）
+
+- 运行：pull 到 54b0f53 + status 空 + load ~6 → cargo build -j2 32s
+  （二进制 03:28，md5 efdbc0a019da08b6d9047020316c7689，跑后复核一致）
+  → 冒烟 5/5 → sweep 同参（--tag base19d，jobs 2），
+  03:28:55 → 04:15:35（~47min），3528/3528 无 abort。
+  工件 `~/wjs-data/sweep/base19d/`。残留 26 进程告警未清理（他 lane
+  fixture，无干扰）；系统盘 36→25GB。
+- 总表：SAME0 **2551** / SAME1 207 / DIFF 735 / TIMEOUT 35（绿 72.3%）。
+  vs base19c（2523/208/769/28）：绿 **+28**、DIFF -34、TIMEOUT +7；
+  真实欠账 797→**770（-27）**。HANG/MUSTCALL 定位行正常。
+- 域级 Δ（绿）：tls 84→91（+7）、child 82→87（+5）、http2 131→136
+  （+5）、process 63→66（+3）、fs 276→277/cluster/require/https/
+  buffer/promise/unhandled/math/macos 各 +1；crypto 64→63（-1，dsa）。
+  TIMEOUT 28→35（+7，多系抖动，见下）。
+- 逐件：fixed 34（tls 9/http2 6/child 5/process 3/buffer/cluster/fs/
+  http/https/macos/math/net/promise/require/unhandled 各 1）；
+  newred 6 **复探全绿**（multiplex/connect-reset/use-after-free 三 DIFF +
+  keygen-dsa/pipeline-leak/set-default-ca 三 TIMEOUT，皆抖动，真回归 0）。
+- ab3a76d 验证：crash 簇（tls-ecdh 族 9 + child-spawn 族 5 + fs/http/
+  process 散件）base19d 全愈——base19c→d 的 tls/child 大头即此修。
+- Top10（base19d 差额）：http2-107、tls-94、fs-45、http-41、crypto-40、
+  worker-32、webcrypto-22、diagnostics-21、cluster-21、vm-17。
+  （child 13 掉出 Top10；net 93% 守住。）

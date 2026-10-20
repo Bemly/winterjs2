@@ -2032,5 +2032,48 @@ G1/G2/G3/G9 已收官。）
   非欠账：Bun 快照有、node-main 检出无（`ls test/parallel` 零命中），系上游更名/删除，
   双边无法跑，不计红。
 
+## 2026-10-20 tls P2-tls 下一簇探针（只探针+定级，不写码）
+
+> 范围：`docs/bun-scope.txt` tls 201 行（`^test-tls-` 186 + 关联行；另 `^test-https-` 76 不在内）。
+> 基线：base18 tls 红 101（DIFF 76 + TIMEOUT 25，`~/wjs-data/sweep/base18/results.log`）。
+> 探针：`~/wjs-data/probe/tls-next/p{1,2,3,4,5}-*.js`（node v26.8.1 vs 本区二进制；
+> 回环短连 + 8s GUARD，无新构建）。Bun 口径：`docs/bun-compat.md:53` https 🟡
+> （无 SNI 回调等）/ `:75` tls 🟡（无 psk/OCSP/resume）。
+
+- P1 SecureContext：node 空构造/键证构造真，`ticketKeys` 门在选项形
+  （47→`ERR_INVALID_ARG_VALUE` 48 字节，48 经；`setTicketKeys` 非 SecureContext 方法，
+  双边同 `not a function`）；pfx 糊串 node 报 `not enough data`，wjs 报
+  `ERR_METHOD_NOT_IMPLEMENTED`（loadPKCS12 未实现，bound 维持）。
+  wjs 与 node 逐行同形（`empty/keycert/ticket48-47/pfx/SecureContext` 六行全对）。
+- P2 getPeerCertificate：node 精简 19 键（含 asn1Curve/bits/exponent/ext_key_usage/
+  modulus/nistCurve/pubkey + raw），wjs 12 键（缺上列 7 公钥材料键），余
+  subject/issuer/raw/auth 逐字同形（含 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`）。
+  → 下簇 N1（见下）。
+- P3 ALPN：交集双边同 `a`（服务端偏好序；wjs 连服务端侧 `server-alpn=a` 亦对），
+  无交集双边同 `ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL`。静态面已对齐；
+  `ALPNCallback` 选项面 bound 维持（rustls 无 select-callback，journal:1400-1401）。
+- P4 verify（CSI 6 格）：双边逐格同形（unfqdn/IP/通配 OK，deep 通配/有 SAN 忽略 CN
+  报 `ERR_TLS_CERT_ALTNAME_INVALID`，无 SAN 回落 CN OK）——B-3 移植确认。
+- P5 SNI：`addContext` 双边行为分歧——node `_contexts` 2（通配正则对），wjs 0
+  （未下沉，引擎墙 bound 维持，journal:1542）；无 SNI 时 node `servername=false`，
+  wjs 回落 `"127.0.0.1"` → 下簇 N2（见下）。
+
+### 定级表（101 红去向，自主定级）
+
+- 下簇续啃 N1 getPeerCertificate 补 7 键（asn1Curve/bits/exponent/ext_key_usage/
+  modulus/nistCurve/pubkey）：需 DER-SPKI 解析（`x509-parser` 候选，新依赖按规
+  审批后再开码；验收=19 键逐字 + `peer-certificate/multi-keys` 转绿）。
+- 下簇续啃 N2 无 SNI 时 `servername=false`（JS 面小修：SNI 缺席不再回落 host；
+  验收=`empty-sni-context` + `https-agent-sni` 相关断言；wave-1 `''` 形已铺路）。
+- bound 维持：pfx-loadPKCS12 ×5 / psk ×2 / DHE / renegotiation ×2 / OCSP /
+  resume ×3 + ticket / ALPNCallback / SNI-raw + addContext 未下沉
+  （rustls 能力墙，`bun-compat.md:53/75` 同缺为证）。
+- 另案（net/stream 面，随建模）：socket-close/destroy/default-options/
+  streamwrap-buffersize（Duplex EOF 面）/client-destroy-soon（readable 流量）/
+  async-wrap ca 链。
+- 另轮 time-box（本次未探针，TIMEOUT 25）：cli min/max-version 系 ×6 /
+  cert-chains-concat 系 ×2 / handshake/secure-session/interleave 等散件，
+  按“单件 run1.sh 复判 → 版本墙即归 B”逐件销账，不在下簇内。
+
 
 

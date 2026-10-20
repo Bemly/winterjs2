@@ -244,6 +244,129 @@ setTimeout(() => console.log("ev", JSON.stringify(seen.sort())), 50);
 }
 
 #[test]
+fn vm_referrer_ctx_faces() {
+    // 正常：无 JS 栈的 eval 动态 import 走上下文回调（referrer 即 sandbox 本体）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+const foo = new vm.SourceTextModule("export const a = 1;");
+await foo.link(() => {});
+await foo.evaluate();
+const ctx = vm.createContext({}, {
+  importModuleDynamically: (spec, wrap) => {
+    console.log("ctx-cb", spec, wrap === ctx);
+    return foo;
+  },
+});
+const s = new vm.Script('Promise.resolve("import(\'foo\')").then(eval)', {
+  importModuleDynamically: () => console.log("script-cb-NO"),
+});
+console.log("r1", (await s.runInContext(ctx)) === foo.namespace);
+// 正常：模块路同理（Script 回调不触发）。
+const m = new vm.SourceTextModule('globalThis.__r = Promise.resolve("import(\'foo\')").then(eval);', {
+  context: ctx,
+  importModuleDynamically: () => console.log("mod-cb-NO"),
+});
+await m.link(() => {});
+await m.evaluate();
+console.log("r2", (await ctx.__r) === foo.namespace);
+delete ctx.__r;
+// 报错：无上下文回调即 CALLBACK_MISSING（Script/模块双路）。
+const ctx2 = vm.createContext({});
+const s2 = new vm.Script('Promise.resolve("import(\'foo\')").then(eval)', {
+  importModuleDynamically: () => {},
+});
+try { await s2.runInContext(ctx2); console.log("m1", "NO-THROW"); }
+catch (e) { console.log("m1", e.constructor.name, e.code); }
+const m2 = new vm.SourceTextModule('globalThis.__r2 = Promise.resolve("import(\'foo\')").then(eval);', {
+  context: ctx2,
+  importModuleDynamically: () => {},
+});
+await m2.link(() => {});
+await m2.evaluate();
+try { await ctx2.__r2; console.log("m2", "NO-THROW"); }
+catch (e) { console.log("m2", e.constructor.name, e.code); }
+delete ctx2.__r2;
+// 边界：createContext 校验（非法回调即 TypeError）。
+try { vm.createContext({}, { importModuleDynamically: 42 }); console.log("ctor", "NO-THROW"); }
+catch (e) { console.log("ctor", e.constructor.name, e.code); }
+console.log("done");
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "ctx-cb foo true",
+        "r1 true",
+        "r2 true",
+        "m1 TypeError ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING",
+        "m2 TypeError ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING",
+        "ctor TypeError ERR_INVALID_ARG_TYPE",
+        "done",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn vm_tla_faces() {
+    // 正常：hasTopLevelAwait 仅看自身源码（依赖 TLA 不传染）。
+    // 正常：hasAsyncGraph 看传递闭包（linkRequests/instantiate 与 linker 双路）。
+    // 报错：未实例化即抛 STATUS。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+const plain = new vm.SourceTextModule("export const a = 1;");
+console.log("tla-plain", plain.hasTopLevelAwait());
+const tla = new vm.SourceTextModule("export const a = 1;\nawait 0;");
+console.log("tla-yes", tla.hasTopLevelAwait());
+const fnonly = new vm.SourceTextModule("export async function f() { await 0; }");
+console.log("tla-fn", fnonly.hasTopLevelAwait());
+try { plain.hasAsyncGraph(); console.log("ag-unlinked", "NO-THROW"); }
+catch (e) { console.log("ag-unlinked", e.constructor.name, e.code); }
+plain.linkRequests([]);
+console.log("tla-prelink", plain.hasTopLevelAwait());
+const dep = new vm.SourceTextModule("export const q = 1;\nawait 0;");
+dep.linkRequests([]);
+const top = new vm.SourceTextModule("export { q } from 'd';");
+top.linkRequests([dep]);
+top.instantiate();
+console.log("ag-dep", dep.hasAsyncGraph(), top.hasAsyncGraph(), top.hasTopLevelAwait());
+console.log("done");
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "tla-plain false",
+        "tla-yes true",
+        "tla-fn false",
+        "ag-unlinked Error ERR_VM_MODULE_STATUS",
+        "tla-prelink false",
+        "ag-dep true true false",
+        "done",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn vm_dyn_native_guards() {
     // UNSAFE-BOUNDARY 入口守卫（坏 id/坏类型一律 TypeError 包络，不 panic）。
     let dir = assert_fs::TempDir::new().unwrap();

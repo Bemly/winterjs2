@@ -559,6 +559,22 @@ export function withHttpServer(Base) {
         sock.__httpSockOnClose = () => {
           self.__clearReqTimers(st);
           self.__sockets.delete(sock);
+          // 截断头：FIN/close 到达时仍有未成头残字节（无在途请求）→ clientError
+          // HPE_INVALID_EOF_STATE（parser-finish-error 套件；纯空行残留不算）。
+          try {
+            const __b = st.buf;
+            if ((st.req === null || st.req === undefined) && __b !== undefined && __b !== null && __b.length > 0) {
+              let __ws = true;
+              for (let __i = 0; __i < __b.length; __i++) {
+                if (__b[__i] !== 13 && __b[__i] !== 10 && __b[__i] !== 32 && __b[__i] !== 9) { __ws = false; break; }
+              }
+              if (!__ws) {
+                const __e = __hpeServer("HPE_INVALID_EOF_STATE", "Parse Error", __b.length);
+                st.buf = new Uint8Array(0);
+                try { self.__feedError(sock, __e); } catch { /* 400 通道兜底 */ }
+              }
+            }
+          } catch { /* 取证失败不阻收尾 */ }
           // 连接关闭即释放解析器（单发守卫见 connection 段）+ kOnTimeout 清理
           // （memory-retention 套件：close 后为 null）。
           try { self.__freeSocketParser(sock); } catch { /* gone */ }

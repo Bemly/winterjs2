@@ -262,6 +262,10 @@
 - 4.297 node respondWithFile 自动 content-length（2026-10-20，http2 lane）
 - 4.298 h2 'connection' 手动 emit 无监听即 TIMEOUT（2026-10-20，http2 lane）
 - 4.299 response 'finish' 在流关闭时（2026-10-20，http2 lane）
+- 4.300 Close 先于 End 进队即丢尾包（2026-10-20，http2 lane）
+- 4.301 conn 收尾与流任务唤醒竞态（2026-10-20，http2 lane）
+- 4.302 hyper CONNECT-upgrade 接管双向隧道（2026-10-20，http2 lane）
+- 4.303 kill -9 丢 println 缓冲（2026-10-20，http2 lane）
 
 ## 条目
 

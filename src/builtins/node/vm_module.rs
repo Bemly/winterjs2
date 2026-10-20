@@ -21,8 +21,9 @@ use super::vm_error::throw_vm;
 // `vm_mod_release`/ctx 摘除时清（见 `vm_mod_requests_drop_ctx`）。────────────
 
 /// 静态请求表（纯逻辑子模块；`#[path]` 挂接，不碰 `mod.rs`）。
+/// `pub(crate)` 公开动态 `with` 属性解析（`vm_dyn.rs` 同域复用）。
 #[path = "vm_requests.rs"]
-mod requests;
+pub(crate) mod requests;
 use requests::{VmRequest, extract_requests, requests_json};
 
 static VM_MOD_REQUESTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, (u64, String)>>> =
@@ -156,7 +157,14 @@ pub unsafe extern "C" fn vm_mod_compile(
         throw_vm(&mut realm, "SyntaxError", &msg);
         return false;
     }
-    let id = state::vm_mod_add(ctx, identifier, record, has_imports, specs);
+    let id = {
+        rooted!(&in(&mut realm) let record_root: *mut JSObject = record);
+        // SAFETY: record 有效 rooted；编译直后脚本槽恒在（求值后引擎清槽，见 4.293）
+        let script = unsafe {
+            mozjs::rust::wrappers2::GetModuleScript(record_root.handle())
+        };
+        state::vm_mod_add(ctx, identifier, record, script, has_imports, specs)
+    };
     if let Ok(mut m) = vm_mod_requests_map().lock() {
         m.insert(id, (ctx, requests_json(&reqs)));
     }
@@ -271,7 +279,7 @@ pub unsafe extern "C" fn vm_mod_evaluate(
     vp: *mut JSVal,
 ) -> bool {
     use mozjs::rust::wrappers2::ModuleEvaluate;
-    use super::vm::{vm_timeout_arg, vm_timeout_peek_ms, vm_timeout_rearm, vm_timeout_report, VmTimeoutGuard};
+    use super::vm_timeout::{vm_timeout_arg, vm_timeout_peek_ms, vm_timeout_report, VmTimeoutGuard};
     // SAFETY: 同 vm_create
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
@@ -287,7 +295,7 @@ pub unsafe extern "C" fn vm_mod_evaluate(
         }
     };
     let timeout_ms = vm_timeout_arg(&mut cx, &frame, 1);
-    let _timeout_guard = VmTimeoutGuard::enter(cx_raw, timeout_ms);
+    let mut _timeout_guard = VmTimeoutGuard::enter(cx_raw, timeout_ms);
     let Some((record, ctx, _has_imports, linked, _evaluated)) = state::vm_mod_get(id) else {
         report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
         return false;
@@ -305,12 +313,9 @@ pub unsafe extern "C" fn vm_mod_evaluate(
     let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
     // SAFETY: record 有效 rooted；realm 内同步求值
     if !unsafe { ModuleEvaluate(&mut realm, record_root.handle(), rval.handle_mut()) } {
-        // 超时命中优先（同 vm_run：先补发中断再排空孤儿任务）。
+        // 超时命中优先（同 vm_run：限时武装排空孤儿，见 4.295）。
         if vm_timeout_peek_ms().is_some() {
-            use mozjs::jsapi::RunJobs;
-            vm_timeout_rearm(cx_raw);
-            // SAFETY: realm 内排空（主循环同款）
-            unsafe { RunJobs((&mut realm).raw_cx()) };
+            super::vm::vm_timeout_drain_orphans(cx_raw, &mut realm, &mut _timeout_guard);
         }
         if vm_timeout_report(&mut realm, timeout_ms) {
             return false;
@@ -335,20 +340,18 @@ pub unsafe extern "C" fn vm_mod_evaluate(
             )
         };
         if rejected {
-            use mozjs::jsapi::RunJobs;
             // 中止 completion 自身的 unhandled 认领（因恒 undefined 的终止
             // rejection，真机不报告；调用方经 evaluate() 认领超时错，此处
             // 等效 Handled 摘除，防事件循环尾 fatal）。
             let rval_ptr = rval.to_object();
             state::with_rooted(|s| s.unhandled.retain(|h| h.get() != rval_ptr));
-            vm_timeout_rearm(cx_raw);
-            // SAFETY: realm 内排空（主循环同款）
-            unsafe { RunJobs((&mut realm).raw_cx()) };
+            // 孤儿排空（限时武装，见 4.295；escape-promise-module 口径不变）。
+            super::vm::vm_timeout_drain_orphans(cx_raw, &mut realm, &mut _timeout_guard);
             if vm_timeout_report(&mut realm, timeout_ms) {
                 return false;
             }
         } else {
-            super::vm::vm_timeout_fired_ms();
+            super::vm_timeout::vm_timeout_fired_ms();
         }
     }
     // Node afterEvaluate 等效（runInContext 系由各自求值点排空；模块求值不
@@ -408,6 +411,9 @@ pub unsafe extern "C" fn vm_mod_ns(
     };
     rooted!(&in(cx) let global = ptr);
     rooted!(&in(cx) let record_root: *mut JSObject = record);
+    // 调用方 global（返回前重进并包装，跨域恒等统一，见 4.296；裸指针拷出，
+    // 守卫即释，避免与下文 realm 借用冲突）。
+    let caller_ptr = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx.raw_cx()) };
     let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
     // SAFETY: record 有效；返回的 namespace 由记录保活（引擎内边）
     let ns = unsafe { GetModuleNamespace(&mut realm, record_root.handle()) };
@@ -416,7 +422,17 @@ pub unsafe extern "C" fn vm_mod_ns(
         return false;
     }
     rooted!(&in(&mut realm) let ns_root: *mut JSObject = ns);
-    frame.set_rval(mozjs::jsval::ObjectValue(ns_root.get()));
+    let mut out = mozjs::jsval::ObjectValue(ns_root.get());
+    if !caller_ptr.is_null() {
+        rooted!(&in(&mut realm) let caller_root: *mut JSObject = caller_ptr);
+        let mut caller_realm = AutoRealm::new_from_handle(&mut realm, caller_root.handle());
+        // 调用方跨域 `===` 恒等：包装进调用方 compartment（同域无操作）。
+        match crate::jsapi_glue::wrap_value(&mut caller_realm, out) {
+            Some(w) => out = w,
+            None => return false,
+        }
+    }
+    frame.set_rval(out);
     true
 }
 

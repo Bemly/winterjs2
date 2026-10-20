@@ -9,7 +9,7 @@ use mozjs::conversions::{ConversionResult, FromJSValConvertible as _, ToJSValCon
 use mozjs::context::JSContext;
 use mozjs::gc::ValueArray;
 use mozjs::jsapi::{HandleValueArray, JS_CallFunctionValue, JS_GetPendingException, JS_SetPendingException, JSObject};
-use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::typedarray::{CreateWith, TypedArray, Uint8};
 
@@ -508,6 +508,170 @@ pub fn call_three(
         JS_CallFunctionValue(
             cx.raw_cx(),
             raw_handle(&global),
+            raw_handle(fun_root.as_ptr()),
+            &args_array,
+            raw_handle_mut(rval.as_ptr()),
+        )
+    };
+    if ok { Some(rval.get()) } else { None }
+}
+
+/// UNSAFE-BOUNDARY: 值跨 compartment 包装进当前 realm（`JS_WrapValue`；
+/// 同 compartment 无操作。调用方跨域 `===` 恒等以此统一，见 4.296）。
+/// 前置：cx 在目标 realm 内；v 已 rooted；失败 None（pending 由调用方处理）。
+/// 覆盖：`tests/node/vm.rs::vm_module_linker_faces`（命名空间恒等面）。
+pub fn wrap_value(cx: &mut JSContext, v: JSVal) -> Option<JSVal> {
+    rooted!(&in(cx) let mut w = v);
+    // SAFETY: w 为 rooted 值槽；JS_WrapValue 原地换槽内容进当前 compartment
+    let ok = unsafe { mozjs::jsapi::JS_WrapValue(cx.raw_cx(), raw_handle_mut(w.as_ptr())) };
+    if ok {
+        Some(w.get())
+    } else {
+        None
+    }
+}
+
+/// UNSAFE-BOUNDARY: 经 `Reflect.apply` 调用户回调 `func.apply(thisv, args)`
+///（this 可为 undefined；sloppy/strict 语义与直调一致）。
+/// 前置：cx 在 realm 内；func 为可调用；失败 None（pending 由调用方处理）。
+/// 覆盖：`tests/node/vm.rs::vm_module_dynamic_import_faces`（回调 this/参数面）。
+pub fn reflect_apply(
+    cx: &mut JSContext,
+    func: JSVal,
+    thisv: JSVal,
+    args: &[JSVal],
+) -> Option<JSVal> {
+    rooted!(&in(cx) let func_root = func);
+    rooted!(&in(cx) let this_root = thisv);
+    // 当前 realm global → Reflect.apply（跨 compartment 经 CCW 调用无虞）。
+    let global = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx.raw_cx()) };
+    if global.is_null() {
+        return None;
+    }
+    rooted!(&in(cx) let global_root: *mut JSObject = global);
+    let reflect = get_prop_value(cx, global_root.get(), c"Reflect")?;
+    rooted!(&in(cx) let reflect_root = reflect);
+    let apply = get_prop_value(cx, reflect_root.get().to_object(), c"apply")?;
+    rooted!(&in(cx) let apply_root = apply);
+    // 实参数组（rooted 对象 + SetElement 逐个落，napi/call.rs 同款）。
+    let arr = unsafe { mozjs::jsapi::JS::NewArrayObject1(cx.raw_cx(), args.len()) };
+    if arr.is_null() {
+        return None;
+    }
+    rooted!(&in(cx) let arr_root = arr);
+    for (i, a) in args.iter().enumerate() {
+        rooted!(&in(cx) let a_root = *a);
+        if unsafe {
+            !mozjs::jsapi::JS_SetElement(
+                cx.raw_cx(),
+                raw_handle(&arr_root.get()),
+                i as u32,
+                raw_handle(a_root.as_ptr()),
+            )
+        } {
+            return None;
+        }
+    }
+    rooted!(&in(cx) let argv = ValueArray::new([func_root.get(), this_root.get(), ObjectValue(arr_root.get())]));
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let args_array = HandleValueArray {
+        length_: 3,
+        // SAFETY: argv 为栈上 Rooted 槽，存活到调用返回，元素被 GC 追踪
+        elements_: argv.as_ptr().cast(),
+    };
+    // SAFETY: cx/apply 均有效；rval 为 rooted 出参
+    let ok = unsafe {
+        JS_CallFunctionValue(
+            cx.raw_cx(),
+            raw_handle(&global_root.get()),
+            raw_handle(apply_root.as_ptr()),
+            &args_array,
+            raw_handle_mut(rval.as_ptr()),
+        )
+    };
+    if ok { Some(rval.get()) } else { None }
+}
+
+/// UNSAFE-BOUNDARY: 经 `Reflect.construct` 构造错误对象 `new ctor(...args)`
+///（宿主侧错误值工厂；code 等属性由调用方 `define_prop` 追加）。
+/// 前置：cx 在 realm 内；ctor 为构造器；失败 None（pending 由调用方处理）。
+/// 覆盖：`tests/node/vm.rs::vm_module_dynamic_import_faces`（缺回调/非法返回错误面）。
+pub fn reflect_construct(cx: &mut JSContext, ctor: JSVal, args: &[JSVal]) -> Option<JSVal> {
+    rooted!(&in(cx) let ctor_root = ctor);
+    let global = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx.raw_cx()) };
+    if global.is_null() {
+        return None;
+    }
+    rooted!(&in(cx) let global_root: *mut JSObject = global);
+    let reflect = get_prop_value(cx, global_root.get(), c"Reflect")?;
+    rooted!(&in(cx) let reflect_root = reflect);
+    let construct = get_prop_value(cx, reflect_root.get().to_object(), c"construct")?;
+    rooted!(&in(cx) let construct_root = construct);
+    let arr = unsafe { mozjs::jsapi::JS::NewArrayObject1(cx.raw_cx(), args.len()) };
+    if arr.is_null() {
+        return None;
+    }
+    rooted!(&in(cx) let arr_root = arr);
+    for (i, a) in args.iter().enumerate() {
+        rooted!(&in(cx) let a_root = *a);
+        if unsafe {
+            !mozjs::jsapi::JS_SetElement(
+                cx.raw_cx(),
+                raw_handle(&arr_root.get()),
+                i as u32,
+                raw_handle(a_root.as_ptr()),
+            )
+        } {
+            return None;
+        }
+    }
+    rooted!(&in(cx) let argv = ValueArray::new([ctor_root.get(), ObjectValue(arr_root.get())]));
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    let args_array = HandleValueArray {
+        length_: 2,
+        // SAFETY: argv 为栈上 Rooted 槽，存活到调用返回，元素被 GC 追踪
+        elements_: argv.as_ptr().cast(),
+    };
+    // SAFETY: cx/construct 均有效；rval 为 rooted 出参
+    let ok = unsafe {
+        JS_CallFunctionValue(
+            cx.raw_cx(),
+            raw_handle(&global_root.get()),
+            raw_handle(construct_root.as_ptr()),
+            &args_array,
+            raw_handle_mut(rval.as_ptr()),
+        )
+    };
+    if ok { Some(rval.get()) } else { None }
+}
+
+/// UNSAFE-BOUNDARY: 带显式 this 的方法调用 `thisv[name](...args)`
+///（EventEmitter 系内部调用：this 即宿主对象，用户可 mock 覆写）。
+/// 前置：cx 在 realm 内；thisv 为对象；方法可调用；失败 None（pending 由调用方处理）。
+/// 覆盖：`tests/node/vm.rs::vm_unhandled_delivery_faces`（emit/listenerCount 面）。
+pub fn call_method(cx: &mut JSContext, thisv: JSVal, name: &CStr, args: &[JSVal]) -> Option<JSVal> {
+    if !thisv.is_object() {
+        return None;
+    }
+    rooted!(&in(cx) let this_root = thisv);
+    rooted!(&in(cx) let this_obj: *mut JSObject = this_root.get().to_object());
+    let fun = get_prop_value(cx, this_obj.get(), name)?;
+    rooted!(&in(cx) let fun_root = fun);
+    rooted!(&in(cx) let mut rval = UndefinedValue());
+    // 实参数组 rooted（RootedVec 元素区直给；Vec 头非元素，禁 as_ptr，
+    // 见 4.297）。
+    mozjs::rooted_vec!(let mut argv_root);
+    argv_root.extend(args.iter().cloned());
+    let args_array = HandleValueArray {
+        length_: argv_root.len(),
+        // SAFETY: extend 已完成，调用期内不再变长，元素区稳定且被 GC 追踪
+        elements_: argv_root.as_ptr().cast(),
+    };
+    // SAFETY: cx/this/fun 均有效；rval 为 rooted 出参
+    let ok = unsafe {
+        JS_CallFunctionValue(
+            cx.raw_cx(),
+            raw_handle(this_obj.as_ptr()),
             raw_handle(fun_root.as_ptr()),
             &args_array,
             raw_handle_mut(rval.as_ptr()),

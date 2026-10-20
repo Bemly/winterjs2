@@ -298,13 +298,13 @@ function __fsWriteFileFifo(p, bytes, needFlush, done) {
       try {
         n = writeSync(fd, u8.subarray(off), 0, u8.byteLength - off, null);
       } catch (e) {
-        if (e && e.code === "EAGAIN") { __fsDefer(writeTry); return; }
+        if (e && e.code === "EAGAIN") { __fsPoll(writeTry); return; }
         try { closeSync(fd); } catch {}
         __fsDefer(() => done(e));
         return;
       }
       off += n;
-      __fsDefer(writeTry);
+      __fsPoll(writeTry);
     };
     writeTry();
   });
@@ -386,10 +386,12 @@ export const cp = __cb1((src, dst, opts) => {
 export const open = function (...args) {
   const cb = args[args.length - 1];
   __vCbArg(cb);
+  const rest = args.slice(0, -1);
+  const [p0, flags, mode] = rest;
   // 同步校验与 openSync 同序（flags→mode→path），ARG 系同步抛。
-  const f = __fsFlags(args[1], "open");
-  __fsParseMode(args[2], 0o666);
-  const p = __fsPath(args[0], "open");
+  const f = __fsFlags(flags, "open");
+  __fsParseMode(mode, 0o666);
+  const p = __fsPath(p0, "open");
   // FIFO 面（http2 sendfile with-pipe/error-pipe-offset 套件 writer 侧）：
   // 阻塞 open 会卡死 JS 线程（node 靠线程池消化），故 FIFO 单独走
   // O_NONBLOCK + setImmediate 轮询；ENXIO/EAGAIN = 对端未到，重试；
@@ -403,10 +405,9 @@ export const open = function (...args) {
     }), cb);
     return;
   }
-  void m;
   let pr;
   try {
-    pr = Promise.resolve(openSync(...args.slice(0, -1)));
+    pr = Promise.resolve(openSync(...rest));
   } catch (e) {
     if (e && typeof e.code === "string" &&
         (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
@@ -423,6 +424,9 @@ function __fsIsFifoPath(p) {
     return false;
   }
 }
+// FIFO 轮询节流（setImmediate 紧循环会饿死 I/O 相——listen/连接事件永不到；
+// setTimeout 1ms 让出轮次，实测 rendezvous 毫秒级会合）。
+function __fsPoll(fn) { setTimeout(fn, 1); }
 // O_NONBLOCK open 轮询（flagsJson 由调用方按"纯方向位+nonblock"构造）。
 function __fsOpenFifo(p, flagsJson, cb) {
   const attempt = () => {
@@ -430,7 +434,7 @@ function __fsOpenFifo(p, flagsJson, cb) {
     try {
       fd = Number(__fsCall("open", p, () => __wjs2_fs_open(p, flagsJson)));
     } catch (e) {
-      if (e && (e.code === "ENXIO" || e.code === "EAGAIN")) { __fsDefer(attempt); return; }
+      if (e && (e.code === "ENXIO" || e.code === "EAGAIN")) { __fsPoll(attempt); return; }
       __fsDefer(() => cb(e));
       return;
     }

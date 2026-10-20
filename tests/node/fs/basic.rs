@@ -4,6 +4,39 @@ use crate::helpers::*;
 use assert_fs::prelude::*;
 
 #[test]
+fn fs_open_arg_forms() {
+    // open 三态（node lib/fs.js 原文）：(path,cb) 缺省 r / (path,flags,cb) /
+    // (path,flags,mode,cb)；cb 恒末参；错型同步抛、操作错走回调。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("a.txt").write_str("hello").unwrap();
+    let out = run_fs_file(
+        &dir,
+        "o.mjs",
+        r#"
+import fs from "node:fs";
+const close = (fd) => fs.closeSync(fd);
+fs.open("a.txt", (e, fd) => { console.log("two", e, fs.readFileSync(fd, "utf8")); close(fd); });
+fs.open("a.txt", "r", (e, fd) => { console.log("three", e, fs.readFileSync(fd, "utf8")); close(fd); });
+fs.open("a.txt", "r", 0o666, (e, fd) => { console.log("four", e, fs.readFileSync(fd, "utf8")); close(fd); });
+fs.open("nope.txt", (e) => { console.log("enoent", e && e.code); });
+try { fs.open("a.txt"); console.log("nocb-nothrow"); }
+catch (e) { console.log("nocb-throw", e.code); }
+"#,
+    );
+    for line in [
+        "two null hello",
+        "three null hello",
+        "four null hello",
+        "enoent ENOENT",
+        "nocb-throw ERR_INVALID_ARG_TYPE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(!out.lines().any(|l| l.contains("nothrow")), "unexpected nothrow; out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn fs_read_write_roundtrip() {
     // 文本/二进制/追加 + stat 字段 + exists。
     let dir = assert_fs::TempDir::new().unwrap();

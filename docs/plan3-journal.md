@@ -2819,3 +2819,26 @@ G1/G2/G3/G9 已收官。）
 > - 修中（需动手 + 双向交叉钉向量）：dh-generate-keys（重生成语义）、dh-padding（值）、dh-classic/keygen-dh（classic DH）、ecdh-convert-key（缺 API）、eddsa-variants（向量+导入；先对 RFC8032 逐字节）、psychic-signatures（长度门，4.55 姊妹）、keygen-bit-length（DSA-1024，node 实测支持）、certificate（verifySpkac）、x509（internal/crypto/x509 类面；x509 底座已有）、keyobject-clone-transfer（clone 语义待查）、publicDecrypt（PBES2 密码名映射）、crypto-stream 等 4 件 pipe（Hash/Cipher 接 Stream）、domain（BAM 透传）、subtle-cross-realm（跨域 brand 按 isView + assert.partialDeepStrictEqual 补件）、argon2（binding 接线，crate 已有）、pqc 三件（ml-dsa/ml-kem crate 已有；仅 slh 除外）、keygen-raw（除 slh 部分）、worker-thread c-4（先查 c-4 缺口大小再定批）。
 > - 偏离（不动）：slh-dsa 两件（需新 crate，§0.5 先问）、key-objects:1154（非 NIST 曲线能力，4.135 坑七已记，需 p224/p192 轮子）。
 > - 备注：41 件全在 Bun 范围内；Bun 直跑仍被 common global-leak 守卫挡（沿用 readline 轮结论）。
+
+## 2026-10-21 crypto 修小9落地（lane/console；前任残留接盘 + 纠偏，b6cbb55 批次）
+
+> 范围：定级表修小 9 项（oneshot/pbkdf2/prime/keygen/random/dh-buffer/dh-curves/aes-tag/DEP0031/sign-verify/sec-level）。
+> 动作：残留 diff 逐 hunk 审查（9 改 +1 新文件皆在定级表内；无 secrets；命名守门过），
+> 铁律 4.43（lock digest 双轨 0.10.7+0.11.3、sha2 双轨、rsa 0.9.10、hmac 0.13 确认，
+> 无新依赖）先查；4.54/4.135 逐件真机（node 26.8.1）双向钉死。
+> 前任残留 6 处纠偏（真机实测为准翻转，均在定级表意图内）：
+> 1. DH 常量错位（2/4/8/16→1/2/4/8；Q/J 常量 node 无，删）。
+> 2. verifyError 单值早返→或组合（130/136/137/139 全表钉死；p=2 偶数判 1；
+>    q 仅素数 p 查；<512 置 128；g≥p-1 置 8）。
+> 3. BAD_GENERATOR：g≥p 抛→g≤1 抛（crypto_dh.cc 实测）+ OSSL3 限 `bits(p)≥512 && g≥p` 才抛。
+> 4. buffer 编码大小写不敏感→严格（DH/ECDH encode 仅精确 'buffer'/falsy 回 Buffer）。
+> 5. sign library 预触碰→错误构造期 `=` 赋值（valid-key+setter 不抛、errorStack 永不碰，sv5 探针钉死）。
+> 6. 未知 DH 组码/文案（ERR_NOT_SUPPORTED+后缀→ERR_CRYPTO_UNKNOWN_DH_GROUP/'Unknown DH group'）。
+> 新增对齐（同批意图内）：hash options 对象形 + XOF length、random assertSize（截断/NaN/SAB/pseudoRandomBytes/prng/rng 描述符）、pbkdf2/checkPrime/generatePrime/randomFill 同步校验、DH（keyEncoding 顺延/number 形安全素数+512 门/INVALID_KEYLEN 分级/generateKeys 编码/prime ArrayBuffer/64MB 门）、keygen（dh/rsa-pss/ec 全校验）、sign-verify（padding/saltLength/dsaEncoding 门、PSS salt 消解+verify AUTO 试探、RSA padding 门、key null 门）、ECDH（format/压缩点/setPublicKey 校验+DER 存/存对检查/INVALID_PUBLIC_KEY/未初始化文案/DEP0031 warn-once）、subtleOp DOMException 名、AES-GCM params 包进 subtleOp。
+> 证据（本机二进制，--run 直跑 node-test 文件）：
+> - 绿：random、oneshot-hash、pbkdf2、prime、dh-curves、ecdh-setpublickey-deprecation、sec-level、webcrypto-aes-decrypt-tag-too-small（8 件）。
+> - keygen：校验全部通过，转慢 RSA-4096 生成（单次 ~44s debug；文件十余次，本地后台求正确性，sweep 25s 必 TIMEOUT，属环境性能墙，非语义红）。
+> - sign-verify：修小断言全过；剩 EdDSA-context 段（559 行起，eddsa-variants 修中面，需 ed25519-ctx/ed448 原生 + RFC8032 向量，未动）。
+> - test-crypto-dh.js：18 行 number-form 需 1024-bit 安全素数（OpenSSL 实测安全素数；我方 naive 搜索 ~12min debug，sweep 必 TIMEOUT）。已按真机实现（safe:true + 全校验门），正确性经小尺寸/群组探针逐项验证；要翻绿需快速素数底座（openssl crate=新依赖待批，或固定参数表=语义偏离待批），提请 parent 定夺。
+> - 黑盒：tests/node/crypto 29/29 绿（含新增 assertSize/options/prime/DH-flag 三件）；冒烟 5/5；check-naming + check-lines 双守门绿（含 split-js 切 crypto_sign_rsacrypt.js）。
+> - 备注：中途遇 SpiderMonkey bundle 解析惊魂，实为构建竞态 stale 二进制（V8 过 + 重编即好）；教训：改 JS 后先验二进制新鲜度（mtime + strings 标记）再二分，记 4.323。

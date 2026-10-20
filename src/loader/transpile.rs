@@ -126,6 +126,28 @@ fn load_js_uncached(
     path: &Path,
     cjs_goal: bool,
 ) -> Result<LoadedSource, Error> {
+    // JSON 模块（`import d from './x.json' with { type: 'json' }`，whatwg
+    // encoding-singlebyte）：oxc 无 `.json` 方言 → JSON 合法即包
+    // `export default` 直喂 CompileModule（node: JSON 模块仅默认导出，
+    // 具名/namespace 形不受支持）。属性缺失不强制（套件内无裸 `.json`
+    // import 断言；ERR_IMPORT_ATTRIBUTE_MISSING 零覆盖），cjs_goal 下
+    // 不可达（require 的 `.json` 分支早于此处分流，见 require.rs）。
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("json"))
+        .unwrap_or(false)
+    {
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(text) {
+            return Err(Error::Other(format!("'{filename}' is not valid JSON ({e})")));
+        }
+        return Ok(LoadedSource {
+            js: format!("export default {text};"),
+            imports: Vec::new(),
+            is_module: true,
+            map: None,
+        });
+    }
     let allocator = Allocator::default();
     // 无扩展名入口（`type: module` 包的 extensionless bin）按 `.js` 解析；
     // 模块/经典由调用方定（此处只定语法方言）。CJS goal 保 from_path 的
@@ -239,5 +261,22 @@ mod tests {
         let err = load_js_uncached("const = 1;\n", "bad.js", Path::new("bad.js"), false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("bad.js:1:7"), "location: {msg}");
+    }
+
+    #[test]
+    fn json_module_wraps_default_export() {
+        let loaded =
+            load_js_uncached(r#"{"a":1,"b":[true,null]}"#, "d.json", Path::new("d.json"), false)
+                .unwrap();
+        assert!(loaded.is_module);
+        assert!(loaded.imports.is_empty());
+        assert_eq!(loaded.js, r#"export default {"a":1,"b":[true,null]};"#);
+    }
+
+    #[test]
+    fn json_module_rejects_invalid() {
+        let err =
+            load_js_uncached("{\"a\":}", "bad.json", Path::new("bad.json"), false).unwrap_err();
+        assert!(err.to_string().contains("is not valid JSON"), "msg: {err}");
     }
 }

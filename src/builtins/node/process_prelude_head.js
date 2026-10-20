@@ -13,7 +13,8 @@ function __wjs2_stdio_stream(fd) {
       if (cb) queueMicrotask(() => cb());
       return r;
     },
-    get isTTY() { return __wjs2_stdio_istty(fd); },
+    get isTTY() { return this.__wjs2_isTTY ?? __wjs2_stdio_istty(fd); },
+    set isTTY(v) { this.__wjs2_isTTY = v; },
     clearLine() { return __wjs2_stdio_istty(fd); },
     cursorTo() { return __wjs2_stdio_istty(fd); },
     getColorDepth() { return __wjs2_stdio_istty(fd) ? 8 : 1; },

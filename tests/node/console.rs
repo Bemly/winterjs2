@@ -444,3 +444,93 @@ console.log("warns", JSON.stringify(warns));
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn console_global_routing_faces() {
+    // 正常：补丁 process.stdout.write 捕获 count/log 输出；
+    // console._stdout/_stderr 设定后走自定义流；clear 在 isTTY 写转义、
+    // 非 TTY 静默；diagnostics channel 收到原参数；
+    // 报错：自定义流同步写错即吞（ignoreErrors 缺省真）；
+    // 边界：恢复补丁/自定义流后走原生，输出仍正常。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { channel } from "node:diagnostics_channel";
+import { Writable } from "node:stream";
+const tty0 = process.stdout.isTTY;
+let buf = "";
+const origWrite = process.stdout.write;
+process.stdout.write = (s) => { buf += String(s); return true; };
+console.count();
+console.log("hi", 42);
+process.stdout.write = origWrite;
+console.log("captured", JSON.stringify(buf));
+let s1 = "", s2 = "";
+const w1 = new Writable({ write(c, e, cb) { s1 += String(c); cb(); } });
+const w2 = new Writable({ write(c, e, cb) { s2 += String(c); cb(); } });
+console._stdout = w1;
+console._stderr = w2;
+console.log("to-s1");
+console.error("to-s2");
+await new Promise((r) => setTimeout(r, 50));
+console._stdout = undefined;
+console._stderr = undefined;
+console.log("routed", JSON.stringify(s1), JSON.stringify(s2));
+const seen = [];
+for (const m of ["log", "info", "debug", "warn", "error"]) {
+  channel(`console.${m}`).subscribe((a) => seen.push(`${m}:${a.length}`));
+}
+console.log("a", 1);
+console.info("b");
+console.debug("c");
+console.warn("d");
+console.error("e");
+await new Promise((r) => setTimeout(r, 50));
+console.log("channels", JSON.stringify(seen));
+process.stdout.isTTY = true;
+let cbuf = "";
+process.stdout.write = (s) => { cbuf += String(s); return true; };
+console.clear();
+process.stdout.write = origWrite;
+let cbuf2 = "";
+process.stdout.write = (s) => { cbuf2 += String(s); return true; };
+process.stdout.isTTY = false;
+console.clear();
+process.stdout.write = origWrite;
+process.stdout.isTTY = tty0;
+const termDumb = process.env.TERM === "dumb";
+console.log("clear-tty", JSON.stringify(cbuf), "clear-plain", JSON.stringify(cbuf2));
+console.log("clear-expect", JSON.stringify(termDumb ? "" : "\u001b[1;1H\u001b[0J"));
+const boom = new Writable({ write() { throw new Error("x-boom"); } });
+console._stdout = boom;
+console.log("swallowed");
+console._stdout = undefined;
+console.log("after-swallow ok");
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "captured \"default: 1\\nhi 42\\n\"",
+        "routed \"to-s1\\n\" \"to-s2\\n\"",
+        "channels [\"log:2\",\"info:1\",\"debug:1\",\"warn:1\",\"error:1\"]",
+        "clear-plain \"\"",
+        "after-swallow ok",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    // clear TTY 形随 TERM（dumb 即静默，真机同；套件 test-console-clear 同口径）。
+    let expect = if out.contains("clear-expect \"\"") {
+        "clear-tty \"\""
+    } else {
+        "clear-tty \"\\u001b[1;1H\\u001b[0J\""
+    };
+    assert!(out.contains(expect), "missing {expect}, out: {out}");
+    dir.close().unwrap();
+}

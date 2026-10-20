@@ -50,8 +50,15 @@ function __netErr(code, msg) {
 }
 // node lib/_http_agent.js writeAfterFIN 逐字口径（原 agent 挂载，现 socket 自门）：
 // 对端 FIN 后写 → EPIPE（'This socket has been ended by the other party'）+ 销毁。
+// 已销毁优先抛 DESTROYED（write() 同序；epipe 黑盒 close 后同步写点名）。
 function __writeAfterFIN(chunk, encoding, cb) {
   if (typeof encoding === "function") { cb = encoding; encoding = null; }
+  if (this.destroyed) {
+    const e2 = new Error("Cannot call write after a stream was destroyed");
+    e2.code = "ERR_STREAM_DESTROYED";
+    if (typeof cb === "function") { queueMicrotask(() => { try { cb.call(this, e2); } catch {} }); return false; }
+    throw e2;
+  }
   const er = new Error("This socket has been ended by the other party");
   er.code = "EPIPE";
   try { this.destroy(er); } catch { /* gone */ }

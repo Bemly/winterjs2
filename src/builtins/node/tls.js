@@ -75,6 +75,8 @@ function __tlsErr(code, msg) {
   e.code = code;
   return e;
 }
+// rustls 名失配哨兵（链错原文捕获、名错记哨兵走 checkServerIdentity；见 tls_wrap.rs）。
+const __NAME_MISMATCH = "__wjs2_name_mismatch__";
 function __pemOf(v) {
   if (v === undefined || v === null) return undefined;
   if (Array.isArray(v)) return v.map(__pemOf).filter((x) => x !== undefined).join("\n");
@@ -113,10 +115,8 @@ function __legacyCert(b64) {
 
 class TLSSocket extends Socket {
   constructor(socket, options) {
-    // node：new TLSSocket([socket][, options])——首参非 Socket 的对象即 options。
-    // node internal/tls/wrap.js TLSSocket(socket, opts)：无 options 交换形——socket 参
-    // 须为 Duplex 系（net.Socket/流包裹），否则 TypeError（JSStreamSocket 构造期错）；
-    // allowHalfOpen：有 socket 参即取 socket 自身（选项被忽略），无参才读选项。
+    // node internal/tls/wrap.js TLSSocket(socket, opts)：首参非 Socket 即 options；
+    // socket 须为 Duplex 系否则 TypeError；allowHalfOpen 有 socket 参即取 socket 自身。
     const __hasSock = socket !== undefined && socket !== null;
     if (__hasSock && !(socket instanceof Socket) && !(socket instanceof __Duplex)) {
       throw new __tlsCodes.ERR_INVALID_ARG_TYPE("socket", "net.Socket", socket);
@@ -131,8 +131,7 @@ class TLSSocket extends Socket {
     this.__tls = null;
     this.__tlsOpts = options ?? {};
     this.__wrapped = socket ?? null;
-    // P2-tls-b 包裹面（node internal/tls/wrap 口径）：verifyError 不销毁——纯构造路径
-    // 经 ssl.verifyError() 上报；onConnectSecure 仅 tls.connect() 包装层安装。
+    // P2-tls-b 包裹面：verifyError 不销毁、经 ssl.verifyError() 上报；onConnectSecure 仅包装层安装。
     this.__isServer = !!(this.__tlsOpts && this.__tlsOpts.isServer === true);
     this.__verifyErr = null;
     this.ssl = { verifyError: () => (this.__verifyErr !== null ? this.__verifyErr : null) };
@@ -141,8 +140,7 @@ class TLSSocket extends Socket {
     this.__tlsCloseDone = false;
     this.__wrappedClosed = false;
     this.__sniCalled = false;
-    // isServer 包裹（STARTTLS / net.Server 面）：socket 在手即起引擎（node 同形——
-    // TLS 柄随构造建立，ClientHello 到达即推进）。
+    // isServer 包裹（STARTTLS/net.Server 面）：socket 在手即起引擎（node 同形）。
     if (this.__isServer && this.__wrapped) {
       this.__wrapWire(this.__wrapped, this.__tlsOpts, false);
       this.readable = true; this.writable = true;
@@ -166,38 +164,31 @@ class TLSSocket extends Socket {
     }
     if (typeof options === "function") { cb = options; options = {}; }
     const mo = (this.__tlsOpts = { ...this.__tlsOpts, ...options });
-    // node normalizeConnectArgs：positional 形的 port/host 并回选项面（onConnectEnd
-    // 的 ECONNRESET 字段 e.host/e.port 从**给定**选项读——缺省 localhost 不回灌）。
+    // node normalizeConnectArgs：positional port/host 并回选项面（ECONNRESET 字段从给定选项读，缺省不回灌）。
     if (typeof args[0] === "number") mo.port = args[0];
     if (typeof args[0] !== "object" && typeof args[1] === "string") mo.host = args[1]; // node：对象形后随串忽略
     this.__verify = mo.rejectUnauthorized !== false;
-    // node isPipeName 口径：path 形两来源——首参串（tls.connect(path,...)）或选项 .path
-    // （tls.connect({path},...)）；其余 host 缺省 localhost。
+    // node isPipeName 口径：path 形两来源——首参串或选项 .path；其余 host 缺省 localhost。
     const isPath = (typeof args[0] === "string" && args[0] !== "")
       || (typeof args[0] === "object" && args[0] !== null && typeof args[0].path === "string" && args[0].path !== "");
     const pathVal = isPath ? (typeof args[0] === "string" ? args[0] : args[0].path) : undefined;
-    // node exports.connect：prependListener('end', onConnectEnd)——握手完成前对端
-    // 断开 → ConnResetException（ECONNRESET，带 connect 选项面 path/host/port）；
-    // onConnectSecure 内摘除。
+    // node exports.connect：prependListener('end', onConnectEnd)——握手前对端断开即 ECONNRESET；onConnectSecure 内摘除。
     if (this.__viaConnectApi) {
       this.once("secure", () => this.__onSecureClient());
       this.prependListener("end", this.__onConnectEnd);
     }
     if (mo.socket !== undefined && mo.socket !== null) {
-      // tls.connect({socket})（node exports.connect：cb 经 onConnectSecure→'secureConnect'）。
+      // tls.connect({socket})：cb 经 onConnectSecure→'secureConnect'（node exports.connect 口径）。
       if (cb) this.once("secureConnect", cb);
       return this.__wrapConnect(mo);
     }
     if (!this.__viaConnectApi || isPath) {
       if (isPath) {
-        // node tls.connect(path[, options][, cb])：UDS——内建 net.Socket 直连后走包裹
-        // 引擎（rustls 由 JS 字节驱动，pipe/IPC 天然支持）；viaConnectApi 时 cb 挂
-        // secureConnect（node exports.connect 口径）。
+        // node tls.connect(path[, options][, cb])：UDS 内建 net.Socket 直连后走包裹引擎；via 形 cb 挂 secureConnect。
         if (cb) this.once("secureConnect", cb);
       }
       {
-      // 纯 TLSSocket 直拨（node 继承 net.Socket.connect 口径：cb 挂 'connect'；TLS 走
-      // 包裹引擎——verifyError 不销毁、'secure' 上报，onConnectSecure 不安装）。
+      // 纯 TLSSocket 直拨（node net.Socket.connect 口径：cb 挂 'connect'；verifyError 不销毁、'secure' 上报）。
       const inner = new Socket({ allowHalfOpen: !!mo.allowHalfOpen });
       const dial = { ...mo };
       if (isPath) dial.path = pathVal;
@@ -218,7 +209,7 @@ class TLSSocket extends Socket {
     if (cb) this.once("secureConnect", cb);
     const sc = mo.secureContext?.context ?? {};
     const wire = {};
-    const servername = mo.servername ?? (host && !__isIP(host) ? host : undefined);
+    const servername = mo.servername || (host && !__isIP(host) ? host : undefined);
     if (servername !== undefined) wire.servername = String(servername);
     // node：显式 secureContext 在场即整体采用（ca 等选项不再读）；否则读 ca 选项。
     const ca = mo.secureContext !== undefined
@@ -238,8 +229,7 @@ class TLSSocket extends Socket {
     return this;
   }
   get bufferSize() {
-    // node：bufferSize = 柄写队列；wrap 模式镜像 wrapped 流的 writableLength，
-    // 销毁（柄空）后 undefined。直拨面维持 net 口径。
+    // node：柄写队列；wrap 镜像 wrapped.writableLength，销毁后 undefined；直拨维持 net 口径。
     if (this.__wrapped) {
       if (this.destroyed || this._handle === null) return undefined;
       return this.__wrapped.writableLength ?? this.__pendBytes;
@@ -255,16 +245,45 @@ class TLSSocket extends Socket {
     }
     this._secureEstablished = false;
   }
+  __nameCheck() { // 名失配哨兵 → checkServerIdentity 定夺（node onConnectSecure 口径；过放行，错落位）。
+    const mo = this.__wrapOpts ?? this.__tlsOpts ?? {};
+    let r = null;
+    try { r = (mo.checkServerIdentity ?? checkServerIdentity)(this.servername ?? this.__targetHost ?? "localhost", this.getPeerCertificate(true)) || null; } catch (e) { r = e; }
+    this.__nameChecked = true;
+    if (r !== null) { this.__verifyErr = r; this.authorized = false; this.authorizationError = r.code ?? r.message; }
+    return r;
+  }
   __applyTlsInfo(info) {
     this.__tls = info;
     this.alpnProtocol = info.alpn ?? false;
     if (info.servername) this.servername = info.servername;
-    // 捕获式校验错（rejectUnauthorized:false 面）：authorized=false 但连接存活。
+    // node：服务端无 SNI 即 servername=false（非 null；sni 套件 '' 形点名）。
+    else if (this.__tlsServer || this.__isServer) this.servername = false;
+    // 捕获式校验错：哨兵走身份校验（通过即放行）；链错原文映射（reject 面由连接事件收口）。
     if (info.verifyErr && this.__verifyErr === null) {
+      if (String(info.verifyErr) === __NAME_MISMATCH) { this.__nameCheck(); return; }
       this.__verifyErr = __handshakeErr(String(info.verifyErr), this.servername ?? this.__targetHost);
       this.authorized = false;
       this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
     }
+  }
+  __secureVerdict() { // node onConnectSecure 裁决段：捕获错/身份校验落授权位；false=须销毁（调用方冲刷前销毁，不发应用字节）。
+    const mo = this.__tlsOpts ?? {};
+    let verifyError = this.__verifyErr;
+    if (!verifyError && !this.__nameChecked) {
+      const csi = typeof mo.checkServerIdentity === "function" ? mo.checkServerIdentity : checkServerIdentity;
+      try { verifyError = csi(this.servername ?? this.__targetHost, this.getPeerCertificate(true)) || null; } catch (e) { verifyError = e; }
+    }
+    this.__verdictDone = true;
+    if (verifyError) {
+      this.authorized = false;
+      this.authorizationError = verifyError.code || verifyError.message;
+      if (mo.rejectUnauthorized !== false) { this.__verifyErr = verifyError; return false; }
+      return true;
+    }
+    this.authorized = true;
+    this.authorizationError = null;
+    return true;
   }
   __ev(kind, payload) {
     if (kind === "tlsInfo") {
@@ -290,6 +309,16 @@ class TLSSocket extends Socket {
       }
     }
     if (kind === "connect") {
+      // 链错 + 须校验：node 握手硬失败口径——无 'secure' 直错（名错已在身份校验定夺，不进此支）。
+      if (this.__verifyErr && !this.__nameChecked && (this.__tlsOpts ?? {}).rejectUnauthorized !== false) {
+        this.destroy(this.__verifyErr);
+        return;
+      }
+      // via 面裁决先于 base 冲刷（定夺前不发应用字节；失败销毁，预连写弃置不上网）。
+      if (this.__viaConnectApi && !this.__secureVerdict()) {
+        this.destroy(this.__verifyErr);
+        return;
+      }
       // 握手已过：授权位按校验捕获面落位（node onConnectSecure 口径——无错即
       // authorized=true；rejectUnauthorized:false 时校验错不销毁、只记位）。
       if (this.__verifyErr) {
@@ -302,16 +331,14 @@ class TLSSocket extends Socket {
       this._secureEstablished = true;
       super.__ev(kind, payload);
       this.emit("secure");
-      // node：secureConnect 仅由 onConnectSecure 发（tls.connect() 包装层监听
-      // 'secure' 安装）——此处直发会与之双发。
+      // node：secureConnect 仅由 onConnectSecure 发（此处直发会双发）。
       return;
     }
     return super.__ev(kind, payload);
   }
 
   // ── P2-tls-b：TLSSocket 包裹面（node internal/tls/wrap 对应件）──────────
-  // rustls Connection 由 JS 字节驱动：wrapped socket 密文 → __wjs2_tls_wrap_feed，
-  // 回程 JSON 带密文（写回 wrapped）/明文（交付本 socket）/握手状态/校验捕获。
+  // rustls 由 JS 字节驱动：wrapped 密文经 feed 推进，回程带密文/明文/握手旗/校验捕获。
   __wrapWire(wrapped, mo, forwardConnect) {
     this.__wrapped = wrapped;
     this.__wrapOpts = mo;
@@ -335,8 +362,7 @@ class TLSSocket extends Socket {
     this.__wrapWire(mo.socket, mo, true);
     this.readable = true; this.writable = true;
     this._handle = this.__makeHandle();
-    // node _start 口径：connecting 则挂 'connect'，已连则立即起手；非 net.Socket 流
-    // （Duplex 包裹，JSStreamSocket 形）无 connect 生命周期——流即活，microtask 起手。
+    // node _start 口径：connecting 挂 'connect'，已连立即起手；非 net.Socket 流无 connect 生命周期、microtask 起手。
     const w = mo.socket;
     if (w instanceof Socket) {
       if (w.__connected === true) this.__tlsBegin();
@@ -352,8 +378,7 @@ class TLSSocket extends Socket {
     }
     const wire = {};
     if (this.__isServer) {
-      // node TLSSocket(server 面)：secureContext 显式在场即整体采用；否则 key/cert
-      // 直给选项（internal/tls/wrap.js 同）现构 SecureContext。
+      // node TLSSocket(server 面)：secureContext 显式在场即整体采用，否则 key/cert 直给现构。
       let sc = mo.secureContext?.context;
       if (sc === undefined && mo.key !== undefined && mo.cert !== undefined) {
         sc = createSecureContext(mo).context;
@@ -384,8 +409,7 @@ class TLSSocket extends Socket {
     if (this.ALPNProtocols !== undefined) {
       wire.alpnB64 = Buffer.from(this.ALPNProtocols).toString("base64");
     } else if (this.__tlsServer?.ALPNProtocols !== undefined) {
-      // 服务端 accept 出的 socket 继承 server 的 ALPN 表（已是 wire 形 Buffer；
-      // __isServer 旗在包裹时才立，此处认 __tlsServer 归属）。
+      // accept 出的 socket 继承 server ALPN 表（wire 形；归属认 __tlsServer）。
       wire.alpnB64 = Buffer.from(this.__tlsServer.ALPNProtocols).toString("base64");
     }
     return wire;
@@ -414,6 +438,15 @@ class TLSSocket extends Socket {
     }
     if (r.out) this.__wrapped.write(Buffer.from(r.out, "base64"));
     if (r.plain) this.__ingestData(Buffer.from(r.plain, "base64"));
+    // 包裹面校验捕获（名失配哨兵走身份校验定夺；链错原文映射；处置收口见 secure 面）。
+    if (r.verifyErr !== undefined && r.verifyErr !== null && this.__verifyErr === null) {
+      if (String(r.verifyErr) === __NAME_MISMATCH) { this.__nameCheck(); }
+      else {
+        this.__verifyErr = __handshakeErr(String(r.verifyErr), this.servername ?? this.__targetHost);
+        this.authorized = false;
+        this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
+      }
+    }
     if (r.info) {
       try { this.__applyTlsInfo(r.info); } catch { /* 坏载荷即无信息 */ }
     }
@@ -424,17 +457,11 @@ class TLSSocket extends Socket {
         try { this.__SNICB(r.sni, () => {}); } catch { /* 回调抛错不阻握手（上下文换装另案） */ }
       }
     }
-    if (r.verifyErr !== undefined && r.verifyErr !== null && this.__verifyErr === null) {
-      this.__verifyErr = __handshakeErr(String(r.verifyErr), this.servername ?? this.__targetHost);
-      this.authorized = false;
-      this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
-    }
     if (r.hs && !this._secureEstablished) this.__finishInit();
     else if (r.eof && !this.__eofDone) this.__tlsEof();
   }
   __finishInit() {
-    // node TLSSocket._finishInit：_secureEstablished + 'secure'；本仓加连接期收尾
-    // （remote 面继承 wrapped、连接期缓冲写经 TLS 冲刷、end 排队补发）。
+    // node TLSSocket._finishInit + 连接期收尾（remote 继承 wrapped、缓冲写冲刷、end 补发）。
     this._secureEstablished = true;
     this.__connected = true;
     const w = this.__wrapped;
@@ -487,7 +514,7 @@ class TLSSocket extends Socket {
     this.emit("close", this.__hadError === true);
   }
   __onConnectEnd() {
-    // node onConnectEnd：握手完成前 underlying 'end' → ECONNRESET（destroy 递送）。
+    // node onConnectEnd：握手完成前对端断开 → ECONNRESET（destroy 递送）。
     if (this._secureEstablished) return;
     const mo = this.__tlsOpts ?? {};
     const e = new Error("Client network socket disconnected before secure TLS connection was established");
@@ -499,25 +526,9 @@ class TLSSocket extends Socket {
     this.destroy(e);
   }
   __onSecureClient() {
-    // node onConnectSecure：摘 onConnectEnd（1817 行）。
-    this.removeListener("end", this.__onConnectEnd);
-    // node onConnectSecure：verifyError（捕获面）→ checkServerIdentity（可覆写）→
-    // rejectUnauthorized 决定 destroy；authorized/authorizationError 落位后发 secureConnect。
-    const mo = this.__tlsOpts ?? {};
-    let verifyError = this.__verifyErr;
-    if (!verifyError) {
-      const csi = typeof mo.checkServerIdentity === "function" ? mo.checkServerIdentity : checkServerIdentity;
-      try {
-        verifyError = csi(this.servername ?? this.__targetHost, this.getPeerCertificate(true)) || null;
-      } catch (e) { verifyError = e; }
-    }
-    if (verifyError) {
-      this.authorized = false;
-      this.authorizationError = verifyError.code || verifyError.message;
-      if (mo.rejectUnauthorized !== false) { this.destroy(verifyError); return; }
-    } else {
-      this.authorized = true;
-    }
+    this.removeListener("end", this.__onConnectEnd); // node onConnectSecure：摘 onConnectEnd（1817 行）。
+    // 裁决已在 connect 事件预跑（冲刷前）；wrap-via 面 secure 直达，此处置行。
+    if (!this.__verdictDone && !this.__secureVerdict()) { this.destroy(this.__verifyErr); return; }
     this.emit("secureConnect");
   }
   __nativeWrite(u8) {

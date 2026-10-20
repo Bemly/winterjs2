@@ -289,36 +289,6 @@ pub(crate) fn h2_err_msg_rst(e: &hyper::Error) -> (String, Option<u32>) {
 
 // ── 服务端 ──────────────────────────────────────────────────────────────────
 
-/// 读全请求体（整收口径；trailer 一并收集。错即 Err）。
-pub(crate) async fn read_body(
-    body: hyper::body::Incoming,
-) -> Result<(Vec<u8>, Vec<(String, String)>), (String, Option<u32>)> {
-    use http_body::Body as _;
-    use std::future::poll_fn;
-    let mut body = body;
-    let mut out = Vec::new();
-    let mut trailers: Vec<(String, String)> = Vec::new();
-    loop {
-        match poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
-            None => return Ok((out, trailers)),
-            Some(Ok(f)) => {
-                if let Some(d) = f.data_ref() {
-                    out.extend_from_slice(d);
-                }
-                if let Some(t) = f.trailers_ref() {
-                    for (k, v) in t.iter() {
-                        trailers.push((
-                            k.as_str().to_owned(),
-                            String::from_utf8_lossy(v.as_bytes()).into_owned(),
-                        ));
-                    }
-                }
-            }
-            Some(Err(e)) => return Err(h2_err_msg_rst(&e)),
-        }
-    }
-}
-
 /// 服务端请求体泵：逐帧转 `body`（b64 块）/ `reqEnd`（trailers JSON）流事件；
 /// 对端 RST 等中断转 `aborted`（payload 为 RST 码，JS 侧落 `stream.rstCode`）。
 async fn pump_request_body(

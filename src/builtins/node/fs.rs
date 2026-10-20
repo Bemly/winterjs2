@@ -97,24 +97,16 @@ pub(crate) fn arg_path_checked(
     Some(path)
 }
 
-/// 路径实参（string|URL；`file:` URL 转本地路径；BufferSource 拒之）。
+/// 路径实参（字符串字面；URL 对象由 JS `__fsPath` 经 `fileURLToPath`
+/// 先行转串，真机同款。`file:…` 字面串不得嗅探为 URL
+///（whatwg fs-whatwg-url：`file:foo` 是相对路径；曾在此 parse 致根路径 ENOENT）。
 pub(crate) fn arg_path(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32, what: &str) -> Option<String> {
     if frame.argc() <= i {
         report_error(cx, &format!("TypeError: {what} needs a path"));
         return None;
     }
     let v = frame.arg(i);
-    let s = value_to_string(cx, v);
-    // file: URL 形如 file:///tmp/x → 本地路径（Node 行为）。
-    if let Ok(url) = url::Url::parse(&s)
-        && url.scheme() == "file"
-    {
-        return url.to_file_path().map(|p| p.to_string_lossy().into_owned()).ok().or_else(|| {
-            report_error(cx, &format!("TypeError: {what}: bad file URL"));
-            None
-        });
-    }
-    Some(s)
+    Some(value_to_string(cx, v))
 }
 
 /// 数据实参（string 按 utf8；Uint8Array/ArrayBuffer 视图；其余 TypeError）。

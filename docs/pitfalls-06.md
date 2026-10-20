@@ -137,3 +137,75 @@
  （nextTick 先于 disconnect  fired，且 fired 必达）。
 - 推广铁律：**双向通道"先关后收"必丢信**——关的一方永远是收完的一方；
   超时兜底 + 幂等派发是标准件。
+
+### 4.280 close 的 Rust 侧 uncount 必须与 'close' 发射同 microtask（2026-10-20，W1）
+
+- 症状：MessagePort `close()` 后进程 139（等长改名对照：26 字符文件名必崩、短名过——初判堆布局问题）。
+- 根因：先 Rust uncount（`port_close`）再异步发射 'close'，事件循环在发射前排空进入 teardown，悬空发射触碰已销毁状态即 SEGV（§4.8 家族）。
+- 修法：`__wjs2_port_close` 随发射同 microtask（finally 保底）；JS 可见态（`__closed`/清队列）仍同步。
+- 复现：全量 message-port 套件（单块二分全过、整文件 139）。
+- 推广铁律：**续命账与事件发射必须同节拍**——凡先减数后异步通知的，一律合并到同一微任务。
+
+### 4.281 `Route::Local` 跨会话 ID 碰撞误投（2026-10-20，W1 channel 块 3）
+
+- 症状：跨线程转移端口后回包打转（worker 发回 main 的消息回环到 worker 自身）。
+- 根因：各会话 `worker_next_id` 各自计数，main 的 peer id 极易撞上本会话本地端口 id；Local 捷径只验 `q.id == p.peer` 即命中冒名者。
+- 修法：加互惠校验 `q.peer == p.id`（真本地对恒互指）。
+- 复现：message-channel 块 3（eval worker 跨线程端口）。
+- 推广铁律：**跨会话寻址禁裸 id 匹配**——凡进程级 id 落到会话级表，必须互惠/归属双校验。
+
+### 4.282 转移后源端 neutered，再校验即误判 detached（2026-10-20，W1）
+
+- 症状：自杀式投递判定恒 false（peer-check 明明 true）。
+- 根因：判定跑在 `__toWire` 之后——转移已 offer/neuter，复检清单即撞 "already detached" 被 catch 吞掉。
+- 修法：判定必须在转移前（resolve→判定→组装单次，生成器禁二次消费见 4.283）。
+- 推广铁律：**校验与变更之间禁插状态依赖**——判定用转移前的快照，变更后不再复检。
+
+### 4.283 生成器 transfer 清单禁二次消费（2026-10-20，W1）
+
+- 症状：`postMessage({ab}, (function*(){yield ab})())` 后 `ab.byteLength` 未 detach。
+- 根因：判定与组装各 resolve 一次，生成器第二次 spread 为空。
+- 修法：单次 `__resolveTransfer`，判定与组装共享清单（`__toWireList`）。
+- 推广铁律：**一次性可迭代对象单次归一**——归一结果向下游传，不向上传。
+
+### 4.284 视图/SAB 在 transfer 清单中恒非法（2026-10-20，W1）
+
+- 症状：自实现允许视图 transfer；真机一律 `Found invalid value in transferList.`。
+- 根因：臆测语义——node transferable 只有 ArrayBuffer/MessagePort（视图传 `[v.buffer]`）。
+- 修法：视图/SAB/杂项条目一律该文案；重复 AB/端口各有专用文案。
+- 推广铁律：**transfer 名单以真机为准**——先探 `[同值×2]/[视图]/[SAB]/[数字]` 五形再写分类。
+
+### 4.285 真机 `close()` 语义三态（2026-10-20，W1）
+
+- 症状：close suites 组合失败（self-close 双调 cb 响、对端关后 close 静默、混合态亦静默）。
+- 根因：自关（cb 随事件）/对端关（`__peerClosed` 压倒一切，此后 close 全静默，连 cb 都不调）/混合（对端态赢）三态各异；`PortClose` 原只记账不透事件。
+- 修法：`peer-close` 经 `__ev` 透出（幂等去重 + 异步发射，`__closeEmitted` 防双发）；worker 消亡走 `port_sweep_dead_routes` 传递闭包（转发器收件箱 closed + 本地 peer 链）。
+- 推广铁律：**远端状态本地化必须显式建模**——peer-closed 不是 closed 的子集，单独成旗。
+
+### 4.286 转移端口自匹配 `Route::Local` 成环（2026-10-20，worker-messaging lane）
+
+- 症状：跨线程直投无限 pong。
+- 根因：承接侧新端口的 peer id 恰等于自身 id（offer/accept 同值），互惠校验（4.281）误判为真本地对。
+- 修法：Local 条件加 `q.via.is_none()`（accept 侧恒带 via，真本地对恒无 via）。
+- 推广铁律：**互惠校验再加来源校验**——id 互指可能是自指，来源（via）才是身份。
+
+### 4.287 孙线程发主误投父线程（2026-10-20，worker-messaging lane）
+
+- 症状：grandchild→main 的消息落在 parent 收件箱。
+- 根因：直投只认目标 inbox，不认派生链（node 系全线程直达主）。
+- 修法：dest 标签 + 派生链上转（worker→worker 直投保留，主 0 号走 `worker_main_inbox`）。
+- 推广铁律：**树形路由带 dest 标签**——中转节点只认标签不认亲缘。
+
+### 4.288 `defineProperty` 部分描述符保留可枚举性（2026-10-20，whatwg lane）
+
+- 症状：for-in 顺序/可枚举断言红——已删后重建仍不可枚举。
+- 根因：`{...oldDesc, enumerable: true}` 写法只在记得传时才对；部分调用漏传即沿用旧值。
+- 修法：凡重建必显式 `enumerable: false/true`，禁依赖展开继承。
+- 推广铁律：**描述符重建逐项显式**——展开即默认沿用，审计时按"缺项即 bug"查。
+
+### 4.289 跨 compartment 取 `this.href` 走原型链误品牌（2026-10-20，whatwg lane）
+
+- 症状：`toString` 内读 `this.href` 未触发品牌门（undefined 接收者漏检）。
+- 根因：访问器经原型链命中，`this` 合法即过，绕过自有槽检查。
+- 修法：品牌门读内部槽（`__wjs2_urlBrandRecv`），不用派生属性。
+- 推广铁律：**品牌检查认槽不认链**——凡 `Object.create` 派生可达的面（§4.23 家族），门必须直读内部槽。

@@ -7,6 +7,8 @@ pub const SOURCE: &str = r#"// Node 面的 12 类（各策略/控制器/reader�
 const ReadableStream = globalThis.ReadableStream;
 const WritableStream = globalThis.WritableStream;
 const TransformStream = globalThis.TransformStream;
+const TextEncoderStream = globalThis.TextEncoderStream;
+const TextDecoderStream = globalThis.TextDecoderStream;
 const CompressionStream = globalThis.CompressionStream;
 const DecompressionStream = globalThis.DecompressionStream;
 
@@ -14,9 +16,11 @@ export {
   ReadableStream,
   WritableStream,
   TransformStream,
+  TextEncoderStream,
+  TextDecoderStream,
   CompressionStream,
   DecompressionStream,
 };
-export default { ReadableStream, WritableStream, TransformStream, CompressionStream, DecompressionStream };
+export default { ReadableStream, WritableStream, TransformStream, TextEncoderStream, TextDecoderStream, CompressionStream, DecompressionStream };
 
 "#;

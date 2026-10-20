@@ -173,6 +173,30 @@ function __validateHeaderValue(name, value) {
     throw __code("ERR_INVALID_ARG_TYPE", `header "${name}"`, "string|number|boolean", value);
   }
 }
+// node validateLinkHeaderValue 逐字（write-early-hints 套件）：string 须合
+// link 形、array 逐元校验后 ", " 并串、余者 ERR_INVALID_ARG_VALUE。
+const __LINK_VALUE_RE = /^(?:<[^>\r\n]*>)(?:\s*;\s*[^;"\s]+(?:=(")?[^;"\s]*\1)?)*$/;
+const __LINK_VALUE_REASON = 'must be an array or string of format "</styles.css>; rel=preload; as=style"';
+function __validateLinkValue(value) {
+  if (typeof value === "string") {
+    if (!__LINK_VALUE_RE.test(value)) {
+      throw __code("ERR_INVALID_ARG_VALUE", "hints", value, __LINK_VALUE_REASON);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    let out = "";
+    for (let i = 0; i < value.length; i++) {
+      if (typeof value[i] !== "string" || !__LINK_VALUE_RE.test(value[i])) {
+        throw __code("ERR_INVALID_ARG_VALUE", "hints", value[i], __LINK_VALUE_REASON);
+      }
+      out += value[i];
+      if (i !== value.length - 1) out += ", ";
+    }
+    return out;
+  }
+  throw __code("ERR_INVALID_ARG_VALUE", "hints", value, __LINK_VALUE_REASON);
+}
 function __headerToWire(value) {
   if (Array.isArray(value)) return value.map((v) => String(v));
   return String(value);
@@ -340,6 +364,14 @@ function __mkSocketProxy(stream, server, peerObj) {
       if (prop === "_server") return server;
       const v = Reflect.get(t, prop);
       if (v !== undefined || prop in t) return v;
+      // node socketProxy 口径：未知属性一律走 session socket 背书
+      //（socket-set 套件：request.socket._isProcessing 与 session.socket 互通）。
+      const sess = stream.__session;
+      if (sess) {
+        const sock = sess.socket;
+        const sv = sock[prop];
+        return typeof sv === "function" ? sv.bind(sock) : sv;
+      }
       return server.__sockBag[prop];
     },
     set(t, prop, value) {
@@ -354,6 +386,8 @@ function __mkSocketProxy(stream, server, peerObj) {
       }
 
       if (prop === "setTimeout") { stream.session.setTimeout = value; return true; }
+      // 未知属性落 session socket（与 get 对称，node socketProxy 口径）。
+      if (stream.__session) { stream.__session.socket[prop] = value; return true; }
       t[prop] = value;
       server.__sockBag[prop] = value;
       return true;

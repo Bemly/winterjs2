@@ -731,3 +731,131 @@ fn namespace_user_predefine_kept() {
     ]));
     assert!(out.contains(r#"[42,"s","object"]"#), "out: {out}");
 }
+
+#[test]
+fn usp_invalid_receiver_and_args() {
+    // 正常：合法接收者调用；报错：非法接收者 ERR_INVALID_THIS、
+    // 缺参 ERR_MISSING_ARGS、Symbol 转换错；边界：迭代器 next 品牌门。
+    let out = stdout_of(winterjs2().args([
+        "--eval",
+        "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code + ':' + e.message; } };\n\
+         const p = new URLSearchParams('a=1');\n\
+         console.log('ok:' + p.get('a'));\n\
+         console.log('brand:' + t(() => p.get.call(undefined, 'a')));\n\
+         console.log('brand-iter:' + t(() => p.keys().next.call(undefined)));\n\
+         console.log('missing:' + t(() => p.get()));\n\
+         console.log('missing2:' + t(() => p.set('a')));\n\
+         console.log('sym:' + t(() => p.get(Symbol())));\n\
+         console.log('sym-ctor:' + t(() => new URLSearchParams(Symbol())));\n\
+         console.log('cb:' + t(() => p.forEach()));\n\
+         console.log('cb2:' + t(() => p.forEach(1)));",
+    ]));
+    assert!(out.contains("ok:1"), "out: {out}");
+    assert!(
+        out.contains("brand:TypeError:ERR_INVALID_THIS:Value of \"this\" must be of type URLSearchParams"),
+        "out: {out}"
+    );
+    assert!(
+        out.contains("brand-iter:TypeError:ERR_INVALID_THIS:Value of \"this\" must be of type URLSearchParamsIterator"),
+        "out: {out}"
+    );
+    assert!(out.contains("missing:TypeError:ERR_MISSING_ARGS:The \"name\" argument must be specified"), "out: {out}");
+    assert!(out.contains("missing2:TypeError:ERR_MISSING_ARGS:The \"name\" and \"value\" arguments must be specified"), "out: {out}");
+    assert!(out.contains("sym:TypeError:undefined:Cannot convert a Symbol value to a string"), "out: {out}");
+    assert!(out.contains("sym-ctor:TypeError:undefined:Cannot convert a Symbol value to a string"), "out: {out}");
+    assert!(out.contains("cb:TypeError:ERR_INVALID_ARG_TYPE:The \"callback\" argument must be of type function. Received undefined"), "out: {out}");
+    assert!(out.contains("cb2:TypeError:ERR_INVALID_ARG_TYPE:The \"callback\" argument must be of type function. Received type number (1)"), "out: {out}");
+}
+
+#[test]
+fn usp_lone_surrogate_replacement() {
+    // 正常：成对代理项往返；报错转向：lone surrogate 落 FFFD（构造/设置/键名三路）。
+    let out = stdout_of(winterjs2().args([
+        "--eval",
+        "const lone = String.fromCharCode(0xd83d);\n\
+         const s1 = new URLSearchParams('a=' + lone);\n\
+         console.log('ctor:' + s1.toString() + '|' + (s1.get('a') === '�'));\n\
+         const s2 = new URLSearchParams();\n\
+         s2.set('a', lone);\n\
+         s2.append(lone, 'x');\n\
+         console.log('set:' + s2.toString());\n\
+         console.log('lookup:' + (s2.get(lone) === s2.get('�')));\n\
+         console.log('iter:' + s2.keys().next().value);",
+    ]));
+    assert!(out.contains("ctor:a=%EF%BF%BD|true"), "out: {out}");
+    assert!(out.contains("set:a=%EF%BF%BD&%EF%BF%BD=x"), "out: {out}");
+    assert!(out.contains("lookup:true"), "out: {out}");
+    assert!(out.contains("iter:a"), "out: {out}");
+}
+
+#[test]
+fn url_global_shape_and_brand() {
+    // 正常：构造/解析；报错：零参 MISSING_ARGS、非法接收者品牌文案、
+    // 只读属性 V8 形错；边界：全局不可枚举、原型可枚举顺序、toStringTag。
+    let out = stdout_of(winterjs2().args([
+        "--eval",
+        "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code + ':' + e.message; } };\n\
+         console.log('desc:' + JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'URL')));\n\
+         const u = new URL('http://user:pass@foo.bar.com:21/aaa/zzz?l=24#test');\n\
+         const props = []; for (const k in u) props.push(k);\n\
+         console.log('forin:' + props.join(','));\n\
+         console.log('tag:' + u[Symbol.toStringTag] + '/' + u.searchParams[Symbol.toStringTag] + '/' + u.searchParams.entries()[Symbol.toStringTag]);\n\
+         console.log('noargs:' + t(() => new URL()));\n\
+         console.log('recv:' + t(() => Reflect.apply(URL.prototype.toString, [], {})));\n\
+         console.log('priv:' + t(() => Reflect.get(URL.prototype, 'protocol', {})));\n\
+         console.log('origin-set:' + t(() => { 'use strict'; u.origin = 'x'; }));\n\
+         console.log('sp-set:' + t(() => { 'use strict'; u.searchParams = 'x'; }));\n\
+         console.log('host-port:' + (() => { u.host = 'foo.bar.net:22'; return u.host + '|' + u.port; })());",
+    ]));
+    assert!(out.contains("\"enumerable\":false"), "out: {out}");
+    assert!(out.contains("forin:toString,href,origin,protocol,username,password,host,hostname,port,pathname,search,searchParams,hash,toJSON"), "out: {out}");
+    assert!(out.contains("tag:URL/URLSearchParams/URLSearchParams Iterator"), "out: {out}");
+    assert!(out.contains("noargs:TypeError:ERR_MISSING_ARGS:The \"url\" argument must be specified"), "out: {out}");
+    assert!(out.contains("recv:TypeError:undefined:Receiver must be an instance of class URL"), "out: {out}");
+    assert!(out.contains("priv:TypeError:undefined:Cannot read private member #context from an object whose class did not declare it"), "out: {out}");
+    assert!(out.contains("origin-set:TypeError:undefined:Cannot set property origin of [object URL] which has only a getter"), "out: {out}");
+    assert!(out.contains("sp-set:TypeError:undefined:Cannot set property searchParams of [object URL] which has only a getter"), "out: {out}");
+    assert!(out.contains("host-port:foo.bar.net:22|22"), "out: {out}");
+}
+
+#[test]
+fn text_decoder_coded_failures() {
+    // 正常：非 fatal 替换字符；报错：fatal 挂 ERR_ENCODING_INVALID_ENCODED_DATA
+    // 全小写文案、未知编码挂 ERR_ENCODING_NOT_SUPPORTED；边界：首尾 ASCII 空白
+    // 外的标签（\\u000b 等）仍拒，非 ASCII 空白 trim 不豁免。
+    let out = stdout_of(winterjs2().args([
+        "--eval",
+        "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code + ':' + e.message; } };\n\
+         console.log('replace:' + new TextDecoder().decode(new Uint8Array([255])).length);\n\
+         console.log('enc:' + new TextDecoder('UTF-8').encoding);\n\
+         console.log('fatal:' + t(() => new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array([255]))));\n\
+         console.log('fatal16:' + t(() => new TextDecoder('utf-16le', { fatal: true }).decode(new Uint8Array([0]))));\n\
+         console.log('label:' + t(() => new TextDecoder('bogus')));\n\
+         console.log('ws:' + t(() => new TextDecoder('\\u000butf-8')));",
+    ]));
+    assert!(out.contains("replace:1"), "out: {out}");
+    assert!(out.contains("enc:utf-8"), "out: {out}");
+    assert!(out.contains("fatal:TypeError:ERR_ENCODING_INVALID_ENCODED_DATA:The encoded data was not valid for encoding utf-8"), "out: {out}");
+    assert!(out.contains("fatal16:TypeError:ERR_ENCODING_INVALID_ENCODED_DATA:The encoded data was not valid for encoding utf-16le"), "out: {out}");
+    assert!(out.contains("label:RangeError:ERR_ENCODING_NOT_SUPPORTED:"), "out: {out}");
+    assert!(out.contains("ws:RangeError:ERR_ENCODING_NOT_SUPPORTED:"), "out: {out}");
+}
+
+#[test]
+fn structured_clone_stream_rejection() {
+    // 正常：纯 JSON 值直通；报错：流实例（顶层/嵌套/transfer 表）抛
+    // DOMException DataCloneError(25)；边界：无参仍走 native 校验。
+    let out = stdout_of(winterjs2().args([
+        "--eval",
+        "const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return (e.constructor?.name ?? '?') + ':' + e.name + ':' + e.code; } };\n\
+         console.log('plain:' + JSON.stringify(structuredClone({ a: [1] })));\n\
+         const ts = new TransformStream();\n\
+         console.log('top:' + t(() => structuredClone([ts, ts.readable], { transfer: [ts, ts.readable] })));\n\
+         console.log('nested:' + t(() => structuredClone({ x: ts })));\n\
+         console.log('undef:' + (structuredClone(undefined) === undefined));",
+    ]));
+    assert!(out.contains("plain:{\"a\":[1]}"), "out: {out}");
+    assert!(out.contains("top:DOMException:DataCloneError:25"), "out: {out}");
+    assert!(out.contains("nested:DOMException:DataCloneError:25"), "out: {out}");
+    assert!(out.contains("undef:true"), "out: {out}");
+}

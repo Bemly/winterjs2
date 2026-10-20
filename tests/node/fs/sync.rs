@@ -302,3 +302,45 @@ await fh.close();
     dir.close().unwrap();
 }
 
+#[test]
+fn fs_file_url_validation_and_literal_strings() {
+    // 正常：file: URL 对象读写；报错：非 file scheme/编码斜杠/非法 host/
+    // 路径 NUL 全同步抛（回调面亦同步）；边界：'file:…' 字面串按相对路径
+    // 处理，不作 URL 解（whatwg fs-whatwg-url 套件口径）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "u.mjs",
+        r#"
+import fs from "node:fs";
+const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code; } };
+fs.writeFileSync("a.txt", "hello");
+const u = new URL("a.txt", "file://" + process.cwd() + "/");
+console.log("url-read:" + fs.readFileSync(u, "utf8"));
+console.log("scheme:" + t(() => fs.readFileSync(new URL("http://example.org/"))));
+console.log("pct:" + t(() => fs.readFileSync(new URL("file:///c:/tmp/%2f"))));
+console.log("host:" + t(() => fs.readFileSync(new URL("file://hostname/a/b"))));
+console.log("nul:" + t(() => fs.readFileSync(new URL("file:///tmp/%00x"))));
+let asyncThrows = [];
+for (const bad of [new URL("http://example.org/"), new URL("file://hostname/a/b")]) {
+  try { fs.readFile(bad, () => {}); } catch (e) { asyncThrows.push(e.code); }
+}
+console.log("async-sync:" + asyncThrows.join(","));
+fs.mkdirSync("file:literal-dir/sub", { recursive: true });
+console.log("literal:" + fs.existsSync("file:literal-dir/sub"));
+"#,
+    );
+    for line in [
+        "url-read:hello",
+        "scheme:TypeError:ERR_INVALID_URL_SCHEME",
+        "pct:TypeError:ERR_INVALID_FILE_URL_PATH",
+        "host:TypeError:ERR_INVALID_FILE_URL_HOST",
+        "nul:TypeError:ERR_INVALID_ARG_VALUE",
+        "async-sync:ERR_INVALID_URL_SCHEME,ERR_INVALID_FILE_URL_HOST",
+        "literal:true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+

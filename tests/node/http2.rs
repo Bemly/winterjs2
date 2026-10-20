@@ -403,3 +403,224 @@ connect("http://hostname", { lookup }).then(
     assert!(!out.contains("FAIL"), "must not resolve: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_compat_expect_routing() {
+    // c2：expect 路由（node onServerStream 逐字）：checkExpectation 监听 +
+    // 无人监听 417 缺省；100-continue 无监听走 request（auto-100 记账，线形 bound）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "e.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer();
+server.on("checkExpectation", (req, res) => {
+  console.log("checkExpectation", req.headers.expect);
+  res.statusCode = 417;
+  res.end();
+});
+server.on("request", (req, res) => {
+  console.log("request", req.headers.expect);
+  res.end("ok");
+});
+server.listen(0, () => {
+  const port = server.address().port;
+  const get = (headers) => new Promise((resolve) => {
+    const c = http2.connect(`http://localhost:${port}`);
+    const req = c.request(headers);
+    req.on("response", (h) => {
+      let b = "";
+      req.on("data", (d) => (b += d));
+      req.on("end", () => { c.close(); resolve(`${h[":status"]}:${b}`); });
+    });
+    req.resume();
+    req.end();
+  });
+  (async () => {
+    console.log("r1", await get({ ":path": "/", "expect": "meoww" }));
+    console.log("r2", await get({ ":path": "/", "expect": "100-continue" }));
+    server.close();
+  })();
+});
+"#,
+    );
+    for line in [
+        "checkExpectation meoww",
+        "r1 417:",
+        "request 100-continue",
+        "r2 200:ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_compat_connect_default() {
+    // c2：CONNECT 无监听缺省 405（旧 501 误植；node onServerStream 逐字）+
+    // 有监听走 connect 事件。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        r#"
+import http2 from "node:http2";
+const s1 = http2.createServer();
+s1.listen(0, () => {
+  const c = http2.connect(`http://localhost:${s1.address().port}`);
+  const req = c.request({ ":method": "CONNECT", ":authority": "x" });
+  req.on("response", (h) => console.log("default", h[":status"]));
+  req.on("end", () => { c.close(); s1.close(); });
+  req.resume();
+  req.end();
+});
+const s2 = http2.createServer();
+s2.on("connect", (req, res) => {
+  console.log("connect-ev", req.headers[":method"]);
+  res.statusCode = 200;
+  res.end();
+});
+s2.listen(0, () => {
+  const c = http2.connect(`http://localhost:${s2.address().port}`);
+  const req = c.request({ ":method": "CONNECT", ":authority": "y" });
+  req.on("response", (h) => console.log("handled", h[":status"]));
+  req.on("end", () => { c.close(); s2.close(); });
+  req.resume();
+  req.end();
+});
+"#,
+    );
+    for line in ["default 405", "connect-ev CONNECT", "handled 200"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_early_hints_validation() {
+    // c2：writeEarlyHints 校验（link BigInt → ARG_VALUE；非对象 → ARG_TYPE；
+    // 空数组 link → false）+ writeInformation 门（101/200/字符串 → STATUS_INVALID；
+    // 终后 writeContinue → false）。抛错经 handler 内捕获回传（uncaught 投递系 infra）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "v.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer((req, res) => {
+  const out = [];
+  try { res.writeEarlyHints({ link: BigInt(100) }); } catch (e) { out.push("link-bigint:" + e.code); }
+  try { res.writeEarlyHints("x"); } catch (e) { out.push("hints-str:" + e.code); }
+  console.log("empty-link", res.writeEarlyHints({ link: [] }));
+  for (const t of [101, 200, "100"]) {
+    try { res.writeInformation(t, {}); } catch (e) { out.push("info:" + e.code); }
+  }
+  res.end("pre");
+  console.log("wc-after-end", res.writeContinue());
+  console.log("gates", out.join(","));
+  res.on("finish", () => server.close());
+});
+server.listen(0, () => {
+  const c = http2.connect(`http://localhost:${server.address().port}`);
+  const req = c.request({ ":path": "/" });
+  req.resume();
+  req.on("end", () => { c.close(); });
+  req.end();
+});
+"#,
+    );
+    for line in [
+        "empty-link false",
+        "wc-after-end false",
+        "gates link-bigint:ERR_INVALID_ARG_VALUE,hints-str:ERR_INVALID_ARG_TYPE,info:ERR_HTTP2_STATUS_INVALID,info:ERR_HTTP2_STATUS_INVALID,info:ERR_HTTP2_STATUS_INVALID",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_write_after_destroy() {
+    // c2：destroy 后 write 静默 false 且回调不触发（真机 p1）；
+    // 流关（response 存活）后 write 回调 INVALID_STREAM（真机 p18）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "w.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer();
+server.on("request", (req, res) => {
+  res.destroy();
+  let cb = "no";
+  const ret = res.write("asd", () => { cb = "yes"; });
+  console.log("silent", ret === false && cb === "no", res.destroyed === true);
+  server.close();
+});
+server.listen(0, () => {
+  const c = http2.connect(`http://localhost:${server.address().port}`);
+  const req = c.request({ ":path": "/" });
+  req.on("error", () => {});
+  req.on("close", () => { c.close(); });
+  req.resume();
+  req.end();
+});
+const s2 = http2.createServer();
+s2.on("request", (req, res) => {
+  res.write("x");
+  res.stream.close(0, () => {
+    res.write("y", (err) => console.log("closed-cb", err && err.code));
+  });
+});
+s2.listen(0, () => {
+  const c = http2.connect(`http://localhost:${s2.address().port}`);
+  const req = c.request({ ":path": "/" });
+  req.on("error", () => {});
+  req.on("close", () => { c.close(); s2.close(); });
+  req.resume();
+  req.end();
+});
+"#,
+    );
+    for line in ["silent true true", "closed-cb ERR_HTTP2_INVALID_STREAM"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_socket_session_backing() {
+    // c2：request socket 未知属性与 session socket 互通（socket-set 套件；
+    // node socketProxyHandler 默认分支走 session[kSocket]）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "s.mjs",
+        r#"
+import http2 from "node:http2";
+import net from "node:net";
+const server = http2.createServer();
+server.on("request", (req, res) => {
+  console.log("instanceof", req.socket instanceof net.Socket);
+  console.log("same", req.socket === res.socket);
+  console.log("init", req.stream.session.socket._isProcessing === undefined);
+  req.socket._isProcessing = true;
+  console.log("shared", req.stream.session.socket._isProcessing === true);
+  res.stream.destroy();
+});
+server.listen(0, () => {
+  const c = http2.connect(`http://localhost:${server.address().port}`);
+  const req = c.request({ ":path": "/" });
+  req.on("error", () => {});
+  req.on("close", () => { c.close(); server.close(); });
+  req.resume();
+  req.end();
+});
+"#,
+    );
+    for line in ["instanceof true", "same true", "init true", "shared true"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

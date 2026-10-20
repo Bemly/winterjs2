@@ -251,14 +251,17 @@
           res.__maxReq = this.maxRequestsPerSocket;
           if (this.uniqueHeaders !== undefined) res.__uniqueHeaders = this.uniqueHeaders;
           st.reqCount = (st.reqCount ?? 0) + 1;
-          // node 口径：超 maxRequestsPerSocket 的管线请求回 503 +
-          // 关连接（keep-alive-pipeline-max-requests 套件第 4 路），并派发
-          // 'dropRequest'（request, socket；drop-requests 套件点名类型）。
+          // node 口径（lib/internal/http/server.js parserOnIncoming）：超
+          // maxRequestsPerSocket 的管线请求走正常响应管线回 503
+          //（writeHead + end，经 ServerResponse 排在途响应之后——raw 直写会抢跑
+          // 首响并杀连接，keep-alive-drop-requests 套件实录）+ 关连接
+          //（maxReached → Connection: close，finish 后 destroySoon），并派发
+          // 'dropRequest'（request, socket；drop-requests 套件点名类型）；
+          // 'request' 不派发（handled）。
+          let __dropped = false;
           if (this.maxRequestsPerSocket > 0 && st.reqCount > this.maxRequestsPerSocket) {
             try { this.emit("dropRequest", req, sock); } catch { /* 监听抛错不阻 503 */ }
-            try { sock.write(new TextEncoder().encode("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
-            try { sock.destroy(); } catch { /* gone */ }
-            return;
+            __dropped = true;
           }
           if (this.maxRequestsPerSocket > 0 && st.reqCount >= this.maxRequestsPerSocket) {
             // node 口径：达额请求的响应带 Connection: close（响应完关连接）。
@@ -363,7 +366,12 @@
           // 服务（pipeline-assertionerror-finish 套件 mustCall(10) 点名；
           // 原自创 503 路径会使后续响应写进已 end 的 socket）。
           st.buf = st.buf.slice(headEnd + 4);
-          if (__wired) {
+          if (__dropped) {
+            // 超额请求：正常管线 503（排队于在途响应之后；maxReached 已置位，
+            // Connection: close + finish 后关）。
+            res.writeHead(503);
+            res.end();
+          } else if (__wired) {
             // §4.35：先 emit("request")（监听器登记 data/end），再喂体。
             // 用户 handler throw 不进 400 通道（node：原样上抛到 uncaught——
             // handler-throw 真机 crash；旧"400+静默 hang"系伪语义）。
@@ -434,14 +442,29 @@
       }
     }
     close(cb) {
+      // node 口径（lib/net.js Server.prototype.close + dc 真机探针）：已关
+      // （上次 'close' 已发）再 close，回调仍异步触发，首参
+      // ERR_SERVER_NOT_RUNNING（文案 'Server is not running.'；close-idle 套件
+      // 第二个 close 即此形）。完成旗由 'close' 首发置位；进行中重入仍走正常路。
+      if (this.__closeDone === true) {
+        if (typeof cb === "function") {
+          const __e = new Error("Server is not running.");
+          __e.code = "ERR_SERVER_NOT_RUNNING";
+          process.nextTick(() => cb(__e));
+        }
+        return this;
+      }
       this.__closing = true;
-      if (typeof cb === "function") this.once("close", cb);
+      if (typeof cb === "function") {
+        this.once("close", (...__a) => { this.__closeDone = true; cb(...__a); });
+      } else {
+        this.once("close", () => { this.__closeDone = true; });
+      }
       // node close 口径：空闲连接销毁；仍有在途请求/响应的连接 unref（进程不
       // 等待，响应落地后自然退出——pipeline-assertionerror-finish 套件；
-      // 空闲判定同 closeIdleConnections，体完响应在途不算空闲）。
+      // 空闲判定走 __srvConnIdle（半截头非空闲，server-close-idle 套件）。
       for (const sock of this.__sockets) {
-        const __st = sock.__httpState;
-        if (!__st || (__st.req === null && __st.res === null)) {
+        if (__srvConnIdle(sock.__httpState)) {
           try { sock.destroy(); } catch { /* closed meanwhile */ }
         } else if (typeof sock.unref === "function") {
           try { sock.unref(); } catch { /* gone */ }
@@ -586,6 +609,22 @@ export function withClientRequest(openSocket, flavor) {
         // node addRequest 口径：socketPath 在场即以之改写 connect 用的 path
         //（防 HTTP path 泄进 net.connect 误连错目标——ENOTSOCK 现场记录）。
         if (options.socketPath !== undefined) options.path = options.socketPath;
+      }
+      // node 口径（lib/internal/options.js getAllowUnauthorized + tls/wrap.js
+      // connect 缺省）：NODE_TLS_REJECT_UNAUTHORIZED=0 即 rejectUnauthorized
+      // 缺省 false（显式值恒赢；警告全进程一次）。https 客户端恒经 tls.connect
+      // 同口径；http 无 TLS 面不碰（flavor 门）。
+      if (flavor.protocol === "https:" && extra.rejectUnauthorized === undefined &&
+          typeof process === "object" && process !== null && process.env !== undefined &&
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+        extra.rejectUnauthorized = false;
+        if (globalThis.__wjs2WarnedAllowUnauthorized !== true) {
+          globalThis.__wjs2WarnedAllowUnauthorized = true;
+          try {
+            process.emitWarning("Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' " +
+              "makes TLS connections and HTTPS requests insecure by disabling certificate verification.");
+          } catch { /* 警告永不阻建连 */ }
+        }
       }
       // node lib/_http_client.js：path 控制字符/空格即 ERR_UNESCAPED_CHARACTERS。
       if (INVALID_PATH_REGEX.test(path)) {
@@ -795,12 +834,17 @@ export function withClientRequest(openSocket, flavor) {
           this.__headerNames.authorization = "Authorization";
         }
       }
-      // setHost:true 即补 Host（dont-set 下亦补；拼写取规范 'Host'）。
+      // node 口径（lib/internal/http/client.js 420 行 + host-headers 套件）：
+      // setHost 未给即 setDefaultHeaders !== false；给了即 Boolean()——
+      // false/0/null 皆禁自动 Host（Host 缺席即服务端 requireHostHeader 400，
+      // 'request' 不派发）；true 即补 Host（dont-set 下亦补，拼写取规范 'Host'，
+      // 数组形亦补——node setHeader 进数组，wire 有序对同出）。
       if (options.setHost === true && this.__headers.host === undefined) {
         this.__headers.host = this.__hostHeader;
         this.__headerNames.host = "Host";
       }
-      if (!__noDefaults && this.__headers.host === undefined && !Array.isArray(this.__headerList)) {
+      const __setHost = options.setHost !== undefined ? Boolean(options.setHost) : !__noDefaults;
+      if (__setHost && this.__headers.host === undefined && !Array.isArray(this.__headerList)) {
         // node 口径（lib/_http_client.js 546 行 + connect-default-host-header
         // 套件真机实测）：CONNECT 且 options.path 在场时 Host 取 path 本体
         //（authority），不取连接主机。
@@ -914,6 +958,10 @@ export function withClientRequest(openSocket, flavor) {
       } else if (this.agent !== null) {
         this.agent.__acquire(this, host, port, extra, (sock, reused) => this.__attach(sock, reused));
       } else {
+        // node 口径 agent:false 即临时默认 agent 同路（含 servername 归一，
+        // strict 套件 Host 头进 SNI/校验名；host 先归一如 _http_client）。
+        if (extra.host === undefined) extra.host = host;
+        __normalizeServerName(extra, this);
         this.__attach(openSocket(host, port, extra), false);
       }
     }

@@ -144,8 +144,38 @@ class Http2Server extends EventEmitter {
           stream.__headRequest = true;
         }
         if (method === "CONNECT") {
-          if (this.listenerCount("connect") > 0) this.emit("connect", req, res);
-          else { res.statusCode = 501; res.end(); }
+          // node onServerStream 逐字：无 'connect' 监听即 405 + end（旧 501 系误植）。
+          if (!this.emit("connect", req, res)) { res.statusCode = 405; res.end(); }
+        } else if (req.headers.expect !== undefined) {
+          // node onServerStream 逐字（expect-handling/checkContinue 套件）：
+          // 100-continue + checkContinue 监听 → 只发 checkContinue（写 100 由
+          // writeContinue/native interim 承接，hyper 底座 bound 另案）；
+          // 其余 expect + checkExpectation 监听 → 只发 checkExpectation；
+          // 其余 expect 无人监听 → 417 + end。
+          // 无监听的 100-continue：writeContinue 记账后仍发 request（线形留待 native）。
+          const ex = req.headers.expect;
+          if (ex === "100-continue") {
+            if (this.listenerCount("checkContinue") > 0) {
+              this.emit("checkContinue", req, res);
+            } else {
+              res.writeContinue();
+              this.emit("stream", stream, req.headers, flags, req.rawHeaders);
+              if (this.listenerCount("request") > 0) this.emit("request", req, res);
+            }
+          } else if (this.listenerCount("checkExpectation") > 0) {
+            this.emit("checkExpectation", req, res);
+          } else {
+            res.statusCode = 417;
+            res.end();
+          }
+          if (!streaming) {
+            stream.__feedBody(o.body ?? "");
+            stream.__endReq(o.trailers ?? "[]");
+          }
+          if (this.listenerCount("request") > 0 || this.listenerCount("checkContinue") > 0 ||
+              this.listenerCount("checkExpectation") > 0) {
+            queueMicrotask(() => { if (!req.destroyed && !req.__userPaused) req.resume(); });
+          }
         } else {
           // node 顺序：'stream'（raw）先于 'request'（compat）
           this.emit("stream", stream, req.headers, flags, req.rawHeaders);

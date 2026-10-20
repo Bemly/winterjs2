@@ -398,6 +398,9 @@ function inspect2(value, ctx, depth, seen) {
       let keys;
       try { keys = Reflect.ownKeys(value); } catch { return '[Object]'; }
       if (keys.length === 0) {
+        // 10f：depth<0 且具 custom inspect 面即 '[Object]'（真机：负深度不调
+        // custom，直接坍缩；custom-searchparams-inspect 套件点名）。
+        if (ctx.customInspect && typeof value[kCustom] === 'function') return '[Object]';
         const p = prefixOf(value) || (Object.getPrototypeOf(value) === null ? '[Object: null prototype] ' : '');
         return p ? `${p}{}` : '{}';
       }

@@ -449,10 +449,73 @@ globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
     const head = msg === "" ? "Trace" : `Trace: ${msg}`;
     return this.error(`${head}${frames}`);
   };
+  // 计时/计数面（constructor.js + debuglog time 原文口径，JS 本体实现）：
+  // 真机全局 console 即 Console 实例（`_times` 可见 + 缺标/复标走 warning）。
+  // Rust 原生只 ToString/存 Instant（time 覆盖不告警、无 _times、恒 ms），
+  // 此处 JS 面接管五方法（构造守卫内含）：归一→查表→warning/formatTime，
+  // 与 node:console 模块面同一语义（Map 代 SafeMap：套件只用 get/size）。
+  const __times = new Map();
+  const __counts = new Map();
+  let __fmtTime = null;
+  const __getFormatTime = () => (
+    __fmtTime ??= globalThis.require("node:internal/debuglog").formatTime
+  );
+  console._times = __times;
+  console.time = function time(label = "default") {
+    if (new.target) throw new TypeError("console.time is not a constructor");
+    label = `${label}`;
+    if (__times.has(label)) {
+      process.emitWarning(`Label '${label}' already exists for console.time()`);
+      return;
+    }
+    __times.set(label, process.hrtime());
+  };
+  console.timeLog = function timeLog(label = "default", ...args) {
+    if (new.target) throw new TypeError("console.timeLog is not a constructor");
+    label = `${label}`;
+    const t = __times.get(label);
+    if (t === undefined) {
+      process.emitWarning(`No such label '${label}' for console.timeLog()`);
+      return;
+    }
+    const d = process.hrtime(t);
+    const f = __getFormatTime()(d[0] * 1000 + d[1] / 1e6);
+    if (args.length === 0) console.log(`${label}: ${f}`);
+    else console.log("%s: %s", label, f, ...args);
+  };
+  console.timeEnd = function timeEnd(label = "default") {
+    if (new.target) throw new TypeError("console.timeEnd is not a constructor");
+    label = `${label}`;
+    const t = __times.get(label);
+    __times.delete(label);
+    if (t === undefined) {
+      process.emitWarning(`No such label '${label}' for console.timeEnd()`);
+      return;
+    }
+    const d = process.hrtime(t);
+    const f = __getFormatTime()(d[0] * 1000 + d[1] / 1e6);
+    console.log(`${label}: ${f}`);
+  };
+  console.count = function count(label = "default") {
+    if (new.target) throw new TypeError("console.count is not a constructor");
+    label = `${label}`;
+    let n = __counts.get(label);
+    if (n === undefined) n = 1;
+    else n++;
+    __counts.set(label, n);
+    console.log(`${label}: ${n}`);
+  };
+  console.countReset = function countReset(label = "default") {
+    if (new.target) throw new TypeError("console.countReset is not a constructor");
+    if (!__counts.has(label)) {
+      process.emitWarning(`Count for '${label}' does not exist`);
+      return;
+    }
+    __counts.delete(`${label}`);
+  };
   // 其余原生方法包一层构造守卫（真机 console 方法皆不可 new；原生直挂可构造）。
   // 置别名前，使 groupCollapsed 取到守卫版 group（同体）。
-  for (const __gk of ["count", "countReset", "time", "timeLog", "timeEnd",
-      "group", "groupEnd", "clear"]) {
+  for (const __gk of ["group", "groupEnd", "clear"]) {
     const __raw = console[__gk];
     if (typeof __raw !== "function") continue;
     console[__gk] = function (...__ga) {

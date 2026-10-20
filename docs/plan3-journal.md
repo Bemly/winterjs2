@@ -2474,3 +2474,25 @@ G1/G2/G3/G9 已收官。）
 - 验证：console:: 5/5；util::+stream:: 25/25；两目标套件 rc=0 复绿；
   冒烟 5/5；check-lines/naming ok。全局面（Rust Instant/`Timer…` 文案/余参丢弃）
   未动，另案（见定级稿 R-a~R-h 全局列）。commit 36b1310 已推 lane/console。
+
+## 2026-10-20 console 全局面 warning 桥 + `_times` 可见面（lane/console，转绿）
+
+- 修法（`src/builtins/node/require.rs` REQUIRE_PRELUDE，零 Rust 改动）：
+  全局 `time/timeLog/timeEnd/count/countReset` 由 JS 本体接管（Rust 原生留作
+  回落）：`__times/__counts` 双 Map（`console._times` 即本体，Map 代 SafeMap，
+  套件只用 get/size）+ 入参 `${}` 归一（Symbol 抛 TypeError）+ has 守卫
+  （dup 保留原计时）+ 8 警告逐字 `process.emitWarning`（Warning 无 code）+
+  `process.hrtime()` 差值喂 `formatTime`（`node:internal/debuglog` 惰性 memo，
+  无循环依赖）+ `timeLog` 余参走包装后 `console.log('%s: %s', …)` 续接。
+  构造守卫内含；命名函数表达式正名（methods 套件点名 .name 不受影响）。
+- 黑盒 `console_global_timer_count_warning_faces`（全局 stdout 断言输出形 +
+  余参 + 计数 + dup 恒等 + 死链回落 + `_times` 可见 + Symbol×4 + 4 警告逐字；
+  模块面 8 警告已由实例面全覆盖）。另补 `countReset(Symbol)` 抛 TypeError
+  断言（node 警告模板内抛，真机同）。
+- 验证：console:: 6/6；16 件域套件 12 绿——余 4 红皆既有面缺口，
+  与计时语义无关：count（输出路由旁路 hijack，文本 `default: 1` 本身正确）、
+  clear/diagnostics-channels（`isTTY` 只读）、stdio-setters（stdio setter
+  mustCall）。冒烟 5/5；check-lines/naming ok。
+- 未动/偏离：Rust 原生 time 面留作回落（输出通道/缩进仍原生）；长时
+  `h:mm:ss` 全局面已随 formatTime 对齐；`_times` 为 Map 非 SafeMap
+  （套件面等价，不 bound）。

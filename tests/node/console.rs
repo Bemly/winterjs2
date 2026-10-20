@@ -262,6 +262,8 @@ for (const f of [() => k.time(Symbol("x")), () => k.timeEnd(Symbol("x")), () => 
   try { f(); console.log("sym-no-throw"); }
   catch (e) { console.log("sym-throw", e.constructor.name); }
 }
+try { k.countReset(Symbol("x")); console.log("sym-no-throw"); }
+catch (e) { console.log("sym-throw", e.constructor.name); }
 k.countReset("nope"); k.timeLog("nope2"); k.timeEnd("nope3");
 k.countReset(); k.timeLog(); k.timeEnd(); k.time(); k.time();
 await new Promise((r) => setTimeout(r, 100));
@@ -276,6 +278,7 @@ console.log("warns", JSON.stringify(warns));
     let out = String::from_utf8(out.stdout).unwrap();
     for want in [
         "deadlinks true",
+        "sym-throw TypeError",
         "sym-throw TypeError",
         "sym-throw TypeError",
         "sym-throw TypeError",
@@ -367,4 +370,77 @@ fn regex_lite_match(re: &str, line: &str) -> bool {
         }
     }
     rest.is_empty()
+}
+
+#[test]
+fn console_global_timer_count_warning_faces() {
+    // 全局面（prelude JS 本体，R-a~R-h 全局列）：time/timeEnd 输出形 +
+    // timeLog 余参续接 + count 递增/countReset 命中删 + dup 不重置（同对象恒等）+
+    // `_times` 可见（get/size）+ 归一标签；报错：Symbol 入参 TypeError；
+    // 边界：8 警告文本逐字 + timeEnd 无死链。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+const warns = [];
+process.on("warning", (w) => warns.push(`${w.name}|${w.code}|${w.message}`));
+console.time("t"); console.timeEnd("t");
+console.time("log1"); console.timeLog("log1"); console.timeLog("log1", "test"); console.timeLog("log1", {}, [1, 2, 3]); console.timeEnd("log1");
+console.count("a"); console.count("a"); console.countReset("a"); console.count("a");
+const d0 = (console.time("same"), console._times.get("same"));
+console.time("same");
+console.log("same-obj", console._times.get("same") === d0);
+console.timeEnd("same");
+const size0 = console._times.size;
+console.time("l1"); console.time("l2"); console.timeEnd("l1"); console.timeEnd("l2");
+console.log("deadlinks", console._times.size === size0);
+console.log("times-map", typeof console._times.get === "function" && typeof console._times.size === "number");
+for (const f of [() => console.time(Symbol("x")), () => console.timeEnd(Symbol("x")), () => console.count(Symbol("x"))]) {
+  try { f(); console.log("sym-no-throw"); }
+  catch (e) { console.log("sym-throw", e.constructor.name); }
+}
+try { console.countReset(Symbol("x")); console.log("sym-no-throw"); }
+catch (e) { console.log("sym-throw", e.constructor.name); }
+console.countReset("nope"); console.timeLog("nope2"); console.timeEnd("nope3");
+await new Promise((r) => setTimeout(r, 100));
+console.log("warns", JSON.stringify(warns));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "same-obj true",
+        "deadlinks true",
+        "times-map true",
+        "sym-throw TypeError",
+        "sym-throw TypeError",
+        "sym-throw TypeError",
+        "sym-throw TypeError",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    for re in [
+        "t: \\d+(\\.\\d{1,3})?(ms|s)",
+        "log1: \\d+(\\.\\d{1,3})?(ms|s) test",
+        "log1: \\d+(\\.\\d{1,3})?(ms|s) \\{\\} \\[ 1, 2, 3 \\]",
+        "a: 1",
+        "a: 2",
+    ] {
+        let ok = out.lines().any(|l| regex_lite_match(re, l.trim()));
+        assert!(ok, "missing /{re}/, out: {out}");
+    }
+    for want in [
+        "Warning|undefined|Count for 'nope' does not exist",
+        "Warning|undefined|No such label 'nope2' for console.timeLog()",
+        "Warning|undefined|No such label 'nope3' for console.timeEnd()",
+        "Warning|undefined|Label 'same' already exists for console.time()",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
 }

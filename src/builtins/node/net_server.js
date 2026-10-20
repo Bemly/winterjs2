@@ -204,6 +204,7 @@ class __ServerClass extends EventEmitter {
     } else {
       this.__id = Number(r);
     }
+    // 落定点结算（门内判 __listening；同步已落定即调，异步递延至 listening 事件）。
     this.__applyUnrefLatch();
     return this;
   }
@@ -307,12 +308,15 @@ class __ServerClass extends EventEmitter {
         if (o.uds) {
           this.__listening = o.path;
           this._connectionKey = `unix:${o.path}`;
+          this.__applyUnrefLatch();
           this.emit("listening");
           break;
         }
         this.__listening = { address: o.addr, port: o.port, family: String(o.addr).includes(":") ? "IPv6" : "IPv4" };
         // node Server._connectionKey：'<family>:<host>:<请求端口>'（listen(0) 键含 '0'）
         this._connectionKey = `${String(o.addr).includes(":") ? 6 : 4}:${o.addr}:${this.__port}`;
+        // 异步 bind 落定：此前置的 unref 闩锁在此结算（先摘会杀死在途 bind）。
+        this.__applyUnrefLatch();
         this.emit("listening");
         break;
       }
@@ -385,10 +389,12 @@ class __ServerClass extends EventEmitter {
   // 10a：ref 真计数（同 Socket）。unref 闩锁（req-close-robust 套件：
   // listen 前 unref 在 __id 为 0 时被吞——真机两侧皆闩锁，listen 落定即补调）。
   ref() { this.__unrefLatched = false; if (this.__id) __wjs2_net_ref(this.__id); return this; }
-  unref() { this.__unrefLatched = true; if (this.__id) __wjs2_net_unref(this.__id); return this; }
-  // listen 落定即结算闩锁（各 __doListen 赋值点调用）。
+  unref() { this.__unrefLatched = true; this.__applyUnrefLatch(); return this; }
+  // listen 落定即结算闩锁（各 __doListen 赋值点 + listening 事件调用）。
+  // 未落定（__listening 空）不摘——异步 bind 在途即摘即杀 bind，
+  // listening 永不到（delete-parser 套件；net_set_ref 布尔幂等，无计数风险）。
   __applyUnrefLatch() {
-    if (this.__unrefLatched === true && this.__id) {
+    if (this.__unrefLatched === true && this.__id && this.__listening) {
       try { __wjs2_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
     }
   }

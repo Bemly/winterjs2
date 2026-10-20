@@ -55,6 +55,16 @@ class Socket extends EventEmitter {
     // node Socket 构造（socket-constructor 套件）：number 形即 {fd: options}；
     // fd 校验 validateInt32(fd, 'fd', 0) 逐字——'foo' → ARG_TYPE、-1 → ERR_OUT_OF_RANGE。
     if (typeof options === "number") options = { fd: options };
+    // socket-options-invalid 套件（lib/net.js Socket 口径，先于 fd 校验）：
+    // objectMode 真值即拒，次查 readable/writableObjectMode（首真值点名）。
+    if (options?.objectMode) {
+      const e = new TypeError(`The property 'options.objectMode' is not supported. Received ${String(options.objectMode)}`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    } else if (options?.readableObjectMode || options?.writableObjectMode) {
+      const k = options.readableObjectMode ? "readableObjectMode" : "writableObjectMode";
+      const e = new TypeError(`The property 'options.${k}' is not supported. Received ${String(options[k])}`);
+      e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+    }
     if (options !== null && typeof options === "object" && options.fd !== undefined) {
       if (typeof options.fd !== "number") {
         const e = new TypeError(`The "fd" argument must be of type number. Received ${__netGot(options.fd)}`);
@@ -137,8 +147,11 @@ class Socket extends EventEmitter {
     this.bytesRead = 0;
     this.__connected = false;   // 完成连接（connect/attach 后 true）
     this.__pendW = [];          // 连接完成前的缓冲写（node write 语义）
-    // Node 默认 allowHalfOpen=false：收到远端 FIN（'end'）后自动 end 本端
+    // Node 默认 allowHalfOpen=false：收到远端 FIN（'end'）后自动 end 本端。
+    // no-halfopen-enforcer 套件：内部 end 门常驻（listenerCount恒1，构造期首挂，
+    // 用户监听之后触发——node 真机序）。
     this.allowHalfOpen = !!(options && options.allowHalfOpen);
+    this.on("end", () => { if (!this.allowHalfOpen && this.__id) { try { this.__nativeEnd(); } catch {} } });
     // node 口径：_handle 只在连接存活期非空（构造时/close 后恒 null，真机 26 实测；
     // after-close 套件点名 `c._handle === null`）。连接建立（__realConnect/__attach*）
     // 时建桩，destroy/__ev-close 置空。setNoDelay/setKeepAlive 恒可调（无柄只缓存）。
@@ -585,6 +598,10 @@ class Socket extends EventEmitter {
     this.__localAddrOpt = (args[0] !== null && typeof args[0] === "object" &&
       typeof args[0].localAddress === "string" && args[0].localAddress !== "")
       ? args[0].localAddress : null;
+    // client-bind-twice 套件：本端源端口经 native 第 6 参透传（占用即 EADDRINUSE）。
+    this.__localPortOpt = (args[0] !== null && typeof args[0] === "object" &&
+      typeof args[0].localPort === "number")
+      ? args[0].localPort : null;
     // node 口径：预置 _handle 自带 connect 即走假柄短路（immediate-error 套件：
     // 注入假柄强制立即错；返回非零即 UV errno，异步 error + 销毁）。
     // 仅 TCP 形（UDS 沿旧路）；置于 lookup/HE 之前。
@@ -620,13 +637,27 @@ class Socket extends EventEmitter {
         __lookup(String(host), { family: __famOpt || 0, hints: 0, all: __heAll }, (err, addr, family) => {
           if (called) return; called = true;
           if (err) { queueMicrotask(() => this.destroy(err)); return; }
-          // node onlookup：family ∉ {4,6} → ERR_INVALID_ADDRESS_FAMILY（异步 error 事件，
-          // 错误带 host/port 属性；options-lookup 套件 message 逐字）。
-          const fam = Array.isArray(addr) ? addr[0].family : family;
-          if (fam !== 4 && fam !== 6) {
-            const e = new RangeError(`Invalid address family: ${fam} ${host}:${port}`);
-            e.code = "ERR_INVALID_ADDRESS_FAMILY"; e.host = host; e.port = port;
-            queueMicrotask(() => this.destroy(e)); return;
+          // node onlookup 校验序（单地址形，lib/net.js emitLookup 口径）：先 ip 串形
+          //（ERR_INVALID_IP_ADDRESS，参数原样 inspect——数组即整数组），
+          // 次 family（ERR_INVALID_ADDRESS_FAMILY 带 host/port）。
+          // all:true 有效多地址数组（{address,family} 逐项）走下行既有处理；
+          // 串条目数组（broken mock）即整数组 IP 错（真机同形）。
+          const __heAddrsOk = __heAll && Array.isArray(addr) &&
+            addr.every((e) => e !== null && typeof e === "object");
+          if (!__heAddrsOk) {
+            if ((typeof addr !== "string") || !isIP(addr)) {
+              const shown = Array.isArray(addr)
+                ? `[ ${addr.map((x) => typeof x === "string" ? `'${x}'` : String(x)).join(", ")} ]`
+                : String(addr);
+              const e = new TypeError(`Invalid IP address: ${shown}`);
+              e.code = "ERR_INVALID_IP_ADDRESS";
+              queueMicrotask(() => this.destroy(e)); return;
+            }
+            if (family !== 4 && family !== 6) {
+              const e = new RangeError(`Invalid address family: ${family} ${host}:${port}`);
+              e.code = "ERR_INVALID_ADDRESS_FAMILY"; e.host = host; e.port = port;
+              queueMicrotask(() => this.destroy(e)); return;
+            }
           }
           const first = Array.isArray(addr) ? addr[0].address : addr;
           if (__heAll && Array.isArray(addr) && addr.length > 1) {
@@ -708,7 +739,7 @@ class Socket extends EventEmitter {
     } else this.__id = sockPath !== null
       ? Number(__wjs2_net_connect(sockPath, "", this, false))
       : (this.__localAddrOpt !== null && this.__localAddrOpt !== undefined
-        ? Number(__wjs2_net_connect(this.__targetHost, this.__targetPort, this, this.__localAddrOpt, __noDelay === true))
+        ? Number(__wjs2_net_connect(this.__targetHost, this.__targetPort, this, this.__localAddrOpt, __noDelay === true, Number(this.__localPortOpt ?? 0)))
         : Number(__wjs2_net_connect(this.__targetHost, this.__targetPort, this, __noDelay === true)));
     // unref 闩锁结算（connect 前 unref 过即补调）。
     if (this.__unrefLatched === true && this.__id) {
@@ -780,8 +811,7 @@ class Socket extends EventEmitter {
           if (rest) this.emit("data", rest);
         }
         this.emit("end");
-        // Node 口径：非 allowHalfOpen 时收 FIN 即自动回 FIN（'close' 随后）
-        if (!this.allowHalfOpen) this.__nativeEnd();
+        // （自动回 FIN 由构造期内部门执行，用户监听之后触发；此处不重复。）
         // G11 半开案：allowHalfOpen 持有半开即不再续命（真机同款——读停转后
         // 空闲句柄不 ref 循环；k9/k12 实证：ref() 也留不住，真机照常退出）。
         // 递延一轮：end 监听内同步 destroy/auto-end 的走正常收尾通道，此处只收
@@ -846,6 +876,8 @@ class Socket extends EventEmitter {
   get writableEnded() { return this.__ended === true; }
   get pending() { return !this.__connected || this.destroyed; }
   get connecting() { return !this.__connected && !this.destroyed && this.__id > 0; }
+  // socket-connecting 套件： legacy `_connecting` 与 connecting 同值。
+  get _connecting() { return this.connecting; }
   get readyState() {
     if (this.destroyed) return "closed";
     // 真机：new Socket() 未连接即 "open"（构造 readable/writable 初始真；connect 前即 open）。

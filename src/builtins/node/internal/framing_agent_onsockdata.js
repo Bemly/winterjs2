@@ -105,6 +105,7 @@
               if (__s.__reqSockOnData !== undefined) __s.removeListener("data", __s.__reqSockOnData);
               if (__s.__reqSockOnError !== undefined) __s.removeListener("error", __s.__reqSockOnError);
               if (__s.__reqSockOnEnd !== undefined) __s.removeListener("end", __s.__reqSockOnEnd);
+              if (__s.__agOnEnd !== undefined) { try { __s.removeListener("end", __s.__agOnEnd); } catch {} __s.__agOnEnd = undefined; }
               if (__s.__reqSockOnClose !== undefined) __s.removeListener("close", __s.__reqSockOnClose);
               if (__s.__lastTimeoutCb !== undefined) { try { __s.removeListener("timeout", __s.__lastTimeoutCb); } catch {} __s.__lastTimeoutCb = undefined; }
               if (__s.__agTimeoutSingleton !== undefined) { try { __s.removeListener("timeout", __s.__agTimeoutSingleton); } catch {} }
@@ -382,6 +383,8 @@
         // node responseOnEnd 口径：res 收齐（回池/关连前）即摘请求侧三监听
         //（socketOnEnd/socketErrorListener 对应本仓 end/error + close）——
         // 监听数契约：池态 end=1/error=1（agent-keepalive 套件 checkListeners）。
+        // agent 门同步摘（仅剩 socket 自门；隧道 detach 同）。
+        if (sock.__agOnEnd !== undefined) { try { sock.removeListener("end", sock.__agOnEnd); } catch {} sock.__agOnEnd = undefined; }
         if (sock.__reqSockOnEnd !== undefined) {
           try { sock.removeListener("end", sock.__reqSockOnEnd); } catch { /* gone */ }
           sock.__reqSockOnEnd = undefined;
@@ -742,6 +745,19 @@ Agent.prototype.__totalLive = function () {
   for (const key of Object.keys(this.sockets)) n += this.__liveCount(key);
   return n;
 };
+// agent 门装配（track/出池复用共用；摘除点：回池/隧道 detach，见上）。
+// 本体与旧内联一致：FIN 后写 EPIPE 置换 + 池态 EOF 即销毁。
+function __armAgOnEnd(sock) {
+  sock.__agOnEnd = function onReadableStreamEnd() {
+    if (!this.allowHalfOpen) {
+      this.write = __writeAfterFIN;
+    }
+    if (this.__inPool) {
+      this.destroy();
+    }
+  };
+  sock.on("end", sock.__agOnEnd);
+}
 Agent.prototype.__trackSocket = function (sock, key) {
   this.__list(this.sockets, key).push(sock);
   this.totalSocketCount++;
@@ -750,20 +766,10 @@ Agent.prototype.__trackSocket = function (sock, key) {
   // 池键随 socket 走（__noteClosed 按 sock.__poolKey 摘表；此前只记 req 侧，
   // 关闭后 sockets/freeSockets 残留——agent-keepalive 套件断言键消失）。
   sock.__poolKey = key;
-  // node 口径：agent 托管 socket 创建即挂 onReadableStreamEnd（入池后保留——
-  // 监听数契约：'end' active=2/池态=1，agent-keepalive 套件 checkListeners）。
+  // node 口径：agent 托管 socket 创建即挂 onReadableStreamEnd（active 2；
+  // 回池/隧道摘除后仅剩 socket 自门（池态/detach 1），见 agent-keepalive/cli-sock）。
   // FIN 后写 → EPIPE（writeAfterFIN 置换，真机 toString 逐字）。
-  sock.on("end", function onReadableStreamEnd() {
-    if (!this.allowHalfOpen) {
-      this.write = __writeAfterFIN;
-    }
-    // node socketOnEnd 口径：池态 socket 收 EOF 即销毁（close → __poolCleaner
-    // → noteClosed 摘池 + 续行队列）——free socket 半死滞留会被下个请求
-    // acquire 复用（单发语义服务端永不回包，req 静默挂死）。
-    if (this.__inPool) {
-      this.destroy();
-    }
-  });
+  __armAgOnEnd(sock);
   // node agent（installListeners 口径）：onTimeout 单例无条件挂（set-timeout-
   // after-end 套件：无 timeout 的 agent，其 socket 'timeout' 监听数亦为 1）；
   // 超时且 socket 在池即销毁（agent-timeout 块 2：池 socket 不得复用）。
@@ -824,6 +830,8 @@ Agent.prototype.keepSocketAlive = function (sock) {
 };
 Agent.prototype.__unpool = function (sock) {
   sock.__inPool = false;
+  // 出池重挂 agent 门（复用 active 回 2；handle 缺席即新建）。
+  if (sock.__agOnEnd === undefined) __armAgOnEnd(sock);
   // 出池即撤投毒 guard + 重挂解析器（node 复用即取新 parser；free 态的 null
   // 只维持到出池，见 __release）。
   try { sock.__freeGuardArmed = false; } catch { /* gone */ }

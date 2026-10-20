@@ -178,8 +178,14 @@ pub unsafe extern "C" fn net_connect(
     set_rval_str(&mut cx, &frame, &id.to_string());
     // 第4参 noDelay（http agent 默认 true；Node net 默认 false；tokio set_nodelay 零依赖）。
     // 源 bind 在场时 noDelay 后移到第 5 参（client-adopt/源地址面既有约定）。
+    // 第 6 参 localPort 数值（client-bind-twice 套件：本端源端口占用即 EADDRINUSE；缺省 0）。
     let no_delay = (frame.argc() > 3 && frame.arg(3).is_boolean() && frame.arg(3).to_boolean())
         || (frame.argc() > 4 && frame.arg(4).is_boolean() && frame.arg(4).to_boolean());
+    let local_port: u16 = if frame.argc() > 5 && frame.arg(5).is_number() {
+        (frame.arg(5).to_number() as i64).clamp(0, 65535) as u16
+    } else {
+        0
+    };
     // client-adopt 源 path（frame.arg(3) 非空串即 bind 本端；frame.arg(4) 布尔 noDelay 占位后移）。
     // 真机语义：new Socket({handle: srcBound}) + connect({path: dst}) 时本端 bind src（SO_REUSEADDR 式覆盖）。
     let src_bind: Option<String> = if frame.argc() > 3 && frame.arg(3).is_string() {
@@ -260,7 +266,7 @@ pub unsafe extern "C" fn net_connect(
         return true;
     }
     handle.spawn(async move {
-        match tcp_connect_resolved(host.as_str(), port as u16, src_bind.as_deref()).await {
+        match tcp_connect_resolved(host.as_str(), port as u16, src_bind.as_deref(), local_port).await {
             Err((code, msg)) => {
                 let _ = ev_tx.send(NetEvent {
                     id,
@@ -287,6 +293,7 @@ pub(crate) async fn tcp_connect_resolved(
     host: &str,
     port: u16,
     src: Option<&str>,
+    src_port: u16,
 ) -> Result<tokio::net::TcpStream, (String, String)> {
     // DNS 先解（dns-error 套件）：阻塞调用走 spawn_blocking。
     let resolved: Vec<std::net::SocketAddr> = match tokio::task::spawn_blocking({
@@ -305,7 +312,8 @@ pub(crate) async fn tcp_connect_resolved(
         }
     };
     // 逐个试连（首个成功即停；全败取末错——tokio connect 同语义）。
-    // 源地址 bind（localaddress 套件）：有 src 即按目标族建 sock 预 bind，
+    // 源地址 bind（localaddress 套件）：有 src 即按目标族建 sock 预 bind（端口
+    // 取 localPort，缺省 0；client-bind-twice 套件：占用即 EADDRINUSE），
     // 族不配即跳过该地址；bind 失败按连接错出。
     let src_ip: Option<std::net::IpAddr> = src.and_then(|s| s.parse().ok());
     let mut last_err: Option<std::io::Error> = None;
@@ -322,7 +330,7 @@ pub(crate) async fn tcp_connect_resolved(
                 tokio::net::TcpSocket::new_v4()
             };
             match sock {
-                Ok(s) => match s.bind(std::net::SocketAddr::new(src_ip, 0)) {
+                Ok(s) => match s.bind(std::net::SocketAddr::new(src_ip, src_port)) {
                     Ok(()) => s.connect(addr).await.map_err(|e| e),
                     Err(e) => Err(e),
                 },
@@ -512,14 +520,59 @@ pub unsafe extern "C" fn net_listen(
         return false;
     };
     let mut cmd_rx = state::net_socket_add(id, target);
-    set_rval_str(&mut cx, &frame, &id.to_string());
     // 第 4 参 "1"：SO_REUSEPORT 重绑（BoundSocket adopt 路径；host 含 ':' 走
     // [v6]:port 括号形）。非 reuse 路径维持 tokio tuple bind。
     let reuse = frame.argc() > 3 && frame.arg(3).is_string()
         && value_to_string(&mut cx, frame.arg(3)) == "1";
+    // 第 5 参 "1"：无 host 监听同步 bind（node 真机：listen(0) 紧随同步 address()
+    // 即见端口；显式 host 走异步 DNS 路，真机同步 address 即 null，故 JS 只在
+    // host 缺省时置此旗）。成功 rval "id:port" 并任务内直接起 accept；失败 rval
+    // "id:0"，任务内照常异步报 ServerError + ServerClose（绝不抛）。
+    // 无新增 unsafe（纯 safe：std bind + 通道发送）。
+    enum SyncPre { No, Ok(std::net::TcpListener, u16), Fail(String, String) }
+    let pre = if !reuse
+        && frame.argc() > 4
+        && frame.arg(4).is_string()
+        && value_to_string(&mut cx, frame.arg(4)) == "1"
+    {
+        match std::net::TcpListener::bind(("0.0.0.0", port as u16)) {
+            Ok(l) => {
+                let p = l.local_addr().map(|a| a.port()).unwrap_or(0);
+                SyncPre::Ok(l, p)
+            }
+            Err(e) => {
+                let code = crate::builtins::node::fs::io_code(&e);
+                SyncPre::Fail(code.to_string(), format!("{code}: {e}"))
+            }
+        }
+    } else {
+        SyncPre::No
+    };
+    match &pre {
+        SyncPre::Ok(_, p) => set_rval_str(&mut cx, &frame, &format!("{id}:{p}")),
+        SyncPre::Fail(_, _) => set_rval_str(&mut cx, &frame, &format!("{id}:0")),
+        SyncPre::No => set_rval_str(&mut cx, &frame, &id.to_string()),
+    };
     let accept_handle = handle.clone();
     accept_handle.spawn(async move {
-        let bound = if reuse {
+        let bound: std::io::Result<tokio::net::TcpListener> = match pre {
+            SyncPre::Fail(code, msg) => {
+                let _ = ev_tx.send(NetEvent {
+                    id,
+                    kind: NetKind::ServerError { code: code.into(), msg },
+                });
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::ServerClose });
+                return;
+            }
+            SyncPre::Ok(std_listener, _) => {
+                let _ = std_listener.set_nonblocking(true);
+                // SAFETY(tokio 契约)：std listener 非阻塞 + 本 runtime 线程内接管
+                // （同文件 reuse 路径既有口径，无新增 unsafe 块）。
+                tokio::net::TcpListener::from_std(std_listener).map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::Other, format!("from_std failed: {e}"))
+                })
+            }
+            SyncPre::No => if reuse {
             let addr_str = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
             bind_tcp_reuseport(addr_str.as_str()).and_then(|l| {
                 use std::os::fd::{FromRawFd, IntoRawFd};
@@ -530,6 +583,7 @@ pub unsafe extern "C" fn net_listen(
             })
         } else {
             tokio::net::TcpListener::bind((host.as_str(), port as u16)).await
+        }
         };
         let Ok(listener) = bound else {
             let e = bound.unwrap_err();

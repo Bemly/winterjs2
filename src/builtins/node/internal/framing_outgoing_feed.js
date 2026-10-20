@@ -108,6 +108,8 @@
             // CONNECT 劫持标记（end 处理器跳过 FIN 销毁；升级形不动）。
             sock.__connectHijacked = true;
             try { sock.__detachSrvData && sock.__detachSrvData(); } catch { /* gone */ }
+            // 服务端 abort 门同步摘（劫持后 FIN 不得销毁用户 socket；计数留自门）。
+            try { if (sock.__srvSockOnEnd !== undefined) { sock.removeListener("end", sock.__srvSockOnEnd); sock.__srvSockOnEnd = undefined; } } catch { /* gone */ }
             // node 口径（connect 套件 listenerCount 矩阵真机实测：close 0/
             // drain 0/data 0/end 1/error 0/timeout 0）：隧道接管即拆 http 侧
             // 全部接线，只留 end 监听；记账（__sockets/conns/计时器）即刻结算

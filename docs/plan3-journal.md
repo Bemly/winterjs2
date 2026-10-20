@@ -2633,3 +2633,69 @@ G1/G2/G3/G9 已收官。）
 - send-keep-open（node 本次亦红）/ spawn-typeerror（sweep node=142，
   本次 node 绿）/ exec-maxbuf（本次 wjs 绿）→ flake 队尾，复判另轮。
 - 校验：17+9+3=29 ✓。P0 开码另行确认分支（本任务只定级，未动代码）。
+
+## 2026-10-20 net42 零构建探针+定级（P0/P1 分道）
+
+> 基线 base19b net 43 = DIFF 42 + SAME1 1（internal 系双红，非欠账）。
+> Bun：net 🟢（`bun-compat.md:72` 回环+allowHalfOpen/destroy 全对；`bun-parity.md:781` net 节），
+> 42 件无 Bun 同缺，皆真欠账。node 对照：base19b DIFF 即 node 绿 + 本段逐件 wjs 实跑取断言差。
+> 范围 `bun-scope.txt` net 141 + socket 5 行。
+
+### P0 报文/校验形（13 件，小步直修）
+
+- address-null ×5（immediate-destroy/reset-before-connected/destroy-twice/
+  reset-twice/timeout-unref）：`server.address()` 关后即 null，真机关完前仍有效
+  （`connect-immediate-destroy.js:7` 取 `.port` 炸）。修到：close 事件前 address 有效。
+- better-error ×2（listen-path/listen）：listen 失败错缺 `address`（`undefined !==
+  '/blah/fadfa'/'1.1.1.1'`）。修到：错体带 address/port。
+- validation ×4（socket-address/socket-options-invalid 缺抛 + custom-lookup
+  错码 `FAMILY≠IP_ADDRESS` + autoselect-attempt-timeout-cli-option `2500≠615`
+  缺省值）：修到文案/码/缺省逐字。
+- legacy ×2（socket-connecting `_connecting` undefined≠true + no-halfopen-enforcer
+  listenerCount 0≠1）：修到：`_connecting` 品牌透传 + 非半开 end 门装配。
+
+### P1 时序/竞速/深水（23 件，按簇开轮）
+
+- reset/destroy/nodelay 事件序 ×12（connect-destroy/nodelay/paused-connection/
+  reset-after-destroy/reset-until-connected/reset/dns-error/dns-lookup/
+  server-nodelay/server-reset/end-callback/setnodelay）：MUSTCALL 未达，多为
+  destroy 竞速 + nodelay 回调 + DNS 错路由。逐件 run1 复判再修。
+- shutdown 建模 ×3（write-after-fin `er undefined` + connect-destroy MUSTCALL +
+  write-cb-on-destroy-before-connect）：P2 结转 net=5 收尾建模（FIN 后写错面）。
+- timeout/水位 ×3（socket-timeout `100` + buffersize `9≠0` + stream 混接）：
+  超时门 + bufferSize 记账 + stream 互操作。
+- dns-custom-lookup HANG + perf_hooks + listen-handle-cluster HANG：lookup 透传/
+  perf 钩 + cluster 句柄（跨线程面，随 cluster 另案）。
+
+### 另案/范围外（6 件，不进 P0/P1）
+
+- normalize-args（`internal/net` 缺失）→ 范围外（internal 树既定）。
+- child-process-connect-reset（ipc spawn）/ server-close-before-ipc（HANG）→ infra 另案。
+- server-async-dispose（`Symbol.asyncDispose` 新 API）→ 另轮（显式 using 面）。
+- server-call-listen-multiple-times（本段空跑待编码期复判）/ server-capture-rejection
+  （kaboom 透传面，`__ev` 抛错到 uncaughtException 投递，http2 early-hints 同族）→
+  编码期首件复判定去留。
+- allow-half-open（本段空跑，MUSTCALL:22 未现）→ 编码期复判。
+
+## 2026-10-20 net P0 13件落地（报文/校验形）
+
+- address-null ×5：真机 listen 无 host 即同步 bind（显式 host 异步，同步 address
+  即 null）→ native 第 5 参同步路（std bind + rval `id:port`，失败仍异步
+  ServerError/Close 不抛；UDS 面既有同款），JS 仅 host===null 置旗并同步落
+  `__listening`（地址沿用 0.0.0.0，不跟真机 `::`，保既有绿）。
+- better-error ×2：`__bindHost` 跟踪 + 错体补 `address` + 失败清 stale。
+- validation ×4：getsockname 咨询（node `address EPERM` 形）/ 构造器 objectMode
+  三键（lib/net.js:625 口径，先于 fd）/ lookup 校验序（先 IP 整数组、次 family；
+  all:true 对象数组走 HE 旧路）/ 缺省读旗（attemptTimeout 500/`=v` 覆盖 +
+  autoSelect 三态直读剥存，存根分不出缺席）。
+- legacy ×2：`_connecting` 透传 + 自门常驻（构造期首挂，用户监听后触发）。
+- 监听数连锁（node 真机计数：fresh 1/active 2/池态 1/detach 1）：agent 门存根化
+  （回池/响应收齐/隧道摘除同步摘，出池重挂）+ req 面 end 递延 socket 事件后一拍
+  （I/O 不穿插 microtask）+ 服务端 abort 门劫持摘除。附带修好 keepalive/cli-sock/
+  http_timeout_deep（srv 1）三计数。
+- localPort 透传（client-bind-twice）：native 第 6 参 + resolved 签名扩展（tls
+  调用点补 0），占用即 EADDRINUSE。
+- 验证：P0 13/13（含双旗形）+ 双黑盒新件绿；`net_` 19/19、`http_` 35/35、
+  `tls_` 15/15、`https_` 12/12；custom-lookup 单发抖动复跑 5/5（load 并发 flake
+  记一笔）；冒烟 5/5；双守门绿；`split-js` 未触发（tls.js 960/net 全员 <1000）。
+

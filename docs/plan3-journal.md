@@ -1979,5 +1979,14 @@ G1/G2/G3/G9 已收官。）
 - 构建：sweep base19 正用 `target/debug`，本轮一律 `CARGO_TARGET_DIR=~/wjs-data/target-alt`
  （Xcode libclang），未碰主构建目录。
 
+## 2026-10-20 W9 新区落地验证（lane/whatwg，worktree-local 构建）
+
+- 迁移：基线 707a929 已含 806b5eb（W9 四文件在树），工作区干净零移植。
+- 错峰：首编与 4 lane 全量重编撞车（load 384），当即 kill 全并行任务待回落；
+  load 19 后 `cargo build -j2`（Xcode libclang）5m56s 编完，已报协调。
+- 验证（worktree-local 二进制）：W9 套件 + 相邻 searchparams-inspect/properties/
+  parsing/global 全绿 rc=0；`--test builtins` 41/41；冒烟 5/5；`check-lines: ok`
+ （最大 1000 src/state/mod.rs）+ `check-naming: ok`（本区干净，无并行脏文件）。
+
 
 

@@ -2110,3 +2110,11 @@ G1/G2/G3/G9 已收官。）
   1. console 先（纯文档，零代码风险，journal 冲突先解掉一半）；
   2. whatwg 后（代码：tls 切片+N2 fix+tests，合后重编跑 tls 域+冒烟）。
   http2/vm 跳过。base19b 等 fs 修复+冻结后另排（本任务不启动）。
+## 2026-10-20 任务3：console formatTime + promisify-custom-names（console lane，转绿）
+
+- 范围（Bun 清单内 2 件）：test-console-formatTime.js（console 域）+ test-util-promisify-custom-names.mjs（util 域）。真机 node 26.8.1 逐项实测先行（时间格式/颜色开关/inspect 交互全量可观察项以真机为准）。
+- R1 formatTime（debuglog 时间机器）：`require('internal/util/debuglog')` 报 Cannot find module（本仓只有自造 `node:internal/debuglog`）。修法：`internal/debuglog.rs` 补 `formatTime` 逐字移植（`pad/kSecond/kMinute/kHour` + 三档 `ms/s/m:ss/h:mm:ss`，primordials 还原直接调用）+ `internal/mod.rs` 加 `node:internal/util/debuglog` 同源别名（inspector/promises 先例）+ 单测：别名解析/同源断言（INTERNALS.len 81→83：HEAD 表实 82 而断言写 80，已 stale 两轮，按实测落数注记）。16 值全对（含边角 0/-5/0.0004→0ms/0.0005→0.001ms/999.9999→1000ms/整分时界/NaN→NaNms；Symbol 抛 TypeError 真机同形）。黑盒 `console_debuglog_format_time_faces`（正常 8 断言逐字 + 报错 + 边界）。
+- R2 promisify-custom-names（stream eos 别名）：`promisify(stream.finished).name` 本仓 'eos'，真机 'finished'。根因：util.rs promisify 自创改名 fallback，错改全局共享 custom（坑 4.290）。修法：删 fallback 恢复 node 原文（custom 原样返回）；各域定义处正名：fs.exists 命名函数表达式（`__existsOrig` 捕获避自递归）/ child exec 系 `defineProperty(name, orig.name)` / h2 connect `Object.defineProperty`（仿 assignFunctionName 只改名不绑名；h2_client.js 993→1002 超门，压回 994）/ crypto generateKeyPair 正名（防回退污染）。黑盒 `util_promisify_custom_names_faces`（9 名逐字 + custom 恒等 + 原名不被改写回归钉）+ 既有黑盒 `prom-name` 断言 origFn→""（真机即 ""，旧断言写的是偏离，随修法更正； discipline：旧断言与真机冲突先实测再翻转 4.65/4.71/4.82）。
+- 验证：两套件 wjs rc=0；黑盒 console/util 6/6；单测 internal_spec_table；冒烟 5/5；`check-lines` ok（h2_client 994/util 996）；`check-naming` ok。回归抽查：keygen-promisify rc=0；stream-finished DIFF / stream-pipeline SAME1 皆 base18 既有红（干净树重跑另见下）。
+- 定级（自主定级，按口径更新：默认对齐 node+Bun，书面偏离）：timers.setImmediate/setTimeout、readline.question 的 custom 缺失——名断言经通用拷贝路径已绿，行为 custom（timersPromises/AbortSignal）属 timers/readline 域，不在本轮改动（改即跨域行为变更，记档不碰）。console 全局 time/timeLog/timeEnd 未改（Rust Instantms 形；test-console.js 系另一簇，_times 暴露/缺标 warning 等未动）。
+- 交付 commits：8050f60（formatTime 簇）+ 707a929（promisify 簇），已合入 lane/console 基线。

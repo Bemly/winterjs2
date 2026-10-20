@@ -209,3 +209,18 @@
 - 根因：访问器经原型链命中，`this` 合法即过，绕过自有槽检查。
 - 修法：品牌门读内部槽（`__wjs2_urlBrandRecv`），不用派生属性。
 - 推广铁律：**品牌检查认槽不认链**——凡 `Object.create` 派生可达的面（§4.23 家族），门必须直读内部槽。
+
+### 4.290 promisify custom 改名 fallback 全局污染（2026-10-20，console lane）
+
+- 症状：`promisify(stream.finished).name === 'eos'`，真机为 `'finished'`（test-util-promisify-custom-names.mjs 第 25 行断死）。
+- 根因：util.rs 的 promisify 自创"回填原名"fallback（`fn.name !== original.name` 即改名）——node 原文是 custom 原样返回。fallback 直接改写**全局共享**的 custom 函数对象（`promises.finished` 被改名为 'eos'），且 eos→finished 正是 node 故意不同的别名（`Stream.finished = eos` + custom getter 回 `promises.finished`）。
+- 修法：删 fallback；各域 custom 在定义处正名——fs.exists 命名函数表达式（内层经 `__existsOrig` 捕获引用，裸调会自递归）/ child exec 系 `defineProperty(wrapped,'name',orig.name)` / h2 connect `Object.defineProperty(function..., 'name', 'connect')`（仿 node `assignFunctionName`：只改名不引入绑定，命名函数表达式会遮蔽外层 connect 致自递归）/ crypto generateKeyPair 同式（防回退污染 keygen-promisify 套件）。
+- 复现：`promisify(stream.finished).name`（修前 'eos'，真机 'finished'）；`promisify(finished) === promises.finished` 恒等。
+- 推广铁律：**custom 原样返回，名在定义处正**——凡宿主改写用户可见共享函数对象（改名/挂符号）即全局污染；命名函数表达式先查内层同名裸调（自递归），用"改名不绑名"（defineProperty/assignFunctionName 同构）。
+
+### 4.291 `node:` 内部真路径要显式别名 + 注册表长度断言并发 stale（2026-10-20，console lane）
+
+- 症状：`require('internal/util/debuglog')`（`--expose-internals` 套件直引形）Cannot find module；本仓只有 `node:internal/debuglog`（自造短名）。
+- 根因：`normalize_internal` 只认 INTERNALS 表项，node 真路径 `internal/util/debuglog` 无条目。另：INTERNALS.len 断言在 HEAD 已 stale（表实 82，断言写 80——多 lane 加表不 bump 数）。
+- 修法：加 `("node:internal/util/debuglog", debuglog::SOURCE)` 同源别名（`node:inspector/promises` 同源先例）；len 按实测 83 落数并注记 stale 史。
+- 推广铁律：**内部模块 node 真路径优先**——自造短名必须配真路径别名（套件直引用真路径）；**注册表长度断言是谁加表谁 bump**，并发 lane 下先按实测落数再注记。

@@ -59,57 +59,55 @@
 - **"另轮/infra"必须有编号进 0.4 队列**，否则等同出局——禁止无编号的"另案"。
 - 顺序永远按"清单件差额"降序排域，不按"手上正热的域"。
 
-### 0.3 全域基线（2026-10-20 base19，Bun 清单 3574 件，node-main 检出对照）
+### 0.3 全域基线（2026-10-20 base19b，Bun 清单 3574 件，node-main 检出对照）
 
-> 总计 **绿 2397/3528（68%）**（base18 2284 → base19 2397，+113；
-> 我方确定红：DIFF 925→841（-84）、TIMEOUT 116→84（-32）；
-> 双红 SAME1 203→206（+3，双边同红，口径差）。base19 为 mixed-binary：
-> 19:39 脏树构建跑前 ~1410 件 + 他 lane 20:03:02 重编跑后 ~2118 件
-> （journal base19 节，坑 4.292）；fs 282→246（-36）系未提交 open 重写
-> bake 进旧二进制（22f2db2 三宗罪，修一处回 ~54 件），**fs 域待 base19b 重测**。
-> 口径：`scripts/sweep-report.py base19`（工件 `~/wjs-data/sweep/base19/`，
-> 2 并发 + 看门狗，~61 分钟）；"绿"= 双侧 rc=0。base18 表留档备查
-> （`git show HEAD~:docs/plan3.md`），下表为 base19 新鲜数：
-> 域绿量变化（base18→base19）：http2 98→122（+24）、tls 84→93（+9）、
-> https 16→46（+30）、whatwg 13→45（+32）、vm 46→67（+21）、
-> worker 57→76（+19）、console 5→15（+10）、util 9→15（+6）、
-> webcrypto 1→4、readline 7→10、crypto 62→63、http 322→325；
-> fs 246（待重测）、stream 173→169、zlib 50→46 系 open 回归连带。
+> 总计 **绿 2470/3528（70%）**（base19 2397 → base19b 2470，+73；
+> 我方确定红：DIFF 841→820（-21）、TIMEOUT 84→31（-53）；
+> 双红 SAME1 206→207（+1）。base19b 为干净树纯净重跑（f1f1f26 后，
+> 含 open-fix 4a93a88 + N1 c825632 + HANG 对齐；md5 跑后复核一致）。
+> fs DIFF 75→38（-37 全愈，绿回 283）；HANG 自报 34 + MUSTCALL 107 行
+> （f1f1f26 生效中，TIMEOUT→DIFF 46 件）；P0 两回归仍挂（C 轮继续）。
+> 口径：`scripts/sweep-report.py base19b`（工件 `~/wjs-data/sweep/base19b/`，
+> 2 并发 + 看门狗，~45 分钟）；"绿"= 双侧 rc=0。base19 表留档备查
+> （`git show HEAD~:docs/plan3.md`），下表为 base19b 新鲜数：
+> 域绿量变化（base19→base19b）：http2 122→134（T25→2）、tls 93→96、
+> net 95→98、http 325→327、fs 246→283（+37 全愈）、https 46→48、
+> stream 169→174、zlib 46→50、readline 10→12；crypto 63→62（dsa flake）。
 
 | 域 | 清单件 | 绿 | DIFF | TIMEOUT | 双红 | 绿率 |
 |---|---|---|---|---|---|---|
-| http2 | 256 | 122 | 97 | 25 | 12 | 50% |
-| tls | 185 | 93 | 78 | 14 | 0 | 50% |
-| fs | 333 | 246 | 75 | 1 | 11 | 76% |
-| net | 138 | 95 | 38 | 4 | 1 | 69% |
-| http | 389 | 325 | 33 | 8 | 23 | 88% |
-| crypto | 120 | 63 | 39 | 1 | 17 | 61% |
-| worker | 110 | 76 | 33 | 1 | 0 | 69% |
-| child | 100 | 71 | 26 | 3 | 0 | 71% |
+| http2 | 256 | 134 | 107 | 2 | 13 | 55% |
+| tls | 185 | 96 | 88 | 1 | 0 | 51% |
+| crypto | 120 | 62 | 39 | 2 | 17 | 60% |
+| net | 138 | 98 | 39 | 0 | 1 | 71% |
+| http | 389 | 327 | 33 | 6 | 23 | 89% |
+| fs | 333 | 283 | 38 | 1 | 11 | 87% |
+| worker | 110 | 76 | 34 | 0 | 0 | 69% |
+| child | 100 | 71 | 28 | 1 | 0 | 71% |
 | vm | 95 | 67 | 28 | 0 | 0 | 70% |
 | webcrypto | 39 | 4 | 19 | 3 | 13 | 15% |
-| cluster | 80 | 59 | 16 | 5 | 0 | 73% |
+| cluster | 80 | 59 | 20 | 1 | 0 | 73% |
 | module | 27 | 7 | 20 | 0 | 0 | 25% |
 | diagnostics | 35 | 15 | 20 | 0 | 0 | 42% |
-| timers | 56 | 42 | 14 | 0 | 0 | 75% |
 | compile | 14 | 0 | 14 | 0 | 0 | 0% |
 | trace | 17 | 2 | 13 | 0 | 2 | 13% |
+| timers | 56 | 43 | 13 | 0 | 0 | 76% |
 | require | 21 | 8 | 13 | 0 | 0 | 38% |
-| dgram | 75 | 60 | 11 | 2 | 2 | 82% |
+| dgram | 75 | 60 | 12 | 1 | 2 | 82% |
 | async | 27 | 13 | 13 | 0 | 1 | 50% |
-| stream | 214 | 169 | 6 | 6 | 33 | 93% |
-| zlib | 61 | 46 | 11 | 0 | 4 | 80% |
 | internal | 18 | 5 | 11 | 0 | 2 | 31% |
-| https | 59 | 46 | 7 | 4 | 2 | 80% |
 | util | 25 | 15 | 9 | 1 | 0 | 60% |
 | repl | 64 | 54 | 10 | 0 | 0 | 84% |
-| readline | 20 | 10 | 10 | 0 | 0 | 50% |
 | v8 | 13 | 4 | 9 | 0 | 0 | 30% |
 | process | 82 | 69 | 8 | 1 | 4 | 88% |
+| https | 59 | 48 | 7 | 2 | 2 | 84% |
 | assert | 10 | 1 | 9 | 0 | 0 | 10% |
 | whatwg | 53 | 45 | 8 | 0 | 0 | 84% |
+| readline | 20 | 12 | 8 | 0 | 0 | 60% |
 | promise | 11 | 3 | 8 | 0 | 0 | 27% |
 | dns | 25 | 16 | 8 | 0 | 1 | 66% |
+| zlib | 61 | 50 | 7 | 0 | 4 | 87% |
+| stream | 214 | 174 | 2 | 5 | 33 | 96% |
 | perf | 9 | 2 | 7 | 0 | 0 | 22% |
 | shadow | 6 | 0 | 6 | 0 | 0 | 0% |
 | buffer | 63 | 57 | 6 | 0 | 0 | 90% |
@@ -122,15 +120,14 @@
 | webstream | 3 | 0 | 3 | 0 | 0 | 0% |
 | watch | 3 | 0 | 3 | 0 | 0 | 0% |
 | tty | 3 | 0 | 3 | 0 | 0 | 0% |
-| stdio | 4 | 1 | 2 | 1 | 0 | 25% |
 | socket | 5 | 2 | 3 | 0 | 0 | 40% |
 | preload | 3 | 0 | 3 | 0 | 0 | 0% |
 | performance | 6 | 3 | 3 | 0 | 0 | 50% |
 | uv | 2 | 0 | 2 | 0 | 0 | 0% |
 | stdout | 5 | 3 | 2 | 0 | 0 | 60% |
+| stdio | 4 | 2 | 1 | 1 | 0 | 50% |
 | stdin | 11 | 9 | 2 | 0 | 0 | 81% |
 | signal | 4 | 2 | 2 | 0 | 0 | 50% |
-| pipe | 8 | 6 | 2 | 0 | 0 | 75% |
 | filehandle | 3 | 0 | 2 | 0 | 1 | 0% |
 | domain | 4 | 2 | 2 | 0 | 0 | 50% |
 | debugger | 7 | 5 | 2 | 0 | 0 | 71% |
@@ -147,6 +144,7 @@
 | quic | 231 | 185 | 1 | 0 | 45 | 99% |
 | queue | 1 | 0 | 1 | 0 | 0 | 0% |
 | primitive | 1 | 0 | 0 | 1 | 0 | 0% |
+| pipe | 8 | 7 | 1 | 0 | 0 | 87% |
 | permission | 2 | 1 | 1 | 0 | 0 | 50% |
 | path | 16 | 15 | 1 | 0 | 0 | 93% |
 | parse | 3 | 0 | 1 | 0 | 2 | 0% |
@@ -164,7 +162,7 @@
 | eventemitter | 1 | 0 | 1 | 0 | 0 | 0% |
 | error | 1 | 0 | 1 | 0 | 0 | 0% |
 | err | 1 | 0 | 1 | 0 | 0 | 0% |
-| double | 1 | 0 | 0 | 1 | 0 | 0% |
+| double | 1 | 0 | 1 | 0 | 0 | 0% |
 | domexception | 1 | 0 | 1 | 0 | 0 | 0% |
 | diagnostic | 1 | 0 | 1 | 0 | 0 | 0% |
 | destroy | 1 | 0 | 1 | 0 | 0 | 0% |
@@ -172,7 +170,6 @@
 | cppheap | 1 | 0 | 1 | 0 | 0 | 0% |
 | coverage | 1 | 0 | 1 | 0 | 0 | 0% |
 | constants | 1 | 0 | 1 | 0 | 0 | 0% |
-| console | 16 | 15 | 1 | 0 | 0 | 93% |
 | cli | 2 | 1 | 1 | 0 | 0 | 50% |
 | c | 1 | 0 | 1 | 0 | 0 | 0% |
 | btoa | 1 | 0 | 1 | 0 | 0 | 0% |
@@ -241,6 +238,7 @@
 | disable | 1 | 1 | 0 | 0 | 0 | 100% |
 | delayed | 1 | 1 | 0 | 0 | 0 | 100% |
 | debug | 1 | 1 | 0 | 0 | 0 | 100% |
+| console | 16 | 16 | 0 | 0 | 0 | 100% |
 | config | 1 | 1 | 0 | 0 | 0 | 100% |
 | client | 1 | 1 | 0 | 0 | 0 | 100% |
 | beforeexit | 1 | 1 | 0 | 0 | 0 | 100% |
@@ -324,7 +322,7 @@ prelude 切三片 include_str；余 11=既有记档 6 + redirect 2 + ipc/finaliz
 | R17 | 多 lane 并行收官 | ✅ 2026-10-20 wave-1 收官：worker-messaging（3/4）+ W1（19）+ H1/R16b + whatwg（19）+ https-verify（1+N）+ http2-c2（10/18）+ https-misc（4+1），累计 +51，全合入 master 并 push | — | ✅ |
 | R18 | wave-2 自续五道 | ✅ 收官：L-A strict 15/15（CN 回落/自签/ALTNAME）/ L-B N1/N2/N2b/close-竞速/free 全绿 / L-C HEAD end_stream+close-idle 束+TIMEOUT 全表定级 / L-D timeout×4+描述符×2 / L-E loader-json+bound 确认+console/util triage；余 bound/另案记档，见 journal | — | ✅ |
 | R19 | wave-3 自续五道 | 🟡 启动：L-A B-3 四红 / L-B connect-flake+TIMEOUT 复判 / L-C 15 actionable-shell / L-D linker 尝试 / L-E console 簇+小校验+dirname；同域 backlog 自动续 | — | 🟡 |
-| R20 | base19+fs回归修复+N2 | 🟡 进行中：base19 mixed-binary 2397/3528（68%，+113，journal c1a5cf7；20:03切换约1410旧/2118新，旧二进制系脏树构建）；fs37+下游17系22f2db2 open重写三宗罪（2参flag/3参mode/void m）+sendfile4件，归http2 lane 1-commit修；N2无SNI→false已落lane/whatwg（1246228，tls_13/13）；N1补7键待轮子定 crate（用户已原则批准，x509-cert优先复用）；4 lane分支合回顺序由sweep lane merge-tree预览；base19b待冻结+干净树重跑 | — | 🟡 |
+| R20 | base19+fs回归修复+N2 | 🟡 进行中：base19b 干净基线 2470/3528（70%，+73，journal ceccaa5；fs-37全愈绿回283，HANG 34+107行生效，欠账851）；P0两回归（socket-destroy-delayed/goaway）仍挂C轮继续，proxy等4件转绿；N1已合入（c825632）余4红close-error待19c；§0.3已换base19b表 | — | 🟡 |
 | P3 | http 冻结收口 | ✅ 2026-09-30 R1：`matchKnownFields`（单例表删 content-encoding/x-forwarded-host，4.237）+ `outgoing-finished`（ServerResponse 补 OM 品牌五项等 close，4.238）转绿，`1.0-keep-alive` 复验绿；http 相关 52/52 strict；余 8 件按原定性记档不再开轮 | ≤1 天 | ✅ |
 | D1 | ✅ 2026-09-25 已做 | node 运行时旗改**精确名单**（`src/cli_node_flags.rs`，取自 `node --help`；前缀族方案致 4.209 事故后废弃；winterjs2 自有同名旗与改执行模式的旗不收，必须带值的旗只认 `--k=v`、值非法 exit 9）+ `internal/options` getOptionValue 读真实旗值 + DEP0005 认 `--pending-deprecation` + shell 串自举保旗交 CLI。实测：位置参数本就已通（旧"~18 件"口径过期）；`buffer-constructor-node-modules` 转绿；余红与 spawn 无关，已拆成 D4/P2 项（错误输出形状、`process.stdin/stdout` 非 Stream、`node:stream/iter` 未实现、vm-sigint stdio null） | — | ✅ |
 | D2 | ✅ 2026-09-25 已做 | AGENTS.md 瘦身：§4 206 条按编号重排迁 `docs/pitfalls.md`（带索引，编号不变），AGENTS 只留 §0–§3/§6 + 铁律摘要 + §5 入口（286KB→15KB） | — | ✅ |

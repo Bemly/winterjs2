@@ -1,10 +1,14 @@
 import { Readable, Writable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { inspect } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import errors from 'node:internal/errors';
 const {
   codes: {
     ERR_INVALID_ARG_TYPE: { HideStackFramesError: ERR_INVALID_ARG_TYPE },
+    ERR_INVALID_URL_SCHEME,
+    ERR_INVALID_FILE_URL_HOST,
+    ERR_INVALID_FILE_URL_PATH,
   },
 } = errors;
 
@@ -61,13 +65,12 @@ function __fsPath(p, what, argName) {
     return p;
   }
   if (p instanceof URL) {
-    if (p.protocol !== "file:") throw new TypeError(`${what}: only file: URLs supported`);
-    // URL 形同样禁 \0（null-bytes 套件 fileUrl/fileUrl2 两形 + 真机 26.8.2
-    // 逐字对拍：ARG_VALUE 'without null bytes'）。pathname 解码后判。
-    let dec = p.pathname;
-    try { dec = decodeURIComponent(p.pathname); } catch { }
-    if (dec.includes("\0")) {
-      const e = new TypeError(`The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received '${p.href}'`);
+    // file-URL 经中央转换落串（scheme/host/%2f/解码 + NUL 判；whatwg
+    // fs-whatwg-url 套件点名三码同步抛）。字符串一律字面（node 口径：
+    // 'file:foo' 串是相对路径，不得作 URL 解——Rust 侧同步去 URL 嗅探）。
+    p = fileURLToPath(p);
+    if (p.includes("\0")) {
+      const e = new TypeError(`The argument 'path' must be a string, Uint8Array, or URL without null bytes. Received '${p}'`);
       e.code = "ERR_INVALID_ARG_VALUE"; throw e;
     }
     return p;

@@ -21,8 +21,9 @@
 //!   transferable 系列（引擎绑定）。
 //! - `TextEncoder`/`TextDecoder` 直通全局（本仓 prelude 实现）。
 
-/// 内嵌 ESM 源。
-pub const SOURCE: &str = r#"
+/// 内嵌 ESM 源（§0.9：MIME 段拆进 mime.js，concat! 拼接字节恒等）。
+pub const SOURCE: &str = concat!(
+    r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Port of node lib/util.js public face (see module docs for deviations).
 import inspectModule from 'node:internal/util/inspect';
@@ -578,123 +579,9 @@ function getSystemErrorMap() {
   return new Map(systemErrorEntries.map(([code, pair]) => [code, [pair[0], pair[1]]]));
 }
 
-// ── MIMEType/MIMEParams（WHATWG MIME 解析子集；真机 26.8.2 逐项对过）──────
-// essence 错：`for a type/subtype in "<essence>" is invalid[ at N]`（空串无 at）；
-// setter 同口径（shown = 所赋值）；type/subtype 小写化；essence setter 是 no-op；
-// 无 `=` 的参数段跳过；名小写化、值大小写保留；空值/特殊字符序列化加引号；
-// MIMEParams 无 size/sort/forEach，delete 回 undefined。
-function mimeBadCharIndex(s) {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    const ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
-      c === 33 || c === 35 || c === 36 || c === 37 || c === 38 || c === 39 || c === 42 ||
-      c === 43 || c === 45 || c === 46 || c === 94 || c === 95 || c === 96 || c === 124 || c === 126;
-    if (!ok) return i;
-  }
-  return -1;
-}
-function mimeCheckToken(kind, shown, value) {
-  if (value === '') throw new ERR_INVALID_MIME_SYNTAX(kind, shown);
-  const bad = mimeBadCharIndex(value);
-  if (bad !== -1) throw new ERR_INVALID_MIME_SYNTAX(kind, shown, bad);
-}
-function mimeQuoteValue(value) {
-  if (value === '' || /[^!#$%&'*+\-.^_`|~0-9A-Za-z]/.test(value)) {
-    return '"' + value.replace(/(["\\])/g, '\\$1') + '"';
-  }
-  return value;
-}
-class MIMEParams {
-  #pairs;
-  constructor(pairs = []) { this.#pairs = pairs; }
-  get(name) {
-    name = String(name).toLowerCase();
-    for (const [k, v] of this.#pairs) {
-      if (k === name) return v;
-    }
-    return null;
-  }
-  set(name, value) {
-    name = String(name).toLowerCase();
-    value = String(value);
-    mimeCheckToken('parameter name', name, name);
-    this.#pairs = this.#pairs.filter(([k]) => k !== name);
-    this.#pairs.push([name, value]);
-  }
-  has(name) {
-    name = String(name).toLowerCase();
-    return this.#pairs.some(([k]) => k === name);
-  }
-  delete(name) {
-    name = String(name).toLowerCase();
-    this.#pairs = this.#pairs.filter(([k]) => k !== name);
-  }
-  keys() { return this.#pairs.map(([k]) => k).values(); }
-  values() { return this.#pairs.map(([, v]) => v).values(); }
-  entries() { return this.#pairs.map(([k, v]) => [k, v]).values(); }
-  toString() {
-    return this.#pairs.map(([k, v]) => `${k}=${mimeQuoteValue(v)}`).join(';');
-  }
-}
-class MIMEType {
-  #type;
-  #subtype;
-  #params;
-  constructor(input) {
-    if (typeof input !== 'string') throw new ERR_INVALID_ARG_TYPE('input', 'string', input);
-    const semi = input.indexOf(';');
-    const ess = (semi === -1 ? input : input.slice(0, semi)).trim();
-    const slash = ess.indexOf('/');
-    const type = (slash === -1 ? ess : ess.slice(0, slash)).trim();
-    const subtype = slash === -1 ? '' : ess.slice(slash + 1).trim();
-    if (slash === -1 || type === '') {
-      throw new ERR_INVALID_MIME_SYNTAX('type', ess);
-    }
-    mimeCheckToken('type', ess, type);
-    if (subtype === '') {
-      throw new ERR_INVALID_MIME_SYNTAX('subtype', ess);
-    }
-    mimeCheckToken('subtype', ess, subtype);
-    this.#type = type.toLowerCase();
-    this.#subtype = subtype.toLowerCase();
-    const pairs = [];
-    if (semi !== -1) {
-      for (const part of input.slice(semi + 1).split(';')) {
-        const eq = part.indexOf('=');
-        if (eq === -1) continue;
-        const name = part.slice(0, eq).trim().toLowerCase();
-        if (name === '') continue;
-        mimeCheckToken('parameter name', name, name);
-        let value = part.slice(eq + 1).trim();
-        if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
-          value = value.slice(1, -1).replace(/\\(.)/g, '$1');
-        }
-        pairs.push([name, value]);
-      }
-    }
-    this.#params = new MIMEParams(pairs);
-  }
-  get type() { return this.#type; }
-  set type(v) {
-    v = String(v);
-    mimeCheckToken('type', v, v);
-    this.#type = v.toLowerCase();
-  }
-  get subtype() { return this.#subtype; }
-  set subtype(v) {
-    v = String(v);
-    mimeCheckToken('subtype', v, v);
-    this.#subtype = v.toLowerCase();
-  }
-  get essence() { return `${this.#type}/${this.#subtype}`; }
-  set essence(_) {}
-  get params() { return this.#params; }
-  toString() {
-    const ps = this.#params.toString();
-    return ps ? `${this.essence};${ps}` : this.essence;
-  }
-}
-
+"#,
+    include_str!("mime.js"),
+    r#"
 // ── parseArgs（Node lib/util.js 口径；真机 26.8.2 逐项对过码与文案）────────
 // strict 下未知项抛 ERR_PARSE_ARGS_UNKNOWN_OPTION；non-strict 下未知长项按
 // 有 `=` 进 string、无则进 true（短项未知进 true），未知不抛；
@@ -961,4 +848,5 @@ export {
 export { debuglog as debug };
 // prelude Buffer custom inspect 的 re-entrant 钩子（extras 段回调 util.inspect）
 globalThis.__wjs2_inspect = inspect;
-"#;
+"#,
+);

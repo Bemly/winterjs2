@@ -224,8 +224,11 @@ export const readFile = function (...args) {
   try {
     p = Promise.resolve(readFileSync(...rest));
   } catch (e) {
+    // 回调面同步抛白名单：校验错一律同步（whatwg fs-whatwg-url 套件点名
+    // file-URL 三码；fileURLToPath 系与 ARG 三件同窗）。
     if (e && typeof e.code === "string" &&
-        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE")) throw e;
+        (e.code === "ERR_INVALID_ARG_TYPE" || e.code === "ERR_INVALID_ARG_VALUE" || e.code === "ERR_OUT_OF_RANGE" ||
+         e.code === "ERR_INVALID_URL_SCHEME" || e.code === "ERR_INVALID_FILE_URL_PATH" || e.code === "ERR_INVALID_FILE_URL_HOST")) throw e;
     p = Promise.reject(e);
   }
   if (sig && !sig.aborted) {

@@ -309,4 +309,44 @@ globalThis.__wjs2_napi_accessor =
   (obj, name, getter, setter, enumerable, configurable) =>
     Object.defineProperty(obj, name, { get: getter, set: setter, enumerable, configurable });
 globalThis.__wjs2_entries = (v) => Object.entries(v);
+// structuredClone 流拒收（transform-stream-members 套件）：ReadableStream/
+// WritableStream/TransformStream 实例不可序列化——JSON 中转原会静默吐 '{}'，
+// 真机抛 DOMException DataCloneError(25)。浅层包装 native：值（含 transfer
+// 表，数组/纯对象有限深遍历）内发现流实例即抛；其余一律原参直通 native
+//（ArrayBuffer/函数等原语义不变；无参调用的 requires-an-argument 亦由
+// native 判定，故用 arguments 原样转发）。
+{
+  const __native_structuredClone = globalThis.structuredClone;
+  const __scFindStream = (v, seen, depth) => {
+    if (v === null || (typeof v !== "object" && typeof v !== "function")) return null;
+    if (depth > 10 || seen.has(v)) return null;
+    seen.add(v);
+    if ((typeof ReadableStream === "function" && v instanceof ReadableStream) ||
+        (typeof WritableStream === "function" && v instanceof WritableStream) ||
+        (typeof TransformStream === "function" && v instanceof TransformStream)) {
+      return (v.constructor && v.constructor.name) || "Object";
+    }
+    if (Array.isArray(v)) {
+      for (const e of v) { const f = __scFindStream(e, seen, depth + 1); if (f) return f; }
+      return null;
+    }
+    const proto = Object.getPrototypeOf(v);
+    if (proto === Object.prototype || proto === null) {
+      for (const e of Object.values(v)) { const f = __scFindStream(e, seen, depth + 1); if (f) return f; }
+    }
+    return null;
+  };
+  const __wrapped_structuredClone = function () {
+    const seen = new Set();
+    const opts = arguments.length > 1 ? arguments[1] : undefined;
+    let tag = __scFindStream(arguments.length > 0 ? arguments[0] : undefined, seen, 0);
+    if (!tag && opts && typeof opts === "object" && Array.isArray(opts.transfer)) {
+      tag = __scFindStream(opts.transfer, seen, 0);
+    }
+    if (tag) throw new DOMException(`${tag} object could not be cloned.`, "DataCloneError");
+    return __native_structuredClone.apply(undefined, arguments);
+  };
+  Object.defineProperty(__wrapped_structuredClone, "length", { value: 1 });
+  globalThis.structuredClone = __wrapped_structuredClone;
+}
 "#;

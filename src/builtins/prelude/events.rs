@@ -37,7 +37,9 @@ globalThis.Event = class Event {
   get isTrusted() { return false; }
   preventDefault() {
     const s = __wjs2_eventState.get(this);
-    if (s.cancelable) s.defaultPrevented = true;
+    // passive 监听中的 preventDefault 是 no-op（passive 套件点名
+    // defaultPrevented 保持 false 且 dispatch 返回 false）。
+    if (s.cancelable && !s.passiveNow) s.defaultPrevented = true;
   }
   stopPropagation() { __wjs2_eventState.get(this).stopped = true; }
   stopImmediatePropagation() {
@@ -147,22 +149,45 @@ globalThis.EventTarget = class EventTarget {
   }
   addEventListener(type, listener, options = {}) {
     if (arguments.length < 2) throw new TypeError("addEventListener requires at least 2 arguments");
-    if (typeof listener !== "function" && (typeof listener !== "object" || listener === null || typeof listener.handleEvent !== "function")) {
-      throw new TypeError("addEventListener: listener must be a function or an object with handleEvent");
-    }
     const o = typeof options === "boolean" ? { capture: options } : (options ?? {});
-    if (o.signal?.aborted) return;
+    // WebIDL 扁平化先行（passive/capture/once/signal 取值 → 用户 getter 可
+    // 观察；null 回调仍须读 passive——passive 套件点名，DOM 口径 "callback
+    // null 即 return" 在扁平化之后）。
+    const capture = !!o.capture;
+    const passive = !!o.passive;
+    const once = !!o.once;
+    const hasSignal = o.signal !== undefined;
+    const signal = hasSignal ? o.signal : null;
+    if (listener === null || listener === undefined) return;
+    if (typeof listener !== "function" && (typeof listener !== "object" || listener === null)) {
+      throw new TypeError("addEventListener: listener must be a function or an object");
+    }
+    // handleEvent 查找递延到派发时（this-of-listener 套件：后加 handleEvent
+    // 仍须调用；函数自带 handleEvent 属性仍走函数调用）。
+    if (hasSignal) {
+      // node 口径：signal 须 AbortSignal 形（null 亦抛；signal 套件点名码）。
+      const bad = !signal || (typeof signal !== "object" && typeof signal !== "function") ||
+        typeof signal.aborted !== "boolean" || typeof signal.addEventListener !== "function";
+      if (bad) {
+        const recv = signal === null ? "null"
+          : (typeof signal === "object" ? `an instance of ${signal.constructor?.name ?? "Object"}` : (typeof signal === "string" ? `'${signal}'` : String(signal)));
+        const e = new TypeError(`The "options.signal" property must be an instance of AbortSignal. Received ${recv}`);
+        e.code = "ERR_INVALID_ARG_TYPE";
+        throw e;
+      }
+      if (signal.aborted) return;
+    }
     // Proxy 目标无表决不抛（mustNotMutate 包裹的 signal 形 addEventListener；
     // 监听记代理身份下，触发侧 miss 即 benign——abort 竞速由 aborted 轮询门覆盖）。
     let st = __wjs2_etState.get(this);
     if (!st) { st = new Map(); __wjs2_etState.set(this, st); }
     const key = String(type);
     const list = st.get(key) ?? [];
-    if (list.some((e) => e.listener === listener && e.capture === !!o.capture)) return;
-    const entry = { listener, once: !!o.once, capture: !!o.capture, signal: o.signal ?? null, removed: false };
+    if (list.some((e) => e.listener === listener && e.capture === capture)) return;
+    const entry = { listener, once, capture, passive, signal, removed: false };
     list.push(entry);
     st.set(key, list);
-    if (o.signal) o.signal.addEventListener("abort", () => this.removeEventListener(key, listener, options), { once: true });
+    if (signal) signal.addEventListener("abort", () => this.removeEventListener(key, listener, options), { once: true });
   }
   removeEventListener(type, listener, options = {}) {
     const o = typeof options === "boolean" ? { capture: options } : (options ?? {});
@@ -191,10 +216,18 @@ globalThis.EventTarget = class EventTarget {
         if (entry.signal?.aborted) continue;
         if (entry.once) this.removeEventListener(es.type, entry.listener, { capture: entry.capture });
         es.currentTarget = this;
-        if (typeof entry.listener === "function") {
-          entry.listener.call(this, event);
-        } else {
-          entry.listener.handleEvent(event);
+        // passive 窗内派发（preventDefault 递延门消费后复位；嵌套派发按栈恢复）。
+        const prevPassive = es.passiveNow;
+        es.passiveNow = !!entry.passive;
+        try {
+          if (typeof entry.listener === "function") {
+            entry.listener.call(this, event);
+          } else {
+            const h = entry.listener.handleEvent;
+            if (typeof h === "function") h.call(entry.listener, event);
+          }
+        } finally {
+          es.passiveNow = prevPassive;
         }
       }
     } finally {

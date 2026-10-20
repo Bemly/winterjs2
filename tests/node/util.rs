@@ -394,3 +394,46 @@ fn inspect_control_escapes() {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn util_mime_type_parse_and_params() {
+    // 正常：构造/往返；报错：非法本质抛 ERR_INVALID_MIME_SYNTAX（\v\f/空格前导）、
+    // 非串参抛 ERR_INVALID_ARG_TYPE；边界：parse 非法回 null（Symbol 透出）、
+    // 重名参数首个胜出、非法值整项丢弃、quoted 转义。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { MIMEType } from 'node:util';
+const t = (f) => { try { return String(f()); } catch (e) { return e.constructor.name + ':' + e.code; } };
+console.log('basic:' + String(new MIMEType('text/html; charset=GBK')));
+console.log('dup:' + String(MIMEType.parse('text/html;charset=gbk;charset=windows-1255')));
+console.log('drop:' + String(MIMEType.parse('text/html;charset =gbk')));
+console.log('lead-ws:' + String(MIMEType.parse('text/html; charset=gbk')));
+console.log('quoted:' + String(MIMEType.parse('text/html;charset="gbk("')));
+console.log('empty-val:' + String(MIMEType.parse('text/html;foo=;bar=baz')));
+console.log('ess-vt:' + t(() => new MIMEType('\x0bx/html')));
+console.log('ess-sp:' + t(() => new MIMEType('text /html')));
+console.log('nonstring:' + t(() => new MIMEType(42)));
+console.log('parse-null:' + (MIMEType.parse('not a mime') === null));
+console.log('parse-sym:' + t(() => MIMEType.parse(Symbol())));
+console.log('essence:' + new MIMEType('TEXT/HTML;Charset=GBK').essence);
+"#,
+    );
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("basic:text/html;charset=GBK"), "out: {out}");
+    assert!(out.contains("dup:text/html;charset=gbk"), "out: {out}");
+    assert!(out.contains("drop:text/html"), "out: {out}");
+    assert!(out.contains("lead-ws:text/html;charset=gbk"), "out: {out}");
+    assert!(out.contains("quoted:text/html;charset=\"gbk(\""), "out: {out}");
+    assert!(out.contains("empty-val:text/html;bar=baz"), "out: {out}");
+    assert!(out.contains("ess-vt:TypeError:ERR_INVALID_MIME_SYNTAX"), "out: {out}");
+    assert!(out.contains("ess-sp:TypeError:ERR_INVALID_MIME_SYNTAX"), "out: {out}");
+    assert!(out.contains("nonstring:TypeError:ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("parse-null:true"), "out: {out}");
+    assert!(out.contains("parse-sym:TypeError:undefined"), "out: {out}");
+    assert!(out.contains("essence:text/html"), "out: {out}");
+    dir.close().unwrap();
+}

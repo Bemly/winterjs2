@@ -167,13 +167,15 @@ pub unsafe extern "C" fn td_canonical(
     let Some(label) = arg_string(&mut cx, &frame, 0, "TextDecoder") else {
         return false;
     };
-    match encoding_rs::Encoding::for_label(label.trim().as_bytes()) {
+    match encoding_rs::Encoding::for_label(label.trim_ascii().as_bytes()) {
         Some(enc) => {
-            set_rval_string(&mut cx, &frame, enc.name());
+            // 规范名小写化（真机 `decoder.encoding`/`encoding` 面全小写；
+            // encoding_rs 原生大写，encoding 套件点名小写）。
+            set_rval_string(&mut cx, &frame, &enc.name().to_lowercase());
             true
         }
         None => {
-            report_error(&mut cx, &format!("RangeError: unknown encoding '{label}'"));
+            report_error(&mut cx, &format!("RangeError: unknown encoding '{}'", label.replace('\0', "\u{FFFD}")));
             false
         }
     }
@@ -200,8 +202,8 @@ pub unsafe extern "C" fn td_decode(
         v.is_number() && v.to_number() != 0.0 || v.is_boolean() && v.to_boolean()
     };
     let (fatal, ignore_bom) = (flag(1), flag(2));
-    let Some(enc) = encoding_rs::Encoding::for_label(label.trim().as_bytes()) else {
-        report_error(&mut cx, &format!("RangeError: unknown encoding '{label}'"));
+    let Some(enc) = encoding_rs::Encoding::for_label(label.trim_ascii().as_bytes()) else {
+        report_error(&mut cx, &format!("RangeError: unknown encoding '{}'", label.replace('\0', "\u{FFFD}")));
         return false;
     };
     let Some(view) = view else {
@@ -226,7 +228,9 @@ pub unsafe extern "C" fn td_decode(
         (t, e)
     };
     if fatal && had_errors {
-        report_error(&mut cx, &format!("TypeError: data is not valid {}", enc.name()));
+        // 文案标签用传入的规范小写名（真机 `The encoded data was not valid
+        // for encoding utf-8` 全小写；fatal-streaming 套件逐字）。
+        report_error(&mut cx, &format!("TypeError: The encoded data was not valid for encoding {}", label.to_lowercase()));
         return false;
     }
     set_rval_string(&mut cx, &frame, &text);
@@ -276,7 +280,7 @@ fn stream_decode_chunk(
         let (res, read, had_errors) = dec.decode_to_string(src, &mut out, false);
         src = &src[read..];
         if had_errors && fatal {
-            return Err(format!("TypeError: data is not valid {label}"));
+            return Err(format!("TypeError: The encoded data was not valid for encoding {label}"));
         }
         if read == 0 {
             match res {
@@ -296,7 +300,7 @@ fn stream_decode_chunk(
             out.reserve(32usize.saturating_add(extra));
             let (res, _, had_errors) = dec.decode_to_string(&[], &mut out, true);
             if had_errors && fatal {
-                return Err(format!("TypeError: data is not valid {label}"));
+                return Err(format!("TypeError: The encoded data was not valid for encoding {label}"));
             }
             match res {
                 encoding_rs::CoderResult::InputEmpty => break,
@@ -331,8 +335,8 @@ pub unsafe extern "C" fn td_stream_open(
     ) else {
         return false;
     };
-    let Some(enc) = encoding_rs::Encoding::for_label(label.trim().as_bytes()) else {
-        report_error(&mut cx, &format!("RangeError: unknown encoding '{label}'"));
+    let Some(enc) = encoding_rs::Encoding::for_label(label.trim_ascii().as_bytes()) else {
+        report_error(&mut cx, &format!("RangeError: unknown encoding '{}'", label.replace('\0', "\u{FFFD}")));
         return false;
     };
     // BOM 口径与一次性 `decode` 对齐（见 `td_decode`）。
@@ -348,7 +352,7 @@ pub unsafe extern "C" fn td_stream_open(
         id
     });
     STREAM_DECODERS.with(|m| {
-        m.borrow_mut().insert(id, StreamDec { dec, fatal, label: enc.name().into() });
+        m.borrow_mut().insert(id, StreamDec { dec, fatal, label: label.to_lowercase() });
     });
     rooted!(&in(cx) let mut v = UndefinedValue());
     (id as f64).to_jsval(&mut cx, v.handle_mut());

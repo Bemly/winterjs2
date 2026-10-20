@@ -188,24 +188,29 @@ pub unsafe extern "C" fn url_set(
 }
 
 /// host setter：`example.com:8080` 拆端口；IPv6 原样交 `set_host`。
+/// 真机口径（properties 套件点名 `host='h:22'` 同置 host+port）：
+/// 干净 `host:u16port`（含 `[v6]:port`）先拆后置——轮子 `set_host` 吞掉
+/// `:port` 后缀（Ok 但丢端口）；拆不出干净端口的一律走裸 `set_host`
+///（`h:`/`h:abc`/`:8080` 等真机或置 host 保端口、或整体忽略，轮子同形）。
 fn set_host_port(u: &mut url::Url, value: &str) {
     if value.is_empty() {
         return;
     }
-    if u.set_host(Some(value)).is_ok() {
-        return;
-    }
-    // 带端口的 host（如 `example.com:8080`；IPv6 不进此分支因为 set_host 已处理）
     if let Some((h, p)) = value.rsplit_once(':')
-        && !h.ends_with(']')
+        && !h.is_empty()
+        && !p.is_empty()
+        && h.starts_with('[') == h.ends_with(']')
         && let Ok(port) = p.parse::<u16>()
         && u.set_host(Some(h)).is_ok()
     {
         let _ = u.set_port(Some(port));
+        return;
     }
+    let _ = u.set_host(Some(value));
 }
 
-/// `__wjs2_usp_parse(query)` → `[[k,v],...]` JSON（`?` 前缀可带可不带）。
+/// `__wjs2_usp_parse(query)` → `[[k,v],...]` JSON（按字面解析；
+/// 前导 `?` 由 JS WebIDL 层恰剥一个，见 prelude url.rs）。
 pub unsafe extern "C" fn usp_parse(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -217,8 +222,8 @@ pub unsafe extern "C" fn usp_parse(
     let Some(query) = arg_string(&mut cx, &frame, 0, "URLSearchParams") else {
         return false;
     };
-    let q = query.strip_prefix('?').unwrap_or(&query);
-    let pairs: Vec<(String, String)> = form_urlencoded::parse(q.as_bytes())
+    // 前导 `?` 剥离是 WebIDL 层职责（JS 侧恰剥一个，真机同款）；此处按字面解析。
+    let pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes())
         .into_owned()
         .collect();
     match serde_json::to_string(&pairs) {

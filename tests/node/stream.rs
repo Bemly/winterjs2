@@ -643,10 +643,149 @@ import assert from "node:assert";
     assert!(out.contains("f-err boom"), "out: {out}");
     assert!(out.contains("late-err late"), "out: {out}");
     assert!(out.contains("abort-f AbortError"), "out: {out}");
-    assert!(out.contains("tee-a src-e"), "out: {out}");
-    assert!(out.contains("tee-b src-e"), "out: {out}");
-    assert!(out.contains("tee-v 1 1"), "out: {out}");
-    assert!(out.contains("cs-bad W-TypeError-ERR_INVALID_ARG_TYPE R-TypeError-ERR_INVALID_ARG_TYPE"), "out: {out}");
-    assert!(out.contains("ad-ab Buffer"), "out: {out}");
-    dir.close().unwrap();
+  assert!(out.contains("tee-a src-e"), "out: {out}");
+  assert!(out.contains("tee-b src-e"), "out: {out}");
+  assert!(out.contains("tee-v 1 1"), "out: {out}");
+  assert!(out.contains("cs-bad W-TypeError-ERR_INVALID_ARG_TYPE R-TypeError-ERR_INVALID_ARG_TYPE"), "out: {out}");
+  assert!(out.contains("ad-ab Buffer"), "out: {out}");
+  dir.close().unwrap();
+}
+
+#[test]
+fn stream_web_compression_format_brand() {
+  // 正常：gzip 往返；报错：非法 format 挂 ERR_INVALID_ARG_VALUE（真机文案逐字）；
+  // 边界：非法接收者品牌门。
+  let dir = assert_fs::TempDir::new().unwrap();
+  let out = run_node_file(
+    &dir,
+    "p.mjs",
+    r#"
+import { CompressionStream, DecompressionStream } from "node:stream/web";
+const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code + ':' + e.message; } };
+console.log('bad:' + t(() => new CompressionStream(1)));
+console.log('bad2:' + t(() => new DecompressionStream({})));
+console.log('brand:' + t(() => Reflect.get(CompressionStream.prototype, 'readable', {})));
+{
+  const gz = new CompressionStream('gzip');
+  const gun = new DecompressionStream('gzip');
+  gz.readable.pipeTo(gun.writable);
+  const r = gun.readable.getReader();
+  const w = gz.writable.getWriter();
+  const chunks = [];
+  const pump = r.read().then(function recv({ value, done }) {
+    if (done) return;
+    chunks.push(Buffer.from(value));
+    return r.read().then(recv);
+  });
+  await w.write('hello');
+  await w.close();
+  await pump;
+  console.log('roundtrip:' + Buffer.concat(chunks).toString());
+}
+"#,
+  );
+  assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+  let out = String::from_utf8(out.stdout).unwrap();
+  assert!(out.contains("bad:TypeError:ERR_INVALID_ARG_VALUE:Failed to construct 'CompressionStream': 1st argument '1' is not a valid enum value of type CompressionFormat."), "out: {out}");
+  assert!(out.contains("bad2:TypeError:ERR_INVALID_ARG_VALUE:Failed to construct 'DecompressionStream': 1st argument '[object Object]' is not a valid enum value of type CompressionFormat."), "out: {out}");
+  assert!(out.contains("brand:TypeError:undefined:Cannot read private member"), "out: {out}");
+  assert!(out.contains("roundtrip:hello"), "out: {out}");
+  dir.close().unwrap();
+}
+
+#[test]
+fn stream_web_text_coder_streams() {
+  // 正常：编码往返/解码跨片往返；报错：非法 label 挂 ERR_ENCODING_NOT_SUPPORTED、
+  // 非对象 options 挂 ERR_INVALID_ARG_TYPE；边界：非法接收者品牌门 + node 形栈帧。
+  let dir = assert_fs::TempDir::new().unwrap();
+  let out = run_node_file(
+    &dir,
+    "p.mjs",
+    r#"
+import { TextEncoderStream, TextDecoderStream } from "node:stream/web";
+const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code + ':' + e.message; } };
+console.log('label:' + t(() => new TextDecoderStream('bogus')));
+console.log('opts:' + t(() => new TextDecoderStream(undefined, 1)));
+console.log('brand:' + t(() => Reflect.get(TextDecoderStream.prototype, 'encoding', {})));
+{
+  const tes = new TextEncoderStream();
+  const w = tes.writable.getWriter();
+  const r = tes.readable.getReader();
+  const got = [];
+  const pump = (async () => {
+    for (;;) { const { value, done } = await r.read(); if (done) return; got.push(Buffer.from(value)); }
+  })();
+  await w.write('\u{1F600}');
+  await w.close();
+  await pump;
+  console.log('enc:' + Buffer.concat(got).toString('hex'));
+}
+{
+  const tds = new TextDecoderStream();
+  const w = tds.writable.getWriter();
+  const r = tds.readable.getReader();
+  let text = '';
+  const pump = (async () => {
+    for (;;) { const { value, done } = await r.read(); if (done) return; text += value; }
+  })();
+  const euro = Buffer.from([0xe2, 0x82, 0xac]);
+  await w.write(euro.subarray(0, 1));
+  await w.write(euro.subarray(1, 2));
+  await w.write(euro.subarray(2, 3));
+  await w.close();
+  await pump;
+  console.log('dec:' + text + ':' + tds.encoding + ':' + tds.fatal + ':' + tds.ignoreBOM);
+}
+"#,
+  );
+  assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+  let out = String::from_utf8(out.stdout).unwrap();
+  assert!(out.contains("label:RangeError:ERR_ENCODING_NOT_SUPPORTED:"), "out: {out}");
+  assert!(out.contains("opts:TypeError:ERR_INVALID_ARG_TYPE:The \"options\" argument must be of type object. Received type number (1)"), "out: {out}");
+  assert!(out.contains("brand:TypeError:undefined:Cannot read private member"), "out: {out}");
+  assert!(out.contains("enc:f09f9880"), "out: {out}");
+  assert!(out.contains("dec:\u{20AC}:utf-8:false:false"), "out: {out}");
+  dir.close().unwrap();
+}
+
+#[test]
+fn stream_web_byob_bad_views() {
+  // 报错：空视图/分离视图读挂 ERR_INVALID_STATE；空 respondWithNewView 视图
+  // 挂 ERR_INVALID_ARG_VALUE、分离视图挂 ERR_INVALID_STATE；边界：闭流后读 done。
+  let dir = assert_fs::TempDir::new().unwrap();
+  let out = run_node_file(
+    &dir,
+    "p.mjs",
+    r#"
+const t = async (f) => { try { await f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code + ':' + e.message; } };
+{
+  const s = new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1, 2, 3])); }, type: 'bytes' });
+  const r = s.getReader({ mode: 'byob' });
+  console.log('empty:' + await t(() => r.read(new Uint8Array())));
+  console.log('zerolen:' + await t(() => r.read(new Uint8Array(new ArrayBuffer(10), 0, 0))));
+}
+{
+  const s = new ReadableStream({
+    pull: (c) => {
+      const v = new Uint8Array(new ArrayBuffer(10), 0, 0);
+      c.close();
+      try { c.byobRequest.respondWithNewView(v); console.log('rnv:NO-THROW'); }
+      catch (e) { console.log('rnv:' + e.constructor.name + ':' + e.code); }
+    },
+    type: 'bytes',
+  });
+  const r = s.getReader({ mode: 'byob' });
+  await r.read(new Uint8Array([4, 5, 6])).catch(() => {});
+  await new Promise((res) => setTimeout(res, 50));
+  console.log('rnv-done');
+}
+"#,
+  );
+  assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+  let out = String::from_utf8(out.stdout).unwrap();
+  assert!(out.contains("empty:TypeError:ERR_INVALID_STATE:Invalid state: View or Viewed ArrayBuffer is zero-length or detached"), "out: {out}");
+  assert!(out.contains("zerolen:TypeError:ERR_INVALID_STATE:Invalid state: View or Viewed ArrayBuffer is zero-length or detached"), "out: {out}");
+  assert!(out.contains("rnv:RangeError:ERR_INVALID_ARG_VALUE"), "out: {out}");
+  assert!(out.contains("rnv-done"), "out: {out}");
+  dir.close().unwrap();
 }

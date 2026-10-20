@@ -2975,3 +2975,34 @@ G1/G2/G3/G9 已收官。）
   写回调序）；net.rs 1036 超千行系 HEAD 遗留（本轮新黑盒独立成文件，未加重）。
 - 黑盒 +3：http2_tunnel.{deferred_end_patient,teardown_clean}、
   net_rawclose.end_after_fin_survives；守门 check-lines（除 net.rs 遗留）+ naming 双过。
+## 2026-10-21 base19c 全域基线（lane全合入后，SAME0 2523/3528）
+
+- 运行：pull 到 cacb403（childP0 等全合入）+ status 空 + load ~5 →
+  构建卡 E0004（cacb403 合丢 Mode::EvalQuiet argv 分支，还原一行，
+  commit 8a0b217；构建树干净，二进制 md5 跑后复核一致）→ 冒烟 5/5 →
+  sweep 同参（--tag base19c，jobs 2，thread 3599，port 29999），
+  02:36:36 → 03:19:08（~43min），3528/3528 无 abort。
+  工件 `~/wjs-data/sweep/base19c/`。残留 26 进程告警（他 lane 常驻
+  fixture + 探针，未清理、无干扰）；系统盘 46→36GB。
+- 总表：SAME0 **2523** / SAME1 208 / DIFF 769 / TIMEOUT 28（绿 71.5%）。
+  vs base19b（2470/207/820/31）：绿 **+53**、DIFF -51、TIMEOUT -3；
+  真实欠账 851→**797（-54）**。HANG 34 + MUSTCALL 83 行（自报链正常）。
+- 域级 Δ（绿）：net 98→128（+30，net lane 波）、module 7→26（+19）、
+  child 71→82（+11，P0 落地）、vm 67→78（+11）、readline 10→20（+8）、
+  promise/crypto/worker/socket 等小幅 +；tls 96→84（-12）、fs 283→276
+  （-7）、process 69→63（-6）、http2 134→131、http/stream/url 小幅 -。
+- 逐件：fixed 122（net 34/module 19/child 16/vm 11/readline 8/http2 7/…）、
+  newred 69（tls 16/http2 10/fs 7/process 6/child 5/http 4/net 4/url 3/…）。
+- 新红主因（~25 件，已修）：child P0 的 spawnSync mock 分发未守 `opts`
+  缺席（`opts.shell` 直读炸；tls/h2/fs/http/process 各域凡经 opensslCli
+  等无参 spawnSync helper 的全连红），commit ab3a76d（一行守卫），
+  ecdh/spawn-argv0/max-header-size/read-stream/execpath 复探全绿 +
+  mock 三套件复绿。base19c 二进制不含此修（跑后合入），下轮自愈。
+- 其余新红（待各 lane 复判）：-11 崩溃 3（readfile-pipe-large×2/
+  process-warnings，复探已绿，load 抖）；fs-mkdir-rmdir（回调次参
+  object vs undefined，fs 面）；fs-stat/statfs/http-chunk/
+  client-close/net×4/process-config 等断言差；TIMEOUT  churn
+  （capture-rejections 等）。
+- Top10（base19c 差额）：http2-112、tls-101、fs-46、http-41、crypto-39、
+  worker-32、cluster-22、webcrypto-21、diagnostics-21、child-18。
+  （child 29→18，P0 兑现；tls/fs 含上述已修 crash 簇，实欠更低。）

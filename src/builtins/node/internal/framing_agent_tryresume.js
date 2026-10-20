@@ -132,7 +132,7 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
     if (free.length === 0) delete this.freeSockets[name];
   }
   if (sock) {
-    this.__unpool(sock);
+    this.reuseSocket(sock, req);
     this.__list(this.sockets, name).push(sock);
     req.__poolKey = name;
     req.__queued = false;

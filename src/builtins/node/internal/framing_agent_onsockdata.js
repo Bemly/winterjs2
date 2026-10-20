@@ -840,6 +840,13 @@ Agent.prototype.keepSocketAlive = function (sock) {
   }
   return true;
 };
+// node 口径可覆写 reuseSocket（keepalive-override 套件点名调用时机与实参）：
+// 复用池 socket 即调（socket, req）；默认实现 = 出池 + 重 ref（池态 unref）。
+// 用户覆写须调回原实现完成复用（套件即此用法）。
+Agent.prototype.reuseSocket = function (sock, req) {
+  this.__unpool(sock);
+  try { if (typeof sock.ref === "function") sock.ref(); } catch { /* gone */ }
+};
 Agent.prototype.__unpool = function (sock) {
   sock.__inPool = false;
   // 出池即撤投毒 guard + 重挂解析器（node 复用即取新 parser；free 态的 null
@@ -883,7 +890,7 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
         continue;
       }
       {
-        this.__unpool(sock);
+        this.reuseSocket(sock, req);
         this.__list(this.sockets, key).push(sock);
         req.__poolKey = key;
         onSocket(sock, true);

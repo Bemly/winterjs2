@@ -7,12 +7,16 @@
 //! 偏差（按 9a 验收需要裁剪，逐条记录）：
 //! - `inspect` 为务实重写（非 3000 行逐字）：支持 depth/circular/customInspect/
 //!   getters/maxArrayLength/maxStringLength/类型形状（数组洞/Map/Set/TypedArray/
-//!   Date/RegExp/Error/函数/类名/`[Symbol]` 键），**不做 breakLength 换行**
-//!   （恒单行）、Promise 结算态经 `__wjs2_promise_state/result` 展开（fulfilled
+//!   Date/RegExp/Error/函数/类名/`[Symbol]` 键）、**breakLength/compact 换行**
+//!   （`reduceToSingleString` 数值 compact 路 + `isBelowBreakLength`，数组分组
+//!   `groupArrayElements` 未做；长数组按逐项换行——真机为分组多项一行）、
+//!   revoked Proxy 兜底 `<Revoked Proxy>`（抛错后补探，真机 C++ 探测无此误判）、
+//!   Promise 结算态经 `__wjs2_promise_state/result` 展开（fulfilled
 //!   展值、rejected 标 `<rejected>`、pending 保形）、ArrayBuffer 不打
 //!   `[Uint8Contents]`、numericSeparator 恒关、showProxy/showHidden 忽略。
-//! - 颜色支持仅存接口（`stylizeNoColor` 恒等；colors 选项忽略），错误消息路径
-//!   全部无色，与 9a 断言无交。
+//! - 颜色：`colors:true` 时 primitives/special 按 node 样式表上色（`inspect.styles`
+//!   子集）；RegExp 高亮（`highlightRegExp` 分组着色器）未做，整体按 `red`
+//!   处理。错误消息路径全部无色，与 9a 断言无交。
 
 /// 内嵌 ESM 源。
 pub const SOURCE: &str = r#"
@@ -25,6 +29,92 @@ const inspectDefaultOptions = {
   compact: 3, sorted: false, getters: false, numericSeparator: false,
 };
 const stylizeNoColor = (str, _style) => str;
+// 颜色表（node inspect.colors 全表 + inspect.styles 子集；真机口径：
+// key 不上色、value 按类型上色；特殊标记走 special/cyan）。
+// `inspectColors` 另供 `node:util` styleText 复用（与真机 `inspect.colors` 同键）。
+const __ansiColors = {
+  reset: [0, 0], bold: [1, 22], dim: [2, 22], italic: [3, 23],
+  underline: [4, 24], blink: [5, 25], inverse: [7, 27], hidden: [8, 28],
+  strikethrough: [9, 29], doubleunderline: [21, 24],
+  black: [30, 39], red: [31, 39], green: [32, 39], yellow: [33, 39],
+  blue: [34, 39], magenta: [35, 39], cyan: [36, 39], white: [37, 39],
+  bgBlack: [40, 49], bgRed: [41, 49], bgGreen: [42, 49], bgYellow: [43, 49],
+  bgBlue: [44, 49], bgMagenta: [45, 49], bgCyan: [46, 49], bgWhite: [47, 49],
+  framed: [51, 54], overlined: [53, 55],
+  gray: [90, 39], redBright: [91, 39], greenBright: [92, 39],
+  yellowBright: [93, 39], blueBright: [94, 39], magentaBright: [95, 39],
+  cyanBright: [96, 39], whiteBright: [97, 39],
+  bgGray: [100, 49], bgRedBright: [101, 49], bgGreenBright: [102, 49],
+  bgYellowBright: [103, 49], bgBlueBright: [104, 49],
+  bgMagentaBright: [105, 49], bgCyanBright: [106, 49], bgWhiteBright: [107, 49],
+  // 别名（真机 defineColorAlias 静态等价；getter/setter 联动语义未移植——
+  // 用户改 `inspect.colors.gray` 不连带 `grey`，偏差记档）。
+  grey: [90, 39], blackBright: [90, 39], bgGrey: [100, 49], bgBlackBright: [100, 49],
+  faint: [2, 22], crossedout: [9, 29], strikeThrough: [9, 29], crossedOut: [9, 29],
+  conceal: [8, 28], swapColors: [7, 27], swapcolors: [7, 27], doubleUnderline: [21, 24],
+};
+const inspectColors = __ansiColors;
+const __ansiStyles = {
+  special: 'cyan', number: 'yellow', bigint: 'yellow', boolean: 'yellow',
+  undefined: 'gray', null: 'bold', string: 'green', symbol: 'green',
+  date: 'magenta', regexp: 'red', module: 'underline',
+};
+function __stylize(str, style, ctx) {
+  if (!ctx || !ctx.colors) return str;
+  const color = __ansiColors[__ansiStyles[style] ?? style];
+  if (!color) return str;
+  return `\u001B[${color[0]}m${str}\u001B[${color[1]}m`;
+}
+// 可见长（colors 计入 ANSI 转义时剥除，真机 isBelowBreakLength 口径）。
+function __visibleLength(ctx, s) {
+  if (ctx && ctx.colors) {
+    try { s = stripVTControlCharacters(s); } catch {}
+  }
+  return s.length;
+}
+// 真机 isBelowBreakLength 移植（breakLength Infinity 即单行，除非已有换行）。
+function __isBelowBreakLength(ctx, output, start, base) {
+  if (ctx.breakLength === Infinity) {
+    if (base !== '' && String(base).includes('\n')) return false;
+    for (let i = 0; i < output.length; i++) {
+      if (typeof output[i] === 'string' && output[i].includes('\n')) return false;
+    }
+    return true;
+  }
+  let totalLength = output.length + start;
+  if (totalLength + output.length > ctx.breakLength) return false;
+  for (let i = 0; i < output.length; i++) {
+    totalLength += __visibleLength(ctx, output[i]);
+    if (totalLength > ctx.breakLength) return false;
+  }
+  return base === '' || !String(base).includes('\n');
+}
+// 真机 reduceToSingleString 移植（数值 compact 路 + compact:true 路；数组分组
+// groupArrayElements 未做，长数组逐项换行——偏差见模块头）。
+function __reduceEntries(ctx, output, lvl, braces, base) {
+  const compact = ctx.compact;
+  if (compact !== true) {
+    if (typeof compact === 'number' && compact >= 1) {
+      // 真机起算：entries 数 + 当前缩进 + 括号 + base + 10。
+      const start = output.length + lvl + braces[0].length + String(base).length + 10;
+      if (__isBelowBreakLength(ctx, output, start, base)) {
+        const joined = output.join(', ');
+        if (!joined.includes('\n')) {
+          return `${base ? `${base} ` : ''}${braces[0]} ${joined} ${braces[1]}`;
+        }
+      }
+    }
+    const indentation = '\n' + ' '.repeat(lvl);
+    return `${base ? `${base} ` : ''}${braces[0]}${indentation}  ` +
+      `${output.join(`,${indentation}  `)}${indentation}${braces[1]}`;
+  }
+  if (__isBelowBreakLength(ctx, output, 0, base)) {
+    return `${braces[0]}${base ? ` ${base}` : ''} ${output.join(', ')} ${braces[1]}`;
+  }
+  const indentation = '\n' + ' '.repeat(lvl);
+  return `${braces[0]}${base ? ` ${base}` : ''}${indentation}  ` +
+    `${output.join(`,${indentation}  `)}${indentation}${braces[1]}`;
+}
 const ansi = new RegExp(
   '(?:\\u001B\\][\\s\\S]*?(?:\\u0007|\\u001B\\u005C|\\u009C))' +
   '|[\\u001B\\u009B][[\\]()#;?]*' +
@@ -297,15 +387,15 @@ function __addNumericSeparator(s) {
 
 function formatPrimitive(value, ctx) {
   switch (typeof value) {
-    case 'string': return inspectString(value, ctx);
+    case 'string': return __stylize(inspectString(value, ctx), 'string', ctx);
     case 'number':
-      return ctx.numericSeparator ? __addNumericSeparator(formatNumber(value)) : formatNumber(value);
+      return __stylize(ctx.numericSeparator ? __addNumericSeparator(formatNumber(value)) : formatNumber(value), 'number', ctx);
     case 'bigint':
-      return ctx.numericSeparator ? __addNumericSeparator(`${value}`) + 'n' : `${value}n`;
-    case 'boolean': return `${value}`;
-    case 'undefined': return 'undefined';
-    case 'symbol': return value.toString();
-    default: return Object.is(value, null) ? 'null' : 'unknown';
+      return __stylize(ctx.numericSeparator ? __addNumericSeparator(`${value}`) + 'n' : `${value}n`, 'bigint', ctx);
+    case 'boolean': return __stylize(`${value}`, 'boolean', ctx);
+    case 'undefined': return __stylize('undefined', 'undefined', ctx);
+    case 'symbol': return __stylize(value.toString(), 'symbol', ctx);
+    default: return Object.is(value, null) ? __stylize('null', 'null', ctx) : 'unknown';
   }
 }
 
@@ -337,6 +427,10 @@ function prefixOf(value) {
 function formatPlainObject(value, ctx, depth, seen) {
   const keys = Reflect.ownKeys(value);
   const entries = [];
+  // 子项按深一层缩进格式化（多行嵌套对齐用；真机 indentationLvl 口径）。
+  const lvl = ctx.__lvl ?? 0;
+  ctx.__lvl = lvl + 2;
+  try {
   for (const key of keys) {
     if (ctx.maxArrayLength !== Infinity && entries.length >= ctx.maxArrayLength) break;
     let desc;
@@ -351,7 +445,7 @@ function formatPlainObject(value, ctx, depth, seen) {
         try { valStr = inspect2(hasGetter ? desc.get.call(value) : undefined, ctx, depth - 1, seen); }
         catch (err) { valStr = `[Exception: ${err?.message ?? err}]`; }
       } else {
-        valStr = hasGetter && hasSetter ? '[Getter/Setter]' : hasGetter ? '[Getter]' : '[Setter]';
+        valStr = __stylize(hasGetter && hasSetter ? '[Getter/Setter]' : hasGetter ? '[Getter]' : '[Setter]', 'special', ctx);
       }
     } else {
       valStr = inspect2(desc.value, ctx, depth - 1, seen);
@@ -360,21 +454,33 @@ function formatPlainObject(value, ctx, depth, seen) {
       (/^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name));
     entries.push(`${shown}: ${valStr}`);
   }
-  const body = entries.length === 0 ? '{}' : `{ ${entries.join(', ')} }`;
-  const p = prefixOf(value) || (Object.getPrototypeOf(value) === null ? '[Object: null prototype] ' : '');
-  return `${p}${body}`;
+  } finally { ctx.__lvl = lvl; }
+  // prefixOf 带尾空格（旧单行拼接用）；__reduceEntries 的 base 不带。
+  const p = (prefixOf(value) || (Object.getPrototypeOf(value) === null ? '[Object: null prototype]' : '')).trimEnd();
+  if (entries.length === 0) return p ? `${p} {}` : '{}';
+  return __reduceEntries(ctx, entries, lvl, ['{', '}'], p);
+}
+
+// revoked Proxy 兜底（真机 `<Revoked Proxy>`；C++ getProxyDetails 的 JS 侧近似：
+// 仅在已抛错后补探 getPrototypeOf，活 Proxy 正常路径零副作用）。
+function __revokedFallback(value, ctx, err) {
+  let __revoked = false;
+  try { Object.getPrototypeOf(value); } catch { __revoked = true; }
+  if (__revoked) return __stylize('<Revoked Proxy>', 'special', ctx);
+  throw err;
 }
 
 function inspect2(value, ctx, depth, seen) {
-  // 循环引用：Node 形 `​[Circular * n]`（n = 1 起）
+  // 循环引用：Node 形 `​[Circular * n]`（n = 1 起；colors 下 special 上色）
   if (typeof value === 'object' && value !== null) {
     const idx = seen.indexOf(value);
-    if (idx !== -1) return `[Circular * ${idx + 1}]`;
+    if (idx !== -1) return __stylize(`[Circular * ${idx + 1}]`, 'special', ctx);
   }
   // 10f：函数不走 primitives（Node formatValue 亦然；否则 '[Function]' 变 'unknown'）
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return formatPrimitive(value, ctx);
   // 10f：depth<0 只截断容器（Array/普通对象/Map/Set/TypedArray/AB），Date/Error/
   // RegExp/Promise/函数照常展开（真机口径）；空容器仍显体，非空显 `[Prefix]`。
+  try {
   if (depth < 0) {
     if (value instanceof Error || value instanceof Date || value instanceof RegExp ||
         value instanceof Promise || typeof value === 'function') {
@@ -410,27 +516,41 @@ function inspect2(value, ctx, depth, seen) {
       return `[${cn}]`;
     }
   }
+  } catch (errD) {
+    return __revokedFallback(value, ctx, errD);
+  }
 
   // custom inspect（customInspect:false 关闭；返回自身则继续普通格式化；异常传播）
-  if (ctx.customInspect && typeof value[kCustom] === 'function') {
-    const ret = value[kCustom](depth, { ...ctx, stylize: stylizeNoColor }, inspect);
-    if (ret !== value) return ret;
+  try {
+    if (ctx.customInspect && typeof value[kCustom] === 'function') {
+      const ret = value[kCustom](depth, { ...ctx, stylize: (s, t) => __stylize(s, t, ctx) }, inspect);
+      if (ret !== value) return ret;
+    }
+  } catch (err0) {
+    return __revokedFallback(value, ctx, err0);
   }
 
   seen.push(value);
   try {
     if (value instanceof Error) return value.stack ?? `${value.name}: ${value.message}`;
-    if (value instanceof Date) return Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString();
-    if (value instanceof RegExp) return value.toString();
+    // 真机口径：colors 下 Date 整体 magenta（date 样），RegExp 整体 red
+    //（真机 highlightRegExp 分组着色器未移植——偏差见模块头）。
+    if (value instanceof Date) {
+      return __stylize(Number.isNaN(value.getTime()) ? 'Invalid Date' : value.toISOString(), 'date', ctx);
+    }
+    if (value instanceof RegExp) return __stylize(value.toString(), 'regexp', ctx);
     if (typeof value === 'function') {
+      // 真机口径：调原始 Function.prototype.toString（用户覆写实例 toString
+      // 不得触发；test-console-not-call-toString 点名）。
       const name = value.name === '' ? ' (anonymous)' : `: ${value.name}`;
-      if (value.toString().startsWith('class')) {
+      if (Function.prototype.toString.call(value).startsWith('class')) {
         const proto = Object.getPrototypeOf(value.prototype);
         const ext = proto && proto.constructor && proto.constructor.name !== 'Object' && proto.constructor.name !== ''
           ? ` extends ${proto.constructor.name}` : '';
-        return `[class${name === ' (anonymous)' ? ' (anonymous)' : ` ${value.name}`}${ext}]`;
+        // 真机口径：colors 下函数/类整体 special（cyan）。
+        return __stylize(`[class${name === ' (anonymous)' ? ' (anonymous)' : ` ${value.name}`}${ext}]`, 'special', ctx);
       }
-      return `[${getFunctionPrefix(value)}${name}]`;
+      return __stylize(`[${getFunctionPrefix(value)}${name}]`, 'special', ctx);
     }
     if (value instanceof Promise) return formatSettledPromise(value, ctx, depth, seen); // 结算态经 native 内态 API
     if (typeof globalThis.__wjs2_promise_state === 'function') {
@@ -443,32 +563,44 @@ function inspect2(value, ctx, depth, seen) {
     if (value instanceof Map) {
       const entries = [];
       let i = 0;
+      const lvl = ctx.__lvl ?? 0;
+      ctx.__lvl = lvl + 2;
+      try {
       for (const [k, v] of value) {
         if (ctx.maxArrayLength !== Infinity && i >= ctx.maxArrayLength) break;
         entries.push(`${inspect2(k, ctx, depth - 1, seen)} => ${inspect2(v, ctx, depth - 1, seen)}`);
         i++;
       }
+      } finally { ctx.__lvl = lvl; }
       let extra = '';
       if (ctx.maxArrayLength !== Infinity && value.size > i) {
         extra = `... ${value.size - i} more item${value.size - i > 1 ? 's' : ''}`;
       }
-      const body = entries.length === 0 && extra === '' ? '{}' : `{ ${entries.join(', ')}${extra ? `, ${extra}` : ''} }`;
-      return `Map(${value.size}) ${body}`;
+      if (extra !== '') entries.push(extra);
+      const base = `Map(${value.size})`;
+      if (entries.length === 0) return `${base} {}`;
+      return __reduceEntries(ctx, entries, lvl, ['{', '}'], base);
     }
     if (value instanceof Set) {
       const entries = [];
       let i = 0;
+      const lvl = ctx.__lvl ?? 0;
+      ctx.__lvl = lvl + 2;
+      try {
       for (const v of value) {
         if (ctx.maxArrayLength !== Infinity && i >= ctx.maxArrayLength) break;
         entries.push(inspect2(v, ctx, depth - 1, seen));
         i++;
       }
+      } finally { ctx.__lvl = lvl; }
       let extra = '';
       if (ctx.maxArrayLength !== Infinity && value.size > i) {
         extra = `... ${value.size - i} more item${value.size - i > 1 ? 's' : ''}`;
       }
-      const body = entries.length === 0 && extra === '' ? '{}' : `{ ${entries.join(', ')}${extra ? `, ${extra}` : ''} }`;
-      return `Set(${value.size}) ${body}`;
+      if (extra !== '') entries.push(extra);
+      const base = `Set(${value.size})`;
+      if (entries.length === 0) return `${base} {}`;
+      return __reduceEntries(ctx, entries, lvl, ['{', '}'], base);
     }
     if (value instanceof WeakMap || value instanceof WeakSet) return `${constructorName(value)} { <items unknown> }`;
     if (value instanceof ArrayBuffer || (typeof SharedArrayBuffer === 'function' && value instanceof SharedArrayBuffer)) {
@@ -494,6 +626,9 @@ function inspect2(value, ctx, depth, seen) {
       const p = name === 'Array' || name === null ? '' : `${name}(${value.length}) `;
       const entries = [];
       let holeCount = 0;
+      const lvl = ctx.__lvl ?? 0;
+      ctx.__lvl = lvl + 2;
+      try {
       const limit = ctx.maxArrayLength === Infinity ? value.length : Math.min(value.length, ctx.maxArrayLength);
       for (let i = 0; i < limit; i++) {
         if (!(i in value)) { holeCount++; continue; }
@@ -505,13 +640,8 @@ function inspect2(value, ctx, depth, seen) {
       }
       if (holeCount > 0 && limit === value.length) {
         entries.push(holeCount === 1 ? '<1 empty item>' : `<${holeCount} empty items>`);
+        holeCount = 0;
       }
-      let extra = '';
-      if (value.length > limit) {
-        const more = value.length - limit;
-        extra = `... ${more} more item${more > 1 ? 's' : ''}`;
-      }
-      if (entries.length === 0 && extra === '' && p === '') return '[]';
       // 10f：数组自有非索引属性一并打印（`new Foobar(5)` 的 `aaa`，真机口径）。
       for (const k of Reflect.ownKeys(value)) {
         if (typeof k !== 'symbol') {
@@ -523,10 +653,26 @@ function inspect2(value, ctx, depth, seen) {
           (/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k));
         entries.push(`${shown}: ${inspect2(value[k], ctx, depth - 1, seen)}`);
       }
-      return `${p}[ ${entries.join(', ')}${extra ? `, ${extra}` : ''} ]`;
+      } finally { ctx.__lvl = lvl; }
+      let extra = '';
+      if (value.length > (ctx.maxArrayLength === Infinity ? value.length : Math.min(value.length, ctx.maxArrayLength))) {
+        const more = value.length - Math.min(value.length, ctx.maxArrayLength);
+        extra = `... ${more} more item${more > 1 ? 's' : ''}`;
+      }
+      if (extra !== '') entries.push(extra);
+      if (entries.length === 0 && p === '') return '[]';
+      if (entries.length === 0) return `${p}[]`;
+      if (p !== '') return __reduceEntries(ctx, entries, lvl, ['[', ']'], p.trimEnd());
+      return __reduceEntries(ctx, entries, lvl, ['[', ']'], '');
     }
     // 普通对象
     return formatPlainObject(value, ctx, depth, seen);
+  } catch (err2) {
+    // 真机口径：revoked Proxy 显示 `<Revoked Proxy>`（issue-43095）。
+    // 真机经 C++ 内 binding（getProxyDetails）无副作用探测；JS 侧无等价手段，
+    // 此处仅在已抛错后补探 getPrototypeOf（活 Proxy 不到此分支，无副作用；
+    // getPrototypeOf 自抛的活 Proxy 误判为 revoked——偏差记档）。
+    return __revokedFallback(value, ctx, err2);
   } finally {
     seen.pop();
   }
@@ -558,6 +704,7 @@ function inspect(value, options) {
 export {
   identicalSequenceRange,
   inspect,
+  inspectColors,
   inspectDefaultOptions,
   stylizeNoColor,
   format,
@@ -566,5 +713,5 @@ export {
   stripVTControlCharacters,
   isZeroWidthCodePoint,
 };
-export default { identicalSequenceRange, inspect, inspectDefaultOptions, stylizeNoColor, format, formatWithOptions, getStringWidth, stripVTControlCharacters, isZeroWidthCodePoint };
+export default { identicalSequenceRange, inspect, inspectColors, inspectDefaultOptions, stylizeNoColor, format, formatWithOptions, getStringWidth, stripVTControlCharacters, isZeroWidthCodePoint };
 "#;

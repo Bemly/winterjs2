@@ -150,6 +150,41 @@ try { parseEnv(42); } catch (e) { console.log("pe-t", e.code); }
 }
 
 #[test]
+fn util_parse_env_backticks() {
+    // 正常：backtick 与单引号同为原文（剥外层、不展 `\n`、内层异种引号保留、
+    // 跨行吞行）；边界：空 backtick 对、闭合后尾文丢弃；
+    // 报错：无（非法输入沿用 ARG_TYPE）；null 原型：__proto__ 键自有化。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r##"
+import { parseEnv } from "node:util";
+const o = parseEnv("A=`x`\nB=``\nC=`a\"b'c`\nD=`m\nn`\nE=`v` # t\n__proto__=p");
+console.log("vals:" + JSON.stringify([o.A, o.B, o.C, o.D, o.E, o["__proto__"]]));
+console.log("nullproto:" + (Object.getPrototypeOf(o) === null));
+console.log("own:" + Object.prototype.hasOwnProperty.call(o, "__proto__"));
+console.log("pollute:" + (({}).polluted === undefined));
+"##,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "vals:[\"x\",\"\",\"a\\\"b'c\",\"m\\nn\",\"v\",\"p\"]",
+        "nullproto:true",
+        "own:true",
+        "pollute:true",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn util_parse_args_mime_errno() {
     // 10a：parseArgs/MIMEType/getSystemError*（真机 26.8.2 探针结论转断言）。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -330,6 +365,62 @@ console.log("methods", typeof sites[0].getFileName, typeof sites[0].getLineNumbe
 }
 
 #[test]
+fn util_getcallsites_options() {
+    // 正常：frameCount 截断、对象形态 options、scriptId string；
+    // 报错：frameCount 非整数/越界 OOR、非法 options 体/第二参 ARG_TYPE、
+    // sourceMap 非布尔 ARG_TYPE；边界：stackTraceLimit=0 不影响捕获、
+    // host 帧（node:util 自身）恒不在 [0]。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { getCallSites } from "node:util";
+function inner() { return getCallSites(); }
+const t = (f) => { try { f(); return "NO-THROW"; } catch (e) { return e.code; } };
+console.log("host0:" + (inner()[0].functionName === "inner"));
+console.log("cap:" + (inner().length >= 1 && getCallSites(1).length === 1));
+console.log("sid:" + (typeof inner()[0].scriptId === "string"));
+console.log("bad36:" + t(() => getCallSites(3.6)));
+console.log("bad201:" + t(() => getCallSites(201)));
+console.log("badneg:" + t(() => getCallSites(-1)));
+console.log("badarr:" + t(() => getCallSites([])));
+console.log("badobj2:" + t(() => getCallSites({}, {})));
+console.log("bad210:" + t(() => getCallSites(10, 10)));
+console.log("badsm:" + t(() => getCallSites({ sourceMap: 1 })));
+console.log("opts-ok:" + (getCallSites({}).length >= 1 && getCallSites(1, {}).length === 1));
+const lim = Error.stackTraceLimit;
+Error.stackTraceLimit = 0;
+console.log("limit0:" + (getCallSites().length > 0));
+Error.stackTraceLimit = lim;
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "host0:true",
+        "cap:true",
+        "sid:true",
+        "bad36:ERR_OUT_OF_RANGE",
+        "bad201:ERR_OUT_OF_RANGE",
+        "badneg:ERR_OUT_OF_RANGE",
+        "badarr:ERR_INVALID_ARG_TYPE",
+        "badobj2:ERR_INVALID_ARG_TYPE",
+        "bad210:ERR_INVALID_ARG_TYPE",
+        "badsm:ERR_INVALID_ARG_TYPE",
+        "opts-ok:true",
+        "limit0:true",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn util_deep_separator_depth() {
     // 10f 套件点名修：skipPrototype 第三参 + 装箱槽判定 + numericSeparator + %s + depth。
     let dir = assert_fs::TempDir::new().unwrap();
@@ -435,5 +526,74 @@ console.log('essence:' + new MIMEType('TEXT/HTML;Charset=GBK').essence);
     assert!(out.contains("parse-null:true"), "out: {out}");
     assert!(out.contains("parse-sym:TypeError:undefined"), "out: {out}");
     assert!(out.contains("essence:text/html"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn util_small_validations() {
+    // 正常：styleText 嵌套/hex/别名/none、convert-signal 取值、sleep 有效值
+    // no-op、pendingDeprecate length 保形、promisify custom 匿名回填原名；
+    // 报错：styleText 非法格式 ARG_VALUE + 非法 stream ARG_TYPE、signal 非法值
+    // ARG_VALUE、sleep 非数 ARG_TYPE/越界 OOR；边界：validateStream:false 跳
+    // 过 stream 校验、DEP0174 警告照发。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r##"
+import util, { styleText, convertProcessSignalToExitCode, deprecate, promisify } from "node:util";
+import internalUtil from "node:internal/util";
+const t = (f) => { try { f(); return "NO-THROW"; } catch (e) { return e.constructor.name + ":" + e.code; } };
+console.log("style-nest:" + JSON.stringify(styleText("red", "A" + styleText("blue", "B", { validateStream: false }) + "C", { validateStream: false })));
+console.log("style-hex:" + JSON.stringify(styleText("#ff0000", "T", { validateStream: false })));
+console.log("style-alias:" + (styleText("grey", "x", { validateStream: false }) === styleText("gray", "x", { validateStream: false })));
+console.log("style-none:" + JSON.stringify(styleText("none", "test", { validateStream: false })));
+console.log("style-badfmt:" + t(() => styleText("invalid", "text")));
+console.log("style-badstream:" + t(() => styleText("red", "text", { stream: {} })));
+console.log("style-novalidate:" + JSON.stringify(styleText("red", "text", { stream: {}, validateStream: false })));
+console.log("signal-ok:" + convertProcessSignalToExitCode("SIGTERM"));
+console.log("signal-bad:" + t(() => convertProcessSignalToExitCode("INVALID")));
+console.log("signal-badtype:" + t(() => convertProcessSignalToExitCode(123)));
+console.log("sleep-ok:" + (internalUtil.sleep(5), "no-op"));
+console.log("sleep-argtype:" + t(() => internalUtil.sleep("x")));
+console.log("sleep-oor:" + t(() => internalUtil.sleep(-1)));
+console.log("pending-len:" + (internalUtil.pendingDeprecate(function (a, b) {}).length === 2));
+function origFn() {}
+origFn[promisify.custom] = () => {};
+console.log("prom-name:" + promisify(origFn).name);
+let depCode = "";
+process.on("warning", (w) => { depCode = w.code; });
+const p = promisify(async () => 1);
+p().catch(() => {});
+await new Promise((r) => setTimeout(r, 50));
+console.log("dep0174:" + depCode);
+"##,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "style-nest:\"\\u001b[31mA\\u001b[34mB\\u001b[31mC\\u001b[39m\"",
+        "style-hex:\"\\u001b[38;2;255;0;0mT\\u001b[39m\"",
+        "style-alias:true",
+        "style-none:\"test\"",
+        "style-badfmt:TypeError:ERR_INVALID_ARG_VALUE",
+        "style-badstream:TypeError:ERR_INVALID_ARG_TYPE",
+        "style-novalidate:\"\\u001b[31mtext\\u001b[39m\"",
+        "signal-ok:143",
+        "signal-bad:TypeError:ERR_INVALID_ARG_VALUE",
+        "signal-badtype:TypeError:ERR_INVALID_ARG_VALUE",
+        "sleep-ok:no-op",
+        "sleep-argtype:TypeError:ERR_INVALID_ARG_TYPE",
+        "sleep-oor:RangeError:ERR_OUT_OF_RANGE",
+        "pending-len:true",
+        "prom-name:origFn",
+        "dep0174:DEP0174",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
     dir.close().unwrap();
 }

@@ -50,9 +50,17 @@ Server.prototype = __HttpServerBase.prototype;
 const ClientRequest = withClientRequest(
   (host, port, extra) => tls.connect({
     port, host,
+    // node 口径：socketPath 在场即 UDS（unix-socket 套件；http 侧 openSocket
+    // 同款，tls.connect 读 .path 面）。
+    ...(extra.socketPath !== undefined ? { path: extra.socketPath } : {}),
+    // node 口径（getAllowUnauthorized）：NODE_TLS_REJECT_UNAUTHORIZED=0 即
+    // 缺省 false（显式值恒赢；警告由帧层统一发一次）。此处回落——键位只收
+    // 显式值（override-global-agent 套件）。
+    ...(extra.rejectUnauthorized !== undefined ? { rejectUnauthorized: extra.rejectUnauthorized }
+      : ((typeof process === "object" && process !== null && process.env !== undefined &&
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") ? { rejectUnauthorized: false } : {})),
     servername: extra.servername,
     ca: extra.ca,
-    rejectUnauthorized: extra.rejectUnauthorized,
     // node 口径：显式 undefined 即缺席（connect 内有缺省；显式传 undefined 反而触校验门）。
     ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
   }),
@@ -67,9 +75,14 @@ Object.setPrototypeOf(Agent.prototype, BaseAgent.prototype);
 Object.setPrototypeOf(Agent, BaseAgent);
 Agent.prototype.__openSocket = (host, port, extra) => tls.connect({
   port, host,
+  // 同上：socketPath→path（unix-socket 套件经 Agent 面 createConnection）。
+  ...(extra.socketPath !== undefined ? { path: extra.socketPath } : {}),
+  // 同上：env 缺省回落（键位只收显式值）。
+  ...(extra.rejectUnauthorized !== undefined ? { rejectUnauthorized: extra.rejectUnauthorized }
+    : ((typeof process === "object" && process !== null && process.env !== undefined &&
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") ? { rejectUnauthorized: false } : {})),
   servername: extra.servername,
   ca: extra.ca,
-  rejectUnauthorized: extra.rejectUnauthorized,
   ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
 });
 // node internal/http/agent.js normalizeServerName 口径：显式 servername（含 '')

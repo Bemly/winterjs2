@@ -612,12 +612,14 @@ export function withClientRequest(openSocket, flavor) {
       }
       // node 口径（lib/internal/options.js getAllowUnauthorized + tls/wrap.js
       // connect 缺省）：NODE_TLS_REJECT_UNAUTHORIZED=0 即 rejectUnauthorized
-      // 缺省 false（显式值恒赢；警告全进程一次）。https 客户端恒经 tls.connect
-      // 同口径；http 无 TLS 面不碰（flavor 门）。
+      // 缺省 false（显式值恒赢；警告全进程一次）。缺省只在 tls.connect 层
+      // 生效（https.rs 开 socket 钩子内回落），不得写进 extra——extra 进
+      // agent.getName 键位，注入即污染池键（override-global-agent 套件：
+      // 缺省 false 的请求键须等于 getName({port})）。http 无 TLS 面不碰
+      //（flavor 门）。
       if (flavor.protocol === "https:" && extra.rejectUnauthorized === undefined &&
           typeof process === "object" && process !== null && process.env !== undefined &&
           process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
-        extra.rejectUnauthorized = false;
         if (globalThis.__wjs2WarnedAllowUnauthorized !== true) {
           globalThis.__wjs2WarnedAllowUnauthorized = true;
           try {

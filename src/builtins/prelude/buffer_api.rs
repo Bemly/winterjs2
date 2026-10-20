@@ -128,19 +128,20 @@ function __wjs2_allowedUsages(name, kind) {
   if (kind === "secret") {
     if (name === "HMAC") return ["sign", "verify"];
     if (name === "HKDF" || name === "PBKDF2") return ["deriveKey", "deriveBits"];
+    if (name === "KMAC128" || name === "KMAC256") return ["sign", "verify"];
     if (name.startsWith("AES-") || name === "CHACHA20-POLY1305") return ["encrypt", "decrypt", "wrapKey", "unwrapKey"];
     return null;
   }
   if (kind === "public") {
     if (name === "ECDSA" || name === "ED25519" || name === "ED448") return ["verify"];
-    if (name === "ECDH" || name === "X25519") return [];
+    if (name === "ECDH" || name === "X25519" || name === "X448") return [];
     if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-PSS") return ["verify"];
     if (name === "RSA-OAEP") return ["encrypt", "wrapKey"];
     return null;
   }
   if (kind === "private") {
     if (name === "ECDSA" || name === "ED25519" || name === "ED448") return ["sign", "verify"];
-    if (name === "ECDH" || name === "X25519") return ["deriveKey", "deriveBits"];
+    if (name === "ECDH" || name === "X25519" || name === "X448") return ["deriveKey", "deriveBits"];
     if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-PSS") return ["sign", "verify"];
     if (name === "RSA-OAEP") return ["decrypt", "unwrapKey"];
     return null;

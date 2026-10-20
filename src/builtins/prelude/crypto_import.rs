@@ -111,6 +111,15 @@ globalThis.crypto = {
         crypto.getRandomValues(bytes);
         return __wjs2_makeKey({ name }, bytes, usages, !!extractable);
       }
+      if (name === "KMAC128" || name === "KMAC256") {
+        const defLen = name === "KMAC128" ? 128 : 256;
+        const length = alg?.length === undefined ? defLen : Number(alg.length);
+        // 真机宽松口径（keygen-kmac 旧断言已漂移，真机连 0 长亦放行；仅拒负数/非整数）。
+        if (!Number.isInteger(length) || length < 0) throw __wjs2_domErr("NotSupportedError", "Invalid key length");
+        const bytes = new Uint8Array(Math.ceil(length / 8));
+        crypto.getRandomValues(bytes);
+        return __wjs2_makeKey({ name, length }, bytes, usages, !!extractable);
+      }
       if (name === "HMAC") {
         if (alg?.hash === undefined) {
           const e = new TypeError("HMAC generateKey needs hash");
@@ -164,6 +173,14 @@ globalThis.crypto = {
       if (name === "X25519") {
         const priv = __wjs2_x_generate();
         const pub = __wjs2_x_public(priv);
+        const { pubU: xPubU, privU: xPrivU } = __wjs2_splitUsages(usages);
+        const mkPub = __wjs2_makeKey({ name }, pub, xPubU, !!extractable, "public");
+        const mkPriv = __wjs2_makeKey({ name }, priv, xPrivU, !!extractable, "private");
+        return { publicKey: mkPub, privateKey: mkPriv };
+      }
+      if (name === "X448") {
+        const priv = __wjs2_x448_generate();
+        const pub = __wjs2_x448_public(priv);
         const { pubU: xPubU, privU: xPrivU } = __wjs2_splitUsages(usages);
         const mkPub = __wjs2_makeKey({ name }, pub, xPubU, !!extractable, "public");
         const mkPriv = __wjs2_makeKey({ name }, priv, xPrivU, !!extractable, "private");
@@ -344,10 +361,10 @@ globalThis.crypto = {
         }
         throw new Error(`NotSupportedError: importKey ${format} for EC needs jwk/pkcs8/spki/raw`);
       }
-      if (name === "ED25519" || name === "X25519" || name === "ED448") {
+      if (name === "ED25519" || name === "X25519" || name === "ED448" || name === "X448") {
         // JWK crv 用混合大小写（RFC 8037；内部 name 全大写，不外泄）。
         // algorithm 面无 namedCurve（OKP 真机口径，与 generateKey 一致）。
-        const crv = name === "ED25519" ? "Ed25519" : name === "ED448" ? "Ed448" : "X25519";
+        const crv = name === "ED25519" ? "Ed25519" : name === "ED448" ? "Ed448" : name === "X448" ? "X448" : "X25519";
         const keyAlg = { name };
         const isPrivFmt = format === "pkcs8" || (format === "jwk" && keyData !== null && typeof keyData === "object" && typeof keyData.d === "string");
         if (isPrivFmt && usages.length === 0) {
@@ -361,8 +378,8 @@ globalThis.crypto = {
           }
           if (!keyData.crv) throw badData();
           if (keyData.crv !== crv) throw new Error('JWK "crv" Parameter and algorithm name mismatch');
-          const okpSize = name === "ED448" ? 57 : 32;
-          __wjs2_checkJwkMeta(keyData, name === "X25519" ? null : ["EdDSA"], name !== "X25519", !!extractable);
+          const okpSize = name === "ED448" ? 57 : name === "X448" ? 56 : 32;
+          __wjs2_checkJwkMeta(keyData, (name === "X25519" || name === "X448") ? null : ["EdDSA"], name !== "X25519" && name !== "X448", !!extractable);
           __wjs2_checkKeyOps(keyData, usages, name, typeof keyData.d === "string" ? "private" : "public");
           let x;
           try {
@@ -376,7 +393,7 @@ globalThis.crypto = {
             } catch { throw badData(); }
             if (seed.length !== okpSize) throw badData();
             // 私钥一致性：JWK 的 x 须与 d 对应（防混入）。
-            const expect = name === "ED25519" ? __wjs2_ed_public(seed) : name === "ED448" ? __wjs2_ed448_public(seed) : __wjs2_x_public(seed);
+            const expect = name === "ED25519" ? __wjs2_ed_public(seed) : name === "ED448" ? __wjs2_ed448_public(seed) : name === "X448" ? __wjs2_x448_public(seed) : __wjs2_x_public(seed);
             const same = expect.length === okpSize && expect.every((b, i) => b === x[i]);
             if (!same) throw badData();
             return __wjs2_makeKey(keyAlg, seed, usages, !!extractable, "private");
@@ -384,7 +401,7 @@ globalThis.crypto = {
           return __wjs2_makeKey(keyAlg, x, usages, !!extractable, "public");
         }
         if (format === "raw") {
-          const okpSize = name === "ED448" ? 57 : 32;
+          const okpSize = name === "ED448" ? 57 : name === "X448" ? 56 : 32;
           let v;
           try {
             v = __wjs2_keyBytes(keyData);
@@ -451,7 +468,26 @@ globalThis.crypto = {
         if (bytes.length !== 32) throw __wjs2_domErr("DataError", "Invalid key length");
         return __wjs2_makeKey({ name }, bytes, usages, !!extractable);
       }
+      if (name === "KMAC128" || name === "KMAC256") {
+        // 显式长度落末 8bit 窗（HMAC 同款真机口径；缺省即字节数，全长放行）。
+        if (alg !== null && typeof alg === "object" && alg.length !== undefined) {
+          const want = Number(alg.length);
+          if (!Number.isInteger(want) || want <= bytes.length * 8 - 8 || want > bytes.length * 8) {
+            throw __wjs2_domErr("DataError", "Invalid key length");
+          }
+          return __wjs2_makeKey({ name, length: want }, bytes, usages, !!extractable);
+        }
+        return __wjs2_makeKey({ name, length: bytes.length * 8 }, bytes, usages, !!extractable);
+      }
       if (name === "HMAC") {
+        // 显式长度须落末 8bit 窗（真机逐项：bytes*8-8 < len <= bytes*8；缺省即字节数）。
+        if (alg !== null && typeof alg === "object" && alg.length !== undefined) {
+          const want = Number(alg.length);
+          if (!Number.isInteger(want) || want <= bytes.length * 8 - 8 || want > bytes.length * 8) {
+            throw __wjs2_domErr("DataError", "Invalid key length");
+          }
+          return __wjs2_makeKey({ name, hash: needHash, length: want }, bytes, usages, !!extractable);
+        }
         return __wjs2_makeKey({ name, hash: needHash, length: bytes.length * 8 }, bytes, usages, !!extractable);
       }
       if (name === "HKDF") {

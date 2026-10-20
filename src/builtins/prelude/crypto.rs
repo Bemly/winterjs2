@@ -100,15 +100,49 @@ function __wjs2_splitUsages(usages) {
 }
 function __wjs2_x_bits(algorithm, st, length) {
   const pubKey = algorithm?.public;
+  if (pubKey === undefined) {
+    const e = new TypeError("deriveBits: algorithm.public is required");
+    e.code = "ERR_MISSING_OPTION";
+    throw e;
+  }
   const pst = __wjs2_keyState.get(pubKey);
-  if (!pst || pst.alg.name !== "X25519" || pst.kind === "private") {
-    throw new TypeError("deriveBits: algorithm.public must be an X25519 public key");
+  if (!pst) {
+    const e = new TypeError("deriveBits: algorithm.public must be a CryptoKey");
+    e.code = "ERR_INVALID_ARG_TYPE";
+    throw e;
+  }
+  if (pst.alg.name !== "X25519" || pst.kind !== "public") {
+    throw __wjs2_domErr("InvalidAccessError", "key algorithm mismatch");
   }
   const secret = __wjs2_x_derive(st.material, pst.material);
   if (length === undefined || length === null) return secret.buffer;
   const bits = Number(length);
   if (!Number.isInteger(bits) || bits < 0 || bits > secret.length * 8 || bits % 8 !== 0) {
     throw __wjs2_domErr("OperationError", "bad X25519 deriveBits length");
+  }
+  return secret.slice(0, bits / 8).buffer;
+}
+function __wjs2_x448_bits(algorithm, st, length) {
+  const pubKey = algorithm?.public;
+  if (pubKey === undefined) {
+    const e = new TypeError("deriveBits: algorithm.public is required");
+    e.code = "ERR_MISSING_OPTION";
+    throw e;
+  }
+  const pst = __wjs2_keyState.get(pubKey);
+  if (!pst) {
+    const e = new TypeError("deriveBits: algorithm.public must be a CryptoKey");
+    e.code = "ERR_INVALID_ARG_TYPE";
+    throw e;
+  }
+  if (pst.alg.name !== "X448" || pst.kind !== "public") {
+    throw __wjs2_domErr("InvalidAccessError", "key algorithm mismatch");
+  }
+  const secret = __wjs2_x448_derive(st.material, pst.material);
+  if (length === undefined || length === null) return secret.buffer;
+  const bits = Number(length);
+  if (!Number.isInteger(bits) || bits < 0 || bits > secret.length * 8 || bits % 8 !== 0) {
+    throw __wjs2_domErr("OperationError", "bad X448 deriveBits length");
   }
   return secret.slice(0, bits / 8).buffer;
 }

@@ -3000,3 +3000,16 @@ G1/G2/G3/G9 已收官。）
   （binary 槽 b64，usages 拷贝）。
 - 排障：复原桥引黑盒外 `__b64dec`（IIFE 内）致 messageerror 静默丢信，
   改内联 atob；教训：跨 scope 引用必就地验证。
+
+## 2026-10-21 webcrypto 落地批 6（39 件 18→20 绿）
+
+- 转绿 2：derivebits.js（PBKDF2 int32 上限解慢）+ derivekey-cfrg（X448 全套）。
+- 实现：X448 generate/import/export/derive（轮子本就在，纯接线；CFRG 向量
+  对拍一致）；X/ECDH public 缺失/错型码（ERR_MISSING_OPTION/
+  ERR_INVALID_ARG_TYPE）+ 错算法 mismatch；HMAC/KMAC 显式长度末 8bit 窗；
+  wrapKey/unwrapKey 通用实现（导出+加解密复用；wrapping 钥算法→用量先验；
+  非整字节 HMAC 解包保留）。
+- KMAC（特性门待批）：tiny-keccak kmac 特性（零新 crate，见 Cargo 注）+
+  natives/接线；输出与 node 逐字节一致；套件余量皆旧断言漂移（真机同红）。
+- 判明：X448 轮子直用（x448 已钉版）；wrap-unwrap 余 KMAC 旧断言 + X448；
+  sign-verify-kmac/keygen-kmac 真机同红（长度口径漂移）；encap ML-KEM 另案。

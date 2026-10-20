@@ -95,6 +95,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_aeskw_unwrap", Some(crypto::aeskw_unwrap), 2),
             ("__wjs2_chacha_encrypt", Some(crypto::chacha_encrypt), 4),
             ("__wjs2_chacha_decrypt", Some(crypto::chacha_decrypt), 4),
+            ("__wjs2_kmac", Some(crypto::kmac), 5),
             ("__wjs2_rsa_generate", Some(crypto::rsa_generate), 2),
             ("__wjs2_rsa_public", Some(crypto::rsa_public), 1),
             ("__wjs2_rsa_sign", Some(crypto::rsa_sign), 3),

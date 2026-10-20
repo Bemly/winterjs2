@@ -199,8 +199,10 @@ blake2 = "0.11"
 md-5 = "0.11"
 # 9h-2（用户拍板两项全要）：ripemd160（RustCrypto digest 0.11 直通）+
 # SHAKE（sha3 0.12 已无类型，tiny-keccak shake 特性；CC0，见 dependencies2 9h-2）。
+# webcrypto 批 6（待用户拍板）：kmac 特性（tiny-keccak 自带，无新增 crate，
+# 仅特性门；KMAC128/256 五件套件；不同意即 revert 本行 + symm kmac 段）。
 ripemd = "0.2"
-tiny-keccak = { version = "2", default-features = false, features = ["shake"] }
+tiny-keccak = { version = "2", default-features = false, features = ["shake", "kmac"] }
 hmac = "0.13"
 hkdf = "0.13"
 pbkdf2 = "0.13"

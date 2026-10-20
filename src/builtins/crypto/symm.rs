@@ -334,6 +334,48 @@ pub unsafe extern "C" fn hmac_verify(
     }
 }
 
+/// KMAC（SP 800-185；tiny-keccak kmac 特性，特性门待批见 Cargo）：
+/// `__wjs2_kmac(which, keyU8, customU8, dataU8, outLen)` → Uint8Array。
+/// which: 128/256；outLen 为字节数。
+pub unsafe extern "C" fn kmac(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 5 {
+        report_error(&mut cx, "TypeError: KMAC needs variant, key, customization, data and length");
+        return false;
+    }
+    let which = frame.arg(0).to_number() as u32;
+    let (Some(key), Some(custom), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(1), "KMAC key"),
+        opt_view_bytes(&mut cx, frame.arg(2), "KMAC customization"),
+        view_bytes(&mut cx, frame.arg(3), "KMAC data"),
+    ) else {
+        return false;
+    };
+    let out_len = frame.arg(4).to_number() as usize;
+    let custom_ref = custom.as_deref().unwrap_or(&[]);
+    let mut out = vec![0u8; out_len];
+    {
+        use tiny_keccak::{Hasher, Kmac};
+        let mut h = match which {
+            128 => Kmac::v128(&key, custom_ref),
+            256 => Kmac::v256(&key, custom_ref),
+            _ => {
+                report_error(&mut cx, "NotSupportedError: KMAC variant must be 128 or 256");
+                return false;
+            }
+        };
+        h.update(&data);
+        h.finalize(&mut out);
+    }
+    set_rval_bytes(&mut cx, &frame, &out)
+}
+
 /// 上限 64KiB（规范 QuotaExceededError）。
 const MAX_BYTES: usize = 65536;
 

@@ -71,10 +71,10 @@ pub const CRYPTO_OPS_JS: &str = r#"
         }
         throw new Error(`NotSupportedError: exportKey ${format} for EC needs pkcs8/spki/jwk/raw`);
       }
-      if (aname === "ED25519" || aname === "X25519" || aname === "ED448") {
+      if (aname === "ED25519" || aname === "X25519" || aname === "ED448" || aname === "X448") {
         const isPriv = st.kind === "private";
         const pubBytes = isPriv
-          ? (aname === "ED25519" ? __wjs2_ed_public(st.material) : aname === "ED448" ? __wjs2_ed448_public(st.material) : __wjs2_x_public(st.material))
+          ? (aname === "ED25519" ? __wjs2_ed_public(st.material) : aname === "ED448" ? __wjs2_ed448_public(st.material) : aname === "X448" ? __wjs2_x448_public(st.material) : __wjs2_x_public(st.material))
           : st.material;
         if (format === "pkcs8") {
           if (!isPriv) throw __wjs2_domErr("InvalidAccessError", "Key must be a private key");
@@ -85,7 +85,7 @@ pub const CRYPTO_OPS_JS: &str = r#"
           return __wjs2_okp_spki_from_pub(aname, pubBytes).buffer;
         }
         if (format === "jwk") {
-          const jwk = { kty: "OKP", crv: aname === "ED25519" ? "Ed25519" : aname === "ED448" ? "Ed448" : "X25519", x: __wjs2_b64urlEncode(pubBytes) };
+          const jwk = { kty: "OKP", crv: aname === "ED25519" ? "Ed25519" : aname === "ED448" ? "Ed448" : aname === "X448" ? "X448" : "X25519", x: __wjs2_b64urlEncode(pubBytes) };
           if (isPriv) jwk.d = __wjs2_b64urlEncode(st.material);
           // JWA 只给 Ed25519 定义了 "EdDSA"；X25519 无 alg（与 Node 一致，省略）。
           if (aname === "ED25519" || aname === "ED448") jwk.alg = "EdDSA";
@@ -128,53 +128,7 @@ pub const CRYPTO_OPS_JS: &str = r#"
       // wrong-alg 套件：算法先于用量（Key algorithm mismatch，真机逐项）。
       if ((typeof algorithm === "string" ? algorithm.toUpperCase() : String(algorithm?.name ?? "").toUpperCase()) !== String(st.alg.name ?? "").toUpperCase()) throw new Error("Key algorithm mismatch");
       __wjs2_needUsage(st, "encrypt");
-      if (st.alg.name === "AES-GCM") {
-        const p = __wjs2_aesParams(algorithm);
-        // 任意 iv/截断 tag 走手工 J0 路径（encrypt-decrypt-aes 套件真机逐项）。
-        const out = (p.iv.length === 12 && p.tagLength === 128)
-          ? __wjs2_aesgcm_encrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data))
-          : __wjs2_gcm_subtle(1, st.material, p.iv, p.aad ?? new Uint8Array(0), __wjs2_dataBytes(data), p.tagLength / 8);
-        return out.buffer;
-      }
-      if (st.alg.name === "AES-CBC") {
-        const iv = __wjs2_dataBytes(algorithm?.iv);
-        if (iv.length !== 16) throw __wjs2_domErr("OperationError", "algorithm.iv must contain exactly 16 bytes");
-        const out = __wjs2_aescbc_encrypt(st.material, iv, __wjs2_dataBytes(data));
-        return out.buffer;
-      }
-      if (st.alg.name === "AES-CTR") {
-        const counter = __wjs2_dataBytes(algorithm?.counter);
-        if (counter.length !== 16) throw __wjs2_domErr("OperationError", "AES-CTR counter must be 16 bytes");
-        const lenBits = Number(algorithm?.length ?? 128);
-        if (!Number.isInteger(lenBits) || lenBits < 1 || lenBits > 128) {
-          throw __wjs2_domErr("OperationError", "AES-CTR length must be between 1 and 128");
-        }
-        const out = __wjs2_aesctr_crypt(st.material, counter, lenBits, __wjs2_dataBytes(data));
-        return out.buffer;
-      }
-      if (st.alg.name === "CHACHA20-POLY1305") {
-        const iv = __wjs2_dataBytes(algorithm?.iv);
-        if (iv.length !== 12) throw __wjs2_domErr("OperationError", "ChaCha20-Poly1305 iv must be 12 bytes");
-        const tagLen = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
-        if (tagLen !== 128) throw __wjs2_domErr("OperationError", `${algorithm?.tagLength} is not a valid ChaCha20-Poly1305 tag length`);
-        const aad = algorithm?.additionalData === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.additionalData);
-        const out = __wjs2_chacha_encrypt(st.material, iv, aad, __wjs2_dataBytes(data));
-        return out.buffer;
-      }
-      if (st.alg.name === "RSA-OAEP") {
-        if (st.kind !== "public") throw new TypeError("encrypt: not an RSA public key");
-        const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
-        const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
-        try {
-          const out = __wjs2_rsa_encrypt(hash, st.material, __wjs2_dataBytes(data), label);
-          return out.buffer;
-        } catch (e) {
-          if (e instanceof DOMException) throw e;
-          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
-          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
-        }
-      }
-      throw new TypeError("encrypt: unsupported key");
+      return __wjs2_doEncrypt(algorithm, st, data);
       })();
     },
     decrypt(algorithm, key, data) {
@@ -184,73 +138,7 @@ pub const CRYPTO_OPS_JS: &str = r#"
       if (!st) throw new TypeError("decrypt: not a CryptoKey");
       if ((typeof algorithm === "string" ? algorithm.toUpperCase() : String(algorithm?.name ?? "").toUpperCase()) !== String(st.alg.name ?? "").toUpperCase()) throw new Error("Key algorithm mismatch");
       __wjs2_needUsage(st, "decrypt");
-      if (st.alg.name === "AES-GCM") {
-        const p = __wjs2_aesParams(algorithm);
-        // 认证失败即 OperationError（真机口径；native 纯 Error 形在此转，
-        // 参数型错误原样透传）。
-        try {
-          const out = (p.iv.length === 12 && p.tagLength === 128)
-            ? __wjs2_aesgcm_decrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data))
-            : __wjs2_gcm_subtle(0, st.material, p.iv, p.aad ?? new Uint8Array(0), __wjs2_dataBytes(data), p.tagLength / 8);
-          return out.buffer;
-        } catch (e) {
-          if (e instanceof DOMException) throw e;
-          // native 参数型错误（TypeError: 前缀）原样透传；余者皆认证失败。
-          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
-          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
-        }
-      }
-      if (st.alg.name === "AES-CBC") {
-        const iv = __wjs2_dataBytes(algorithm?.iv);
-        if (iv.length !== 16) throw __wjs2_domErr("OperationError", "algorithm.iv must contain exactly 16 bytes");
-        try {
-          const out = __wjs2_aescbc_decrypt(st.material, iv, __wjs2_dataBytes(data));
-          return out.buffer;
-        } catch (e) {
-          if (e instanceof DOMException) throw e;
-          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
-          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
-        }
-      }
-      if (st.alg.name === "AES-CTR") {
-        const counter = __wjs2_dataBytes(algorithm?.counter);
-        if (counter.length !== 16) throw __wjs2_domErr("OperationError", "AES-CTR counter must be 16 bytes");
-        const lenBits = Number(algorithm?.length ?? 128);
-        if (!Number.isInteger(lenBits) || lenBits < 1 || lenBits > 128) {
-          throw __wjs2_domErr("OperationError", "AES-CTR length must be between 1 and 128");
-        }
-        const out = __wjs2_aesctr_crypt(st.material, counter, lenBits, __wjs2_dataBytes(data));
-        return out.buffer;
-      }
-      if (st.alg.name === "CHACHA20-POLY1305") {
-        const iv = __wjs2_dataBytes(algorithm?.iv);
-        if (iv.length !== 12) throw __wjs2_domErr("OperationError", "ChaCha20-Poly1305 iv must be 12 bytes");
-        const tagLen = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
-        if (tagLen !== 128) throw __wjs2_domErr("OperationError", `${algorithm?.tagLength} is not a valid ChaCha20-Poly1305 tag length`);
-        const aad = algorithm?.additionalData === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.additionalData);
-        try {
-          const out = __wjs2_chacha_decrypt(st.material, iv, aad, __wjs2_dataBytes(data));
-          return out.buffer;
-        } catch (e) {
-          if (e instanceof DOMException) throw e;
-          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
-          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
-        }
-      }
-      if (st.alg.name === "RSA-OAEP") {
-        if (st.kind !== "private") throw new TypeError("decrypt: not an RSA private key");
-        const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
-        const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
-        try {
-          const out = __wjs2_rsa_decrypt(hash, st.material, __wjs2_dataBytes(data), label);
-          return out.buffer;
-        } catch (e) {
-          if (e instanceof DOMException) throw e;
-          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
-          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
-        }
-      }
-      throw new TypeError("decrypt: unsupported key");
+      return __wjs2_doDecrypt(algorithm, st, data);
       })();
     },
     sign(algorithm, key, data) {
@@ -263,6 +151,24 @@ pub const CRYPTO_OPS_JS: &str = r#"
       if (st.alg.name === "HMAC") {
         const out = __wjs2_hmac_sign(__wjs2_normHash(st.alg.hash), st.material, __wjs2_dataBytes(data));
         return out.buffer;
+      }
+      if (st.alg.name === "KMAC128" || st.alg.name === "KMAC256") {
+        if (st.kind !== "secret") throw new TypeError("sign: not a secret key");
+        const which = st.alg.name === "KMAC128" ? 128 : 256;
+        const outBits = algorithm?.outputLength === undefined ? which : Number(algorithm.outputLength);
+        // 输出长为 bit（真机口径；非 8 倍数即 OperationError）。
+        if (!Number.isInteger(outBits) || outBits <= 0 || outBits % 8 !== 0) {
+          throw __wjs2_domErr("NotSupportedError", "Invalid KmacParams outputLength");
+        }
+        const custom = algorithm?.customization === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.customization);
+        try {
+          const out = __wjs2_kmac(which, st.material, custom, __wjs2_dataBytes(data), outBits / 8);
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "RSASSA-PKCS1-V1_5") {
         if (st.kind !== "private") throw new TypeError("sign: not an RSA private key");
@@ -335,6 +241,29 @@ pub const CRYPTO_OPS_JS: &str = r#"
       __wjs2_needUsage(st, "verify");
       if (st.alg.name === "HMAC") {
         return __wjs2_hmac_verify(__wjs2_normHash(st.alg.hash), st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+      }
+      if (st.alg.name === "KMAC128" || st.alg.name === "KMAC256") {
+        if (st.kind !== "secret") throw new TypeError("verify: not a secret key");
+        const which = st.alg.name === "KMAC128" ? 128 : 256;
+        const outBits = algorithm?.outputLength === undefined ? which : Number(algorithm.outputLength);
+        if (!Number.isInteger(outBits) || outBits <= 0 || outBits % 8 !== 0) {
+          throw __wjs2_domErr("NotSupportedError", "Invalid KmacParams outputLength");
+        }
+        const custom = algorithm?.customization === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.customization);
+        try {
+          const out = __wjs2_kmac(which, st.material, custom, __wjs2_dataBytes(data), outBits / 8);
+          const sig = __wjs2_dataBytes(signature);
+          const ok = out.length === sig.length && out.every((b, i) => b === sig[i]);
+          return ok;
+        } catch (e) {
+          if (e instanceof DOMException) {
+            if (e.name === "DataError") return false;
+            throw e;
+          }
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          if (String(e?.message ?? "").startsWith("DataError:")) return false;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "RSASSA-PKCS1-V1_5") {
         if (st.kind === "private") throw new TypeError("verify: not an RSA public key");
@@ -415,10 +344,11 @@ pub const CRYPTO_OPS_JS: &str = r#"
       if (!st) throw new TypeError("deriveBits: not a CryptoKey");
       // lengths：null/缺省/非 8 倍数/负数即 OperationError；0 即空（真机逐项）。
       const needBytes = (len) => __wjs2_needBitsLength(len);
-      if (st.alg.name === "X25519" || st.alg.name === "ECDH") {
+      if (st.alg.name === "X25519" || st.alg.name === "X448" || st.alg.name === "ECDH") {
         if (st.kind !== "private") throw __wjs2_domErr("InvalidAccessError", "deriveBits: base key is not a private key");
         __wjs2_needDeriveUsage(st, "deriveBits");
         if (st.alg.name === "X25519") return __wjs2_x_bits(algorithm, st, length);
+        if (st.alg.name === "X448") return __wjs2_x448_bits(algorithm, st, length);
         return __wjs2_ecdh_bits(algorithm, st, length);
       }
       if (st.alg.name === "HKDF") {
@@ -457,10 +387,12 @@ pub const CRYPTO_OPS_JS: &str = r#"
       if (!st) throw new TypeError("deriveKey: not a CryptoKey");
       __wjs2_needDeriveUsage(st, "deriveKey");
       let bitsOf;
-      if (st.alg.name === "X25519" || st.alg.name === "ECDH") {
+      if (st.alg.name === "X25519" || st.alg.name === "X448" || st.alg.name === "ECDH") {
         if (st.kind !== "private") throw __wjs2_domErr("InvalidAccessError", "deriveKey: base key is not a private key");
         bitsOf = (length) => st.alg.name === "X25519"
           ? __wjs2_x_bits(algorithm, st, length)
+          : st.alg.name === "X448"
+          ? __wjs2_x448_bits(algorithm, st, length)
           : __wjs2_ecdh_bits(algorithm, st, length);
       } else if (st.alg.name === "HKDF") {
         const hash = __wjs2_normHash(algorithm?.hash);
@@ -523,6 +455,13 @@ pub const CRYPTO_OPS_JS: &str = r#"
         if (length === null) length = bytes.length * 8;
         return __wjs2_makeKey({ name: "HMAC", hash, length }, bytes, [...(usages ?? [])].map(String), !!extractable);
       }
+      if (dname === "KMAC128" || dname === "KMAC256") {
+        const defLen = dname === "KMAC128" ? 128 : 256;
+        let length = derivedKeyAlg?.length === undefined ? defLen : Number(derivedKeyAlg.length);
+        if (!Number.isInteger(length) || length < 0) throw __wjs2_domErr("NotSupportedError", "Invalid key length");
+        bytes = new Uint8Array(bitsOf(length));
+        return __wjs2_makeKey({ name: dname, length }, bytes, [...(usages ?? [])].map(String), !!extractable);
+      }
       throw new Error(`NotSupportedError: deriveKey to ${dname || "?"} needs follow-up`);
       })();
     },
@@ -530,11 +469,53 @@ pub const CRYPTO_OPS_JS: &str = r#"
     // 真实现随算法轮补齐，此处先 NotSupportedError 占位）。
     wrapKey(format, key, wrappingKey, wrapAlgorithm) {
       if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
-      return Promise.reject(new Error("NotSupportedError: wrapKey needs follow-up"));
+      const self = this;
+      return (async () => {
+      // 通用实现：先验 wrapping 钥（算法→用量），再导出 + 加密（wrap-unwrap 套件口径）。
+      const wst = __wjs2_keyState.get(wrappingKey);
+      if (!wst) throw new TypeError("wrapKey: not a CryptoKey");
+      const waname = typeof wrapAlgorithm === "string" ? wrapAlgorithm.toUpperCase() : String(wrapAlgorithm?.name ?? "").toUpperCase();
+      if (waname !== String(wst.alg.name ?? "").toUpperCase()) {
+        throw __wjs2_domErr("InvalidAccessError", "Key algorithm mismatch");
+      }
+      __wjs2_needUsage(wst, "wrapKey");
+      const exported = await self.exportKey(format, key);
+      const bytes = (exported !== null && typeof exported === "object" && !(exported instanceof ArrayBuffer) && !ArrayBuffer.isView(exported))
+        ? new TextEncoder().encode(JSON.stringify(exported))
+        : new Uint8Array(exported instanceof ArrayBuffer ? exported : exported.buffer ?? exported);
+      return __wjs2_doEncrypt(wrapAlgorithm, wst, bytes);
+      })();
     },
     unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, keyUsages) {
       if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
-      return Promise.reject(new Error("NotSupportedError: unwrapKey needs follow-up"));
+      const self = this;
+      return (async () => {
+      const ust = __wjs2_keyState.get(unwrappingKey);
+      if (!ust) throw new TypeError("unwrapKey: not a CryptoKey");
+      const uaname = typeof unwrapAlgorithm === "string" ? unwrapAlgorithm.toUpperCase() : String(unwrapAlgorithm?.name ?? "").toUpperCase();
+      if (uaname !== String(ust.alg.name ?? "").toUpperCase()) {
+        throw __wjs2_domErr("InvalidAccessError", "Key algorithm mismatch");
+      }
+      __wjs2_needUsage(ust, "unwrapKey");
+      const pt = await __wjs2_doDecrypt(unwrapAlgorithm, ust, wrappedKey);
+      let keyData = new Uint8Array(pt);
+      if (format === "jwk") {
+        keyData = JSON.parse(new TextDecoder().decode(keyData));
+      }
+      // 解包侧长度后置（显式长度先摘后存，导入校验不挡）。
+      const __uwAlg = unwrappedKeyAlgorithm && typeof unwrappedKeyAlgorithm === "object" && unwrappedKeyAlgorithm.length !== undefined
+        ? (() => { const c = { ...unwrappedKeyAlgorithm }; delete c.length; return c; })()
+        : unwrappedKeyAlgorithm;
+      const __uk = await self.importKey(format, keyData, __uwAlg, extractable, keyUsages);
+      // 非整字节 HMAC 显式长度保留（wrap-unwrap 套件真机逐项；导入侧拒，解包侧存）。
+      try {
+        const __ust = __wjs2_keyState.get(__uk);
+        if (__ust && __ust.alg && __ust.alg.name === "HMAC" && unwrappedKeyAlgorithm !== null && typeof unwrappedKeyAlgorithm === "object" && unwrappedKeyAlgorithm.length !== undefined) {
+          __ust.alg.length = Number(unwrappedKeyAlgorithm.length);
+        }
+      } catch {}
+      return __uk;
+      })();
     },
     encapsulateBits(encapsulation, publicKey) {
       if (this !== globalThis.crypto.subtle) return Promise.reject(__wjs2BrandErr());
@@ -558,6 +539,125 @@ pub const CRYPTO_OPS_JS: &str = r#"
     },
   },
 };
+// wrap-unwrap 套件：加解密内核（用量门外置；方法与 wrap/unwrap 共用，真机同语义）。
+function __wjs2_doEncrypt(algorithm, st, data) {
+      if (st.alg.name === "AES-GCM") {
+        const p = __wjs2_aesParams(algorithm);
+        // 任意 iv/截断 tag 走手工 J0 路径（encrypt-decrypt-aes 套件真机逐项）。
+        const out = (p.iv.length === 12 && p.tagLength === 128)
+          ? __wjs2_aesgcm_encrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data))
+          : __wjs2_gcm_subtle(1, st.material, p.iv, p.aad ?? new Uint8Array(0), __wjs2_dataBytes(data), p.tagLength / 8);
+        return out.buffer;
+      }
+      if (st.alg.name === "AES-CBC") {
+        const iv = __wjs2_dataBytes(algorithm?.iv);
+        if (iv.length !== 16) throw __wjs2_domErr("OperationError", "algorithm.iv must contain exactly 16 bytes");
+        const out = __wjs2_aescbc_encrypt(st.material, iv, __wjs2_dataBytes(data));
+        return out.buffer;
+      }
+      if (st.alg.name === "AES-CTR") {
+        const counter = __wjs2_dataBytes(algorithm?.counter);
+        if (counter.length !== 16) throw __wjs2_domErr("OperationError", "AES-CTR counter must be 16 bytes");
+        const lenBits = Number(algorithm?.length ?? 128);
+        if (!Number.isInteger(lenBits) || lenBits < 1 || lenBits > 128) {
+          throw __wjs2_domErr("OperationError", "AES-CTR length must be between 1 and 128");
+        }
+        const out = __wjs2_aesctr_crypt(st.material, counter, lenBits, __wjs2_dataBytes(data));
+        return out.buffer;
+      }
+      if (st.alg.name === "CHACHA20-POLY1305") {
+        const iv = __wjs2_dataBytes(algorithm?.iv);
+        if (iv.length !== 12) throw __wjs2_domErr("OperationError", "ChaCha20-Poly1305 iv must be 12 bytes");
+        const tagLen = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
+        if (tagLen !== 128) throw __wjs2_domErr("OperationError", `${algorithm?.tagLength} is not a valid ChaCha20-Poly1305 tag length`);
+        const aad = algorithm?.additionalData === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.additionalData);
+        const out = __wjs2_chacha_encrypt(st.material, iv, aad, __wjs2_dataBytes(data));
+        return out.buffer;
+      }
+      if (st.alg.name === "RSA-OAEP") {
+        if (st.kind !== "public") throw new TypeError("encrypt: not an RSA public key");
+        const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
+        const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
+        try {
+          const out = __wjs2_rsa_encrypt(hash, st.material, __wjs2_dataBytes(data), label);
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
+      }
+      throw new TypeError("encrypt: unsupported key");
+}
+function __wjs2_doDecrypt(algorithm, st, data) {
+      if (st.alg.name === "AES-GCM") {
+        const p = __wjs2_aesParams(algorithm);
+        // 认证失败即 OperationError（真机口径；native 纯 Error 形在此转，
+        // 参数型错误原样透传）。
+        try {
+          const out = (p.iv.length === 12 && p.tagLength === 128)
+            ? __wjs2_aesgcm_decrypt(st.material, p.iv, p.aad, __wjs2_dataBytes(data))
+            : __wjs2_gcm_subtle(0, st.material, p.iv, p.aad ?? new Uint8Array(0), __wjs2_dataBytes(data), p.tagLength / 8);
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          // native 参数型错误（TypeError: 前缀）原样透传；余者皆认证失败。
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
+      }
+      if (st.alg.name === "AES-CBC") {
+        const iv = __wjs2_dataBytes(algorithm?.iv);
+        if (iv.length !== 16) throw __wjs2_domErr("OperationError", "algorithm.iv must contain exactly 16 bytes");
+        try {
+          const out = __wjs2_aescbc_decrypt(st.material, iv, __wjs2_dataBytes(data));
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
+      }
+      if (st.alg.name === "AES-CTR") {
+        const counter = __wjs2_dataBytes(algorithm?.counter);
+        if (counter.length !== 16) throw __wjs2_domErr("OperationError", "AES-CTR counter must be 16 bytes");
+        const lenBits = Number(algorithm?.length ?? 128);
+        if (!Number.isInteger(lenBits) || lenBits < 1 || lenBits > 128) {
+          throw __wjs2_domErr("OperationError", "AES-CTR length must be between 1 and 128");
+        }
+        const out = __wjs2_aesctr_crypt(st.material, counter, lenBits, __wjs2_dataBytes(data));
+        return out.buffer;
+      }
+      if (st.alg.name === "CHACHA20-POLY1305") {
+        const iv = __wjs2_dataBytes(algorithm?.iv);
+        if (iv.length !== 12) throw __wjs2_domErr("OperationError", "ChaCha20-Poly1305 iv must be 12 bytes");
+        const tagLen = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
+        if (tagLen !== 128) throw __wjs2_domErr("OperationError", `${algorithm?.tagLength} is not a valid ChaCha20-Poly1305 tag length`);
+        const aad = algorithm?.additionalData === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.additionalData);
+        try {
+          const out = __wjs2_chacha_decrypt(st.material, iv, aad, __wjs2_dataBytes(data));
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
+      }
+      if (st.alg.name === "RSA-OAEP") {
+        if (st.kind !== "private") throw new TypeError("decrypt: not an RSA private key");
+        const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
+        const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
+        try {
+          const out = __wjs2_rsa_decrypt(hash, st.material, __wjs2_dataBytes(data), label);
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
+      }
+      throw new TypeError("decrypt: unsupported key");
+}
 // constructors 套件：Crypto/SubtleCrypto 类面（原型挂载既有实现；
 // notCrypto/notSubtle 经原型方法品牌检查，真机口径）。
 globalThis.SubtleCrypto = class SubtleCrypto {

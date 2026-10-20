@@ -760,6 +760,10 @@ class Http2ServerResponse extends Writable {
     __wjs2_h2_respond(this.__conn, this.__id, this.statusCode, JSON.stringify(entries));
   }
   write(chunk, encoding, cb) {
+    // node：response.destroy() 后 write 静默 false、回调不触发（write block3 真机 p1）；
+    // 流死于底下（close/RST/abort）但 response 存活时 write → 回调
+    // ERR_HTTP2_INVALID_STREAM（block1 真机 p18；__destroySilent 不算显式 destroy）。
+    if (this.__userDestroyed) return false;
     if (this.__stream.__destroyed) {
       const err = __code("ERR_HTTP2_INVALID_STREAM");
       if (typeof encoding === "function") encoding(err);
@@ -808,6 +812,8 @@ class Http2ServerResponse extends Writable {
   // 错误不落 res（错误走 stream 'error'，res.on('error') 不触发）。
   destroy(err) {
     if (this.destroyed) return this;
+    // 显式 destroy 标记（write 静默口径；底层连带 __destroySilent 不置位）。
+    this.__userDestroyed = true;
     if (!this.__finishEmitted) {
       this.__finishEmitted = true;
       this.emit("finish");
@@ -840,32 +846,61 @@ class Http2ServerResponse extends Writable {
     queueMicrotask(() => cb(__code("ERR_HTTP2_PUSH_DISABLED")));
     return undefined;
   }
-  writeContinue(cb) { if (typeof cb === "function") queueMicrotask(cb); return this; }
-  writeInformation(type, info, cb) {
-    // 信息性应答：仅 1xx 且非 101（101 属协议切换），余者 STATUS_INVALID（套件逐项）。
-    if (typeof type !== "number" || !Number.isInteger(type) || type < 100 || type > 199 || type === 101) {
+  writeContinue() {
+    // node：即 writeInformation(100)；已发头/已终即 false（布尔，非链式）。
+    return this.writeInformation(100);
+  }
+  writeInformation(type, info) {
+    // node compat.js 逐字：信息性应答仅 100–199 且禁 101；
+    // 已发头/已终即 false；落 stream.additionalHeaders（1xx 下发走 native
+    // interim-headers，hyper 底座 bound——此处只记 sentInfoHeaders，不发线）。
+    if (typeof type !== "number" || type < 100 || type > 199) {
       throw __code("ERR_HTTP2_STATUS_INVALID", type);
     }
-    if (typeof info === "object" && info !== null && !Array.isArray(info)) {
+    if (type === 101) {
+      throw __code("ERR_HTTP2_STATUS_INVALID", type);
+    }
+    if (this.__stream.__headersSent || this.__ended) return false;
+    if (info !== undefined && info !== null) {
+      if (typeof info !== "object" || Array.isArray(info)) {
+        throw __code("ERR_INVALID_ARG_TYPE", "headers", "object", info);
+      }
+    }
+    const hdrs = { __proto__: null, ":status": type };
+    if (info !== undefined && info !== null) {
       for (const [k, v] of Object.entries(info)) {
         __validateHeaderName(k);
         __validateHeaderValue(k, v);
+        hdrs[k] = v;
       }
     }
-    const f = typeof info === "function" ? info : cb;
-    if (typeof f === "function") queueMicrotask(f);
-    return this;
+    this.__stream.additionalHeaders(hdrs);
+    return true;
   }
   writeEarlyHints(hints, cb) {
-    const f = typeof hints === "function" ? hints : cb;
-    if (hints !== null && typeof hints === "object") {
-      for (const [k, v] of Object.entries(hints)) {
-        __validateHeaderName(k);
-        __validateHeaderValue(k, v);
-      }
+    // node compat.js 逐字：hints 须对象（validateObject 口径 ARG_TYPE）；
+    // link 经 validateLinkHeaderValue（string/array 并串，余者 ARG_VALUE）；
+    // 空 link 即 false；余键 assertValidHeader + token 门。
+    if (hints === null || typeof hints !== "object" || Array.isArray(hints)) {
+      throw __code("ERR_INVALID_ARG_TYPE", "hints", "object", hints);
     }
-    if (typeof f === "function") queueMicrotask(f);
-    return this;
+    const link = __validateLinkValue(hints.link);
+    const rest = { __proto__: null };
+    for (const k of Object.keys(hints)) {
+      if (k === "link") continue;
+      const name = k.trim().toLowerCase();
+      __validateHeaderName(name);
+      __validateHeaderValue(name, hints[k]);
+      rest[name] = hints[k];
+    }
+    if (link.length === 0) {
+      if (typeof cb === "function") queueMicrotask(cb);
+      return false;
+    }
+    rest.link = link;
+    const ok = this.writeInformation(103, rest);
+    if (typeof cb === "function") queueMicrotask(cb);
+    return ok;
   }
   flushHeaders() {
     if (!this.headersSent) this.__sendHead();

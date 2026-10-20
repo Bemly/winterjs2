@@ -119,10 +119,10 @@ class ClientHttp2Stream extends Duplex {
     // node onStreamClose：客户端流 push(null) 后 read(0)——无人读的空体应答也能发 'end'
     // （缓冲有数据时 read(0) 不消费，照旧等用户读）。
     if (this.readableFlowing !== true) this.read(0);
-    // node：END_STREAM 收到 + 请求侧已尽 → 流 close（不必等 readable 消费；
-    // respond-file-errors 套件 req 无 data 监听仅等 'close'）
+    // node onStreamClose 口径：可读侧尚有数据（或无人消费）时等 'end' 再销毁——
+    // 提前销毁会吞缓冲数据并抢先派 'close'（short-stream 套件点名 close 在 end 后）。
     if (this.writableEnded && !this.destroyed) {
-      queueMicrotask(() => { if (!this.destroyed) this.destroy(); });
+      this.once("end", () => { if (!this.destroyed) this.destroy(); });
     }
   }
   __onAborted() {
@@ -172,8 +172,10 @@ class ClientHttp2Stream extends Duplex {
     if (typeof err === "number") { cb = code; code = err; err = undefined; }
     if (typeof code === "function") { cb = code; code = 0; }
     if (typeof cb === "function") this.once("close", cb);
-    if (this.__destroyed) return this;
-    // node：流销毁 → RST(CANCEL) 通知对端（未收到应答且已出线的流）
+    if (this.destroyed) return this;
+    // node：流销毁 → RST(CANCEL) 通知对端（未收到应答且已出线的流；
+    // aborted 套件：client.destroy() 后服务端 req 须见 'aborted'）。
+    // c2 轮：下方曾有无 RST 的重复 destroy 定义将其遮蔽，致 RST 永不发出——已删。
     if (this.__opened && !this.__responseReceived && this.__session?.__id) {
       __wjs2_h2_reset(this.__session.__id, this.id, 8);
     }
@@ -189,15 +191,6 @@ class ClientHttp2Stream extends Duplex {
       if (pi !== -1) s.__pendingOpens.splice(pi, 1);
       if (typeof s.__gracefulWait === "function") s.__gracefulWait();
     }
-  }
-  destroy(err, code, cb) {
-    if (typeof err === "number") { cb = code; code = err; err = undefined; }
-    if (typeof code === "function") { cb = code; code = 0; }
-    if (typeof cb === "function") this.once("close", cb);
-    if (this.__destroyed) return this;
-    this.__detachFromSession();
-    super.destroy(err);
-    return this;
   }
   setTimeout(msecs, callback) {
     if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
@@ -657,6 +650,9 @@ class ClientHttp2Session extends EventEmitter {
           if (!st.__responseReceived) {
             st.emit("error", __code("ERR_HTTP2_GOAWAY_SESSION"));
             st.destroy();
+          } else if (st.readableEnded && !st.destroyed) {
+            // 已消费完的应答流随会话收尾（close 轮：close() 后无残留引用续命）。
+            st.destroy();
           }
         }
         this.__gracefulWait();
@@ -680,21 +676,29 @@ class ClientHttp2Session extends EventEmitter {
       this.destroyed = true;
       this.closed = true;
       if (code && typeof code === "object") this.emit("error", code);
-      // 在途流：RST 对端（防 server 侧 service 永挂）+ 本地 CANCEL 错
-      for (const [, st] of this.__streams) {
-        if (!st.__responseReceived && this.__id) {
-          __wjs2_h2_reset(this.__id, st.id, 8);
-        }
-        st.__onAborted();
-      }
+      // 在途流：RST 对端（防 server 侧 service 永挂）；本地只发 'close'，
+      // 无 'error'/'aborted'（真机实测 p5/p6：destroy 后完成/未完成流皆仅 close）。
+      // c2：拆流关连递延——服务端 close/finish 回调同 tick 内的 destroy 与在途应答
+      // 竞速时，先让已在线字节落地（response/data/end），再拆（write block1/2；
+      // node 同场景下投递先赢）。destroyed/closed 仍同步置位；pendingOpens
+      // 保持同步（本地无句柄残留）。RST 一并递延：同步 RST 会 abort 在途读任务，
+      // 反杀清洁 END 应答的投递（block2）。
       for (const pst of this.__pendingOpens.splice(0)) {
         pst.emit("error", __code("ERR_HTTP2_STREAM_CANCEL"));
         pst.destroy();
       }
-      if (this.__id) {
-        __wjs2_net_destroy(this.__id);
-        this.__id = 0;
-      }
+      setTimeout(() => {
+        for (const [, st] of this.__streams) {
+          if (!st.__responseReceived && this.__id) {
+            __wjs2_h2_reset(this.__id, st.id, 8);
+          }
+          if (!st.destroyed) st.destroy();
+        }
+        if (this.__id) {
+          __wjs2_net_destroy(this.__id);
+          this.__id = 0;
+        }
+      }, 50);
     }
     return this;
   }

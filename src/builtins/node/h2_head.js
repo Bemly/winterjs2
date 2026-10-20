@@ -477,6 +477,54 @@ function __goawayStreamErrors(session, inner) {
   }
 }
 
+// ── 客户端开流（h2_client.js ClientHttp2Stream.__openNow 委托；放此处守 1000 行门）
+function __clientOpenNow(st, extraBody, streaming = false) {
+  if (st.__opened) return;
+  st.__opened = true;
+  st.__streaming = !!streaming;
+  const parts = extraBody ? [...st.__pendingBody, extraBody] : st.__pendingBody;
+  st.__pendingBody = [];
+  let total = 0;
+  for (const b of parts) total += b.length;
+  const flat = new Uint8Array(total);
+  let off = 0;
+  for (const b of parts) { flat.set(b, off); off += b.length; }
+  try {
+    __wjs2_h2_open(st.__session.__id, st.id,
+      JSON.stringify({
+        method: st.sentHeaders[":method"], path: st.sentHeaders[":path"],
+        scheme: st.sentHeaders[":scheme"], authority: st.sentHeaders[":authority"],
+        // 扩展 CONNECT 的 `:protocol`（RFC 8441；hyper 经 extensions 上线）
+        protocol: st.sentHeaders[":protocol"] ?? "",
+        waitTrailers: st.__waitTrailers,
+        // 流式上传（cancel-while-client-reading）：首块随头出线但流保持
+        // 开放，后续块经 __wjs2_h2_data、收尾经 __wjs2_h2_end。
+        streaming: !!st.__streaming,
+        // node request() 缺省：无 body 意图的方法（GET/HEAD/DELETE）END_STREAM
+        // 随头出线（endafterheaders 套件）；POST 等分开发。native 不再按体空猜。
+        endStream: !!st.__endStream,
+        headers: Object.entries(st.sentHeaders)
+          .filter(([k]) => !k.startsWith(":"))
+          .map(([k, v]) => [
+            k,
+            // node prepareRequestHeaders 口径：cookie 数组 "; " 并串为单条线
+            (k === "cookie" && Array.isArray(v)) ? v.join("; ") : v,
+          ]),
+      }),
+      __b64enc(flat));
+  } catch {
+    // 会话已亡（销毁竞态）：流随会话终止，不再上抛
+    st.__detachFromSession();
+  }
+  if (st.__waitTrailers) {
+    queueMicrotask(() => {
+      if (st.destroyed) return;
+      st.__wantTrailersFired = true;
+      st.emit("wantTrailers");
+    });
+  }
+}
+
 // ── Http2Session（服务端每连接一个；'session' 事件载体）──────────────────────
 let __h2SessionSeq = 1;
 class Http2Session extends EventEmitter {

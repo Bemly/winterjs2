@@ -899,3 +899,40 @@ for (const key of ["maxHeaderListSize", "maxHeaderSize"]) {
     assert!(!out.contains("BAD-STREAM"), "oversize headers must not reach service; out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_client_streaming_upload_faces() {
+    // cancel-while-client-reading：POST 首 write 微任务后开流（同 tick 内
+    // end() 仍走单发）；无 end() 的上传照样出线，服务端收块即见 data。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "u.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer();
+server.on("stream", (stream) => {
+  stream.resume();
+  stream.on("data", (c) => console.log("srv-data", c.length));
+  stream.on("end", () => {
+    console.log("srv-end");
+    stream.respond();
+    stream.end("ok");
+  });
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  const req = client.request({ ":method": "POST" });
+  req.on("response", () => console.log("cli-response"));
+  req.on("end", () => { client.close(); server.close(); });
+  req.resume();
+  req.write(Buffer.alloc(10));
+  setTimeout(() => req.end(), 20);
+});
+"#,
+    );
+    for line in ["srv-data 10", "srv-end", "cli-response"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

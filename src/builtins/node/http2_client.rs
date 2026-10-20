@@ -45,6 +45,11 @@ struct OpenReq {
     // endafterheaders 套件）。native 不再按体空猜。
     #[serde(rename = "endStream", default)]
     end_stream: bool,
+    // 流式上传（cancel-while-client-reading：首 write 即开流，后续块经
+    // H2RespondData、收尾经 H2RespondEnd；无新 native，复用既有命令）。
+    // 非流式保持单发语义（整包 body + End/EndPending 一次到位）。
+    #[serde(default)]
+    streaming: bool,
     // 扩展 CONNECT 的 `:protocol`（RFC 8441；hyper 经 extensions 发送）。
     // 空串 = 非扩展请求（常规 CONNECT/他法无此键）。
     #[serde(default)]
@@ -204,7 +209,13 @@ async fn drive_session<S>(
                         // 有体即先 Data 后 End；waitTrailers 悬置 EndPending。
                         let (utx, urx) = tokio::sync::mpsc::unbounded_channel::<BodyMsg>();
                         let mut done = req.end_stream && body.is_empty() && !req.wait_trailers;
-                        if !body.is_empty() {
+                        // 流式上传：首块随头出线但流保持开放（done=false 且不排 End），
+                        // 后续块走 H2RespondData、收尾走 H2RespondEnd；utx 必登记。
+                        let streaming = req.streaming && !req.end_stream;
+                        if streaming {
+                            let _ = utx.send(BodyMsg::Data(bytes::Bytes::from(body)));
+                            done = false;
+                        } else if !body.is_empty() {
                             let _ = utx.send(BodyMsg::Data(bytes::Bytes::from(body)));
                             done = false;
                             if req.wait_trailers {
@@ -220,7 +231,7 @@ async fn drive_session<S>(
                             // 迫 hyper 分开发（END_STREAM 不随头）。
                             let _ = utx.send(BodyMsg::End(None));
                         }
-                        if req.wait_trailers {
+                        if req.wait_trailers || streaming {
                             uploads.lock().await.insert(stream_id, utx);
                         }
                         let request = builder.body(ChanBody { rx: urx, done });
@@ -385,7 +396,27 @@ async fn drive_session<S>(
                         if let Some(h) = stream_tasks.lock().unwrap().remove(&stream_id) {
                             h.abort();
                         }
+                        uploads.lock().await.remove(&stream_id);
                         open.lock().unwrap().insert(stream_id, true);
+                    }
+                    Some(NetCmd::H2RespondData { stream_id, data_b64 }) => {
+                        // 流式上传后续块（cancel-while-client-reading；H2RespondData
+                        // 复用：client 会话上即上传块，server 会话由 serve_conn 消费）。
+                        if let Some(tx) = uploads.lock().await.get(&stream_id) {
+                            if let Ok(data) = b64dec(&data_b64) {
+                                if !data.is_empty() {
+                                    let _ = tx.send(BodyMsg::Data(bytes::Bytes::from(data)));
+                                }
+                            }
+                        }
+                    }
+                    Some(NetCmd::H2RespondEnd { stream_id, trailers_json }) => {
+                        // 流式上传收尾（end()）：trailers 有即带、无即干净 END。
+                        let trailers: Vec<(String, String)> =
+                            serde_json::from_str(&trailers_json).unwrap_or_default();
+                        if let Some(tx) = uploads.lock().await.remove(&stream_id) {
+                            let _ = tx.send(BodyMsg::End(Some(trailers)));
+                        }
                     }
                     Some(NetCmd::H2OpenTrailers { stream_id, trailers_json }) => {
                         let trailers: Vec<(String, String)> =

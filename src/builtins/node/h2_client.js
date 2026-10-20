@@ -42,59 +42,52 @@ class ClientHttp2Stream extends Duplex {
     };
   }
   _read() {}
-  __openNow(extraBody) {
-    if (this.__opened) return;
-    this.__opened = true;
-    const parts = extraBody ? [...this.__pendingBody, extraBody] : this.__pendingBody;
-    this.__pendingBody = [];
-    let total = 0;
-    for (const b of parts) total += b.length;
-    const flat = new Uint8Array(total);
-    let off = 0;
-    for (const b of parts) { flat.set(b, off); off += b.length; }
-    try {
-      __wjs2_h2_open(this.__session.__id, this.id,
-        JSON.stringify({
-          method: this.sentHeaders[":method"], path: this.sentHeaders[":path"],
-          scheme: this.sentHeaders[":scheme"], authority: this.sentHeaders[":authority"],
-          // 扩展 CONNECT 的 `:protocol`（RFC 8441；hyper 经 extensions 上线）
-          protocol: this.sentHeaders[":protocol"] ?? "",
-          waitTrailers: this.__waitTrailers,
-          // node request() 缺省：无 body 意图的方法（GET/HEAD/DELETE）END_STREAM
-          // 随头出线（endafterheaders 套件）；POST 等分开发。native 不再按体空猜。
-          endStream: !!this.__endStream,
-          headers: Object.entries(this.sentHeaders)
-            .filter(([k]) => !k.startsWith(":"))
-            .map(([k, v]) => [
-              k,
-              // node prepareRequestHeaders 口径：cookie 数组 "; " 并串为单条线
-              (k === "cookie" && Array.isArray(v)) ? v.join("; ") : v,
-            ]),
-        }),
-        __b64enc(flat));
-    } catch {
-      // 会话已亡（销毁竞态）：流随会话终止，不再上抛
-      this.__detachFromSession();
-    }
-    if (this.__waitTrailers) {
-      queueMicrotask(() => {
-        if (this.destroyed) return;
-        this.__wantTrailersFired = true;
-        this.emit("wantTrailers");
-      });
-    }
+  __openNow(extraBody, streaming = false) {
+    __clientOpenNow(this, extraBody, streaming);
   }
   _write(chunk, encoding, cb) {
-    if (this.__opened || this.__ended) {
+    // 流式上传（cancel-while-client-reading）：首 write 微任务后开流
+    // （同 tick 内 end() 即仍走单发，避免回归）；已开流即直发块。
+    if (this.__ended || (!this.__streaming && this.__opened)) {
       cb(__code("ERR_STREAM_WRITE_AFTER_END"));
       return;
     }
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk), "write");
+    if (this.__opened) {
+      try {
+        __wjs2_h2_data(this.__session.__id, this.id, __b64enc(u8));
+      } catch {
+        this.__detachFromSession();
+      }
+      queueMicrotask(cb);
+      return;
+    }
     this.__pendingBody.push(u8);
+    if (!this.__openScheduled) {
+      this.__openScheduled = true;
+      queueMicrotask(() => {
+        this.__openScheduled = false;
+        // end() 同 tick 已开单发（__opened）或已销毁：此分支空转。
+        if (!this.__opened && !this.destroyed) this.__openNow(null, true);
+      });
+    }
     queueMicrotask(cb);
   }
   _final(cb) {
-    this.__openNow(null);
+    this.__openScheduled = false;
+    this.__ended = true;
+    if (!this.__opened) {
+      this.__openNow(null);
+    } else if (this.__streaming && this.__session?.__id && !this.__waitTrailers) {
+      // 流式上传收尾：END_STREAM 出线（空 trailers 即干净 END）。
+      // waitForTrailers 不在此收：sendTrailers 经 H2OpenTrailers 收尾，
+      // 先 End 会把 trailers 锁在门外（trailers 套件）。
+      try {
+        __wjs2_h2_end(this.__session.__id, this.id, "[]");
+      } catch {
+        this.__detachFromSession();
+      }
+    }
     cb();
   }
   sendTrailers(trailers) {

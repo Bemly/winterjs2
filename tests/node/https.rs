@@ -568,3 +568,70 @@ setTimeout(() => console.log("end-ok"), 3000);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn https_connect_lookup_family() {
+    // connect-address-family 回归：https 建连须 honor family/lookup（tls
+    // 直拨面只收 host/port，lookup 被吞即错连→握手失败/hang 交替）。
+    // 正常：agent 路 + agent:false 路自定义 lookup（'dummy'→::1, family 6）；
+    // 报错：lookup 回 err 即 req 'error'；边界：lookup 断言 family 透传。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "l.mjs",
+        &format!(
+            r#"
+import https from "node:https";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = https.createServer({{ key, cert }}, (req, res) => res.end("fam-ok"));
+server.listen(0, "::1", () => {{
+  const port = server.address().port;
+  const lookup6 = (addr, opts, cb) => {{
+    console.log("lookup", addr, opts.family);
+    cb(null, "::1", opts.family);
+  }};
+  const one = (useAgent) => new Promise((resolve) => {{
+    const opts = {{
+      host: "dummy", port, family: 6, rejectUnauthorized: false, lookup: lookup6,
+    }};
+    if (!useAgent) opts.agent = false;
+    else opts.agent = new https.Agent();
+    const r = https.get(opts, (res) => {{
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => resolve("ok:" + b + ":" + r.socket.remoteAddress));
+    }});
+    r.on("error", (e) => resolve("err:" + (e.code || e.message)));
+  }});
+  (async () => {{
+    console.log("agent", await one(true));
+    console.log("noagent", await one(false));
+    const bad = https.get({{
+      host: "dummy", port, family: 6, rejectUnauthorized: false,
+      agent: new https.Agent(),
+      lookup: (_a, _o, cb) => cb(new Error("no-such-host")),
+    }}, () => console.log("bad-unexpected"));
+    bad.on("error", (e) => console.log("bad", e.message));
+    setTimeout(() => {{ server.close(); }}, 500);
+  }})();
+}});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 6000);
+"#
+        ),
+    );
+    for line in [
+        "lookup dummy 6",
+        "agent ok:fam-ok:::1",
+        "noagent ok:fam-ok:::1",
+        "bad no-such-host",
+        "srv-close",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}

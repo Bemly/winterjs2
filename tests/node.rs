@@ -35,12 +35,16 @@ mod http;
 mod http2;
 #[path = "node/http2_faces.rs"]
 mod http2_faces;
+#[path = "node/http2_tunnel.rs"]
+mod http2_tunnel;
 #[path = "node/https.rs"]
 mod https;
 #[path = "node/inspector.rs"]
 mod inspector;
 #[path = "node/net.rs"]
 mod net;
+#[path = "node/net_rawclose.rs"]
+mod net_rawclose;
 #[path = "node/nodemodule.rs"]
 mod nodemodule;
 #[path = "node/os.rs"]

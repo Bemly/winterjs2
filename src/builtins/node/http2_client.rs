@@ -114,7 +114,14 @@ async fn pump_client_upgrade(
     let mut buf = vec![0u8; 32768];
     let mut outbox = outbox;
     let mut read_done = false;
+    // 写侧关闭后仍服务读侧（2026-10-21，px11 递延 END 对侧）：
+    // 隧道半关是常态（上行 END 先于下行数据到达），写关即退会吞下行尾包；
+    // 双侧皆关才退。注意拆除传播仍靠 poll_shutdown/close_notify，见 4.321。
+    let mut out_closed = false;
     loop {
+        if read_done && out_closed {
+            break;
+        }
         enum Ev {
             Readed(Result<usize, std::io::Error>),
             Out(Option<Option<Vec<u8>>>),
@@ -122,7 +129,7 @@ async fn pump_client_upgrade(
         let ev = if read_done {
             match outbox.recv().await {
                 Some(m) => Ev::Out(Some(m)),
-                None => break,
+                None => Ev::Out(None),
             }
         } else {
             tokio::select! {
@@ -141,7 +148,13 @@ async fn pump_client_upgrade(
                     })
                     .await
                 } => Ev::Readed(r),
-                m = outbox.recv() => Ev::Out(m),
+                m = async {
+                    if out_closed {
+                        std::future::pending::<Option<Option<Vec<u8>>>>().await
+                    } else {
+                        outbox.recv().await
+                    }
+                } => Ev::Out(m),
             }
         };
         match ev {
@@ -153,7 +166,9 @@ async fn pump_client_upgrade(
             Ev::Readed(Ok(n)) => {
                 send("data", super::http2::b64(&buf[..n]));
             }
-            Ev::Out(None) => break,
+            Ev::Out(None) => {
+                out_closed = true;
+            }
             Ev::Out(Some(None)) => {
                 let _ = std::future::poll_fn(|cx| {
                     std::pin::Pin::new(&mut upgraded).poll_shutdown(cx)
@@ -228,6 +243,10 @@ async fn drive_session<S>(
     // 在途请求任务句柄（H2RespondReset → abort → hyper RST(CANCEL)）
     let stream_tasks: Arc<std::sync::Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));
+    // 隧道泵任务句柄（半关续读期常驻；H2RespondReset/会话收尾 → abort，
+    // 否则拆除级联断、回退 4.321 前永挂。正常半关由泵自退，不走此表）。
+    let tunnel_tasks: Arc<std::sync::Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
     tokio::pin!(conn);
     loop {
         tokio::select! {
@@ -247,6 +266,11 @@ async fn drive_session<S>(
                         }
                     })
                     .await;
+                }
+                // 隧道泵收尾：conn 已亡，读侧必 EOF；直接 abort（泵自退竞速无妨，
+                // abort 幂等），禁半关续读把会话收尾拖成永生（proxy 套件拆除级联）。
+                for (_, h) in tunnel_tasks.lock().unwrap().drain() {
+                    h.abort();
                 }
                 if state::net_close_once(id) {
                     for (stream_id, done) in open.lock().unwrap().iter() {
@@ -334,7 +358,10 @@ async fn drive_session<S>(
                             done = false;
                             if req.wait_trailers {
                                 let _ = utx.send(BodyMsg::EndPending);
-                            } else {
+                            } else if !(tunnel && !req.end_stream) {
+                                // CONNECT 隧道永不 eager-End（2026-10-21，px11）：
+                                // 200 前 EOS 即无 upgrade 对；END 一律走
+                                // H2RespondEnd（应答后补，隧道半关/语义闭合）。
                                 let _ = utx.send(BodyMsg::End(None));
                             }
                         } else if req.wait_trailers {
@@ -372,6 +399,7 @@ async fn drive_session<S>(
                         let exact2 = exact_rst.clone();
                         let req_method = req.method.clone();
                         let ctunnel_out = ctunnel_out.clone();
+                        let tunnel_tasks = tunnel_tasks.clone();
                         open.lock().unwrap().insert(stream_id, false);
                         let mut sender = sender.clone();
                         let task = tokio::spawn(async move {
@@ -406,22 +434,18 @@ async fn drive_session<S>(
                                     // 不再事后推断。
                                     let flags =
                                         if resp.body().is_end_stream() { 5 } else { 4 };
-                                    let _ = ev2.send(NetEvent {
-                                        id,
-                                        kind: NetKind::H2Stream {
-                                            stream_id,
-                                            what: "response".into(),
-                                            payload: serde_json::json!({ "status": status, "flags": flags, "headers": head }).to_string(),
-                                        },
-                                    });
                                     // CONNECT 隧道（proxy-over-h2）：200 后 hyper 将流升级，
                                     // 后续 DATA 只进 upgrade 句柄。取句柄（&mut resp，必须
                                     // 在 into_body 之前）并决议：Ok 即隧道（起泵+跳过常规
                                     // 体循环——读之即空还会送虚假 end）；Err/他法走常规。
                                     // upgrade 在 2xx/non-2xx 处理时即决议，此处 await 不挂起。
+                                    // 先决议再发 response 事件（2026-10-21，px11 全量抑发对侧）：
+                                    // JS 在 response 处理器内的 write/end 须走 upgrade 写出，
+                                    // 先发事件则写与隧道注册竞速丢上行字节。
                                     let mut resp = resp;
                                     let is_tunnel_req =
                                         req_method == "CONNECT" || req_method == "connect";
+                                    let mut tunneled = false;
                                     if is_tunnel_req {
                                         let cup = hyper::upgrade::on(&mut resp);
                                         match cup.await {
@@ -430,13 +454,25 @@ async fn drive_session<S>(
                                                 ctunnel_out.lock().await.insert(stream_id, otx);
                                                 let ev3 = ev2.clone();
                                                 let open3 = open2.clone();
-                                                tokio::spawn(pump_client_upgrade(
+                                                let ph = tokio::spawn(pump_client_upgrade(
                                                     u, orx, ev3, id, stream_id, open3,
                                                 ));
-                                                return;
+                                                tunnel_tasks.lock().unwrap().insert(stream_id, ph);
+                                                tunneled = true;
                                             }
                                             Err(_) => {}
                                         }
+                                    }
+                                    let _ = ev2.send(NetEvent {
+                                        id,
+                                        kind: NetKind::H2Stream {
+                                            stream_id,
+                                            what: "response".into(),
+                                            payload: serde_json::json!({ "status": status, "flags": flags, "headers": head }).to_string(),
+                                        },
+                                    });
+                                    if tunneled {
+                                        return;
                                     }
                                     // 增量读体：DATA 到即发（close/aborted 套件：
                                     // 服务端只写不终结时客户端仍见 data）。
@@ -552,9 +588,13 @@ async fn drive_session<S>(
                         stream_tasks.lock().unwrap().insert(stream_id, task);
                     }
                     Some(NetCmd::H2RespondReset { stream_id, code }) => {
-                        // 客户端流取消：abort 在途请求任务 + 精确 RST 码线注
-                        //（close(code) 原码上线；hyper abort 只给 CANCEL）。
+                        // 客户端流取消：abort 在途请求任务 + 隧道泵（泵存活即
+                        // 拆除级联断；半关续读形走 H2RespondEnd 不走此路）+
+                        // 精确 RST 码线注（close(code) 原码上线；hyper abort 只给 CANCEL）。
                         if let Some(h) = stream_tasks.lock().unwrap().remove(&stream_id) {
+                            h.abort();
+                        }
+                        if let Some(h) = tunnel_tasks.lock().unwrap().remove(&stream_id) {
                             h.abort();
                         }
                         if exact_rst.load(std::sync::atomic::Ordering::Acquire) {
@@ -608,7 +648,11 @@ async fn drive_session<S>(
                         // c2：在途请求任务持有 sender 克隆——hyper Transport 疑似被
                         // sender 续命，须先 abort 任务再退，否则 socket 永不关
                         //（aborted/close 套件：destroy 后服务端永不见 FIN）。
+                        // 隧道泵同 abort（半关续读泵此时已自退，残留即拆除垃圾）。
                         for (_, h) in stream_tasks.lock().unwrap().iter() {
+                            h.abort();
+                        }
+                        for (_, h) in tunnel_tasks.lock().unwrap().drain() {
                             h.abort();
                         }
                         if state::net_close_once(id) {

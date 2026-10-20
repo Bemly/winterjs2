@@ -6,6 +6,12 @@
     if (data !== undefined && data !== null) this.write(data, typeof enc === "string" ? enc : undefined);
     const cb2 = cb;
     this.writable = false; this.__ended = true;
+    // raw-close 补（2026-10-21，http2 lane）：对端已 FIN（半开）后才调 end，
+    // halfhold 或已摘续命（end 监听递延微任务或迟调）——shutdown 在途、close
+    // 待定，非闲置，装回续命至 close（node：半开 end 后句柄仍活至 close）。
+    if (this.__peerFin === true && this.__id) {
+      try { __wjs2_net_rehold(this.__id); } catch { /* entry gone 即无事 */ }
+    }
     this.__nativeEnd(); // node 口径：FIN 排队到连接完成+缓冲写冲刷之后（包裹面覆写）
     // node 口径：写侧刷完即 'finish'（早于 close；bytes-stats/bytes-read 套件点名）。
     // 本仓同步写队列：FIN 已发即 microtask 派发 finish——但连接前缓冲未刷时

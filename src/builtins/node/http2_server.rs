@@ -901,7 +901,14 @@ pub(crate) async fn pump_upgrade_body(
     let mut buf = vec![0u8; 32768];
     let mut outbox = outbox;
     let mut read_done = false;
+    // 写侧关闭后仍服务读侧（2026-10-21，px11 递延 END 对侧）：
+    // 隧道半关是常态（上行 END 先于下行数据到达），写关即退会吞下行尾包；
+    // 双侧皆关才退。注意拆除传播仍靠 poll_shutdown/close_notify，见 4.321。
+    let mut out_closed = false;
     loop {
+        if read_done && out_closed {
+            break;
+        }
         enum Ev {
             Readed(Result<usize, std::io::Error>),
             Out(Option<Option<Vec<u8>>>),
@@ -909,7 +916,7 @@ pub(crate) async fn pump_upgrade_body(
         let ev = if read_done {
             match outbox.recv().await {
                 Some(m) => Ev::Out(Some(m)),
-                None => break,
+                None => Ev::Out(None),
             }
         } else {
             tokio::select! {
@@ -928,7 +935,13 @@ pub(crate) async fn pump_upgrade_body(
                     })
                     .await
                 } => Ev::Readed(r),
-                m = outbox.recv() => Ev::Out(m),
+                m = async {
+                    if out_closed {
+                        std::future::pending::<Option<Option<Vec<u8>>>>().await
+                    } else {
+                        outbox.recv().await
+                    }
+                } => Ev::Out(m),
             }
         };
         match ev {
@@ -939,7 +952,9 @@ pub(crate) async fn pump_upgrade_body(
             Ev::Readed(Ok(n)) => {
                 send("body", b64(&buf[..n]));
             }
-            Ev::Out(None) => break,
+            Ev::Out(None) => {
+                out_closed = true;
+            }
             Ev::Out(Some(None)) => {
                 let _ = std::future::poll_fn(|cx| {
                     std::pin::Pin::new(&mut upgraded).poll_shutdown(cx)

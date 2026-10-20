@@ -118,3 +118,42 @@ worker.once("exit", async () => {
     assert_eq!(stdout.lines().filter(|l| *l == "cpu-bad true").count(), 8, "out: {stdout}");
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_exit_event_faces() {
+    // 正常：exit 监听抛错走 uncaughtException + 进程存活（node
+    // test-worker-exit-event-error）；message/online 监听抛错同口径；
+    // 边界：error 监听正常收货不受安全垫影响。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Worker } from "node:worker_threads";
+const seen = [];
+process.on("uncaughtException", (e) => seen.push(e.message));
+new Worker("", { eval: true }).on("exit", () => { throw new Error("foo"); });
+const w2 = new Worker("require('worker_threads').parentPort.postMessage(1);", { eval: true });
+w2.on("message", () => { throw new Error("msg-boom"); });
+w2.on("exit", () => {});
+const w3 = new Worker("1", { eval: true });
+w3.on("online", () => { throw new Error("online-boom"); });
+w3.on("exit", () => {});
+const w4 = new Worker("throw new Error('werr');", { eval: true });
+w4.on("error", (e) => seen.push("err:" + e.message));
+w4.on("exit", () => {});
+setTimeout(() => console.log("exit-ev", JSON.stringify(seen.sort())), 800);
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.lines().any(|l| l == r#"exit-ev ["err:werr","foo","msg-boom","online-boom"]"#),
+        "out: {stdout}"
+    );
+    dir.close().unwrap();
+}

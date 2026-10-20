@@ -440,10 +440,10 @@ export class Worker extends EventEmitter {
         // Worker 'message' 无 ports 面——残留 offer 槽撤回收（行内已承接即 no-op）。
         __withdrawPorts(String(payload));
       } catch (e) {
-        this.emit("messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
+        __workerEmitSafe(this, "messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
         return;
       }
-      this.emit("message", value);
+      __workerEmitSafe(this, "message", value);
     } else if (kind === "error") {
       // 10f 对拍：Rust 侧 "Kind: message" 前缀还原原错误类（SyntaxError 套件
       // 断 err.constructor === SyntaxError）；裸文本回 Error（uncaught-exception
@@ -455,7 +455,7 @@ export class Worker extends EventEmitter {
         return;
       }
       const m = /^(SyntaxError|TypeError|RangeError|EvalError|ReferenceError|URIError|AggregateError): ([\s\S]*)$/.exec(text);
-      this.emit("error", m ? new globalThis[m[1]](m[2]) : new Error(text));
+      __workerEmitSafe(this, "error", m ? new globalThis[m[1]](m[2]) : new Error(text));
     } else if (kind === "exit") {
       const code = Number(payload);
       this.__exited = code;
@@ -465,9 +465,9 @@ export class Worker extends EventEmitter {
       for (const w of waiters) {
         try { w(code); } catch { /* 忽略 */ }
       }
-      this.emit("exit", code);
+      __workerEmitSafe(this, "exit", code);
     } else if (kind === "online") {
-      this.emit("online");
+      __workerEmitSafe(this, "online");
     } else if (kind === "stdout" || kind === "stderr") {
       // 子输出事件（WStdio；exit 前必达——同 inbox 保序，flush 套件点名）。
       const target = kind === "stdout" ? this.__stdout : this.__stderr;
@@ -550,6 +550,16 @@ export class Worker extends EventEmitter {
         reject(new codes.ERR_WORKER_NOT_RUNNING());
       }
     });
+  }
+}
+// native 源发射安全垫（worker exit/message/error/online 监听抛错走
+// uncaughtException + 进程存活，真机口径；同步透传即 fatal，
+// exit-event-error 套件点名）。
+function __workerEmitSafe(emitter, ev, ...args) {
+  try {
+    emitter.emit(ev, ...args);
+  } catch (e) {
+    setTimeout(() => { throw e; }, 0);
   }
 }
 // MessageEvent 的 source/ports 校验需要 MessagePort 品牌（主线程无全局

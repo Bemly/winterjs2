@@ -71,10 +71,10 @@ pub const CRYPTO_OPS_JS: &str = r#"
         }
         throw new Error(`NotSupportedError: exportKey ${format} for EC needs pkcs8/spki/jwk/raw`);
       }
-      if (aname === "ED25519" || aname === "X25519") {
+      if (aname === "ED25519" || aname === "X25519" || aname === "ED448") {
         const isPriv = st.kind === "private";
         const pubBytes = isPriv
-          ? (aname === "ED25519" ? __wjs2_ed_public(st.material) : __wjs2_x_public(st.material))
+          ? (aname === "ED25519" ? __wjs2_ed_public(st.material) : aname === "ED448" ? __wjs2_ed448_public(st.material) : __wjs2_x_public(st.material))
           : st.material;
         if (format === "pkcs8") {
           if (!isPriv) throw __wjs2_domErr("InvalidAccessError", "Key must be a private key");
@@ -85,10 +85,10 @@ pub const CRYPTO_OPS_JS: &str = r#"
           return __wjs2_okp_spki_from_pub(aname, pubBytes).buffer;
         }
         if (format === "jwk") {
-          const jwk = { kty: "OKP", crv: aname === "ED25519" ? "Ed25519" : "X25519", x: __wjs2_b64urlEncode(pubBytes) };
+          const jwk = { kty: "OKP", crv: aname === "ED25519" ? "Ed25519" : aname === "ED448" ? "Ed448" : "X25519", x: __wjs2_b64urlEncode(pubBytes) };
           if (isPriv) jwk.d = __wjs2_b64urlEncode(st.material);
           // JWA 只给 Ed25519 定义了 "EdDSA"；X25519 无 alg（与 Node 一致，省略）。
-          if (aname === "ED25519") jwk.alg = "EdDSA";
+          if (aname === "ED25519" || aname === "ED448") jwk.alg = "EdDSA";
           jwk.ext = true;
           jwk.key_ops = [...st.usages];
           return jwk;
@@ -292,10 +292,16 @@ pub const CRYPTO_OPS_JS: &str = r#"
           throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
         }
       }
-      if (st.alg.name === "ED25519") {
-        if (st.kind !== "private") throw new TypeError("sign: not an Ed25519 private key");
+      if (st.alg.name === "ED25519" || st.alg.name === "ED448") {
+        if (st.kind !== "private") throw new TypeError("sign: not a private key");
+        if (st.alg.name === "ED448" && algorithm?.context !== undefined && __wjs2_dataBytes(algorithm.context).length > 255) {
+          throw __wjs2_domErr("OperationError", "ContextParams.context must be at most 255 bytes");
+        }
         try {
-          const out = __wjs2_ed_sign(st.material, __wjs2_dataBytes(data));
+          const ctx = algorithm?.context === undefined ? undefined : __wjs2_dataBytes(algorithm.context);
+          const out = st.alg.name === "ED25519"
+            ? __wjs2_ed_sign(st.material, __wjs2_dataBytes(data))
+            : __wjs2_ed448_sign(st.material, __wjs2_dataBytes(data), ctx);
           return out.buffer;
         } catch (e) {
           if (e instanceof DOMException) throw e;
@@ -336,8 +342,12 @@ pub const CRYPTO_OPS_JS: &str = r#"
         try {
           return __wjs2_rsa_verify(hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
         } catch (e) {
-          if (e instanceof DOMException) throw e;
+          if (e instanceof DOMException) {
+            if (e.name === "DataError") return false;
+            throw e;
+          }
           if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          if (String(e?.message ?? "").startsWith("DataError:")) return false;
           throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
         }
       }
@@ -350,18 +360,32 @@ pub const CRYPTO_OPS_JS: &str = r#"
         try {
           return __wjs2_pss_verify(hash, salt, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
         } catch (e) {
-          if (e instanceof DOMException) throw e;
+          if (e instanceof DOMException) {
+            if (e.name === "DataError") return false;
+            throw e;
+          }
           if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          if (String(e?.message ?? "").startsWith("DataError:")) return false;
           throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
         }
       }
-      if (st.alg.name === "ED25519") {
-        if (st.kind === "private") throw new TypeError("verify: not an Ed25519 public key");
+      if (st.alg.name === "ED25519" || st.alg.name === "ED448") {
+        if (st.kind === "private") throw new TypeError("verify: not a public key");
+        if (st.alg.name === "ED448" && algorithm?.context !== undefined && __wjs2_dataBytes(algorithm.context).length > 255) {
+          throw __wjs2_domErr("OperationError", "ContextParams.context must be at most 255 bytes");
+        }
         try {
-          return __wjs2_ed_verify(st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+          const ctx = algorithm?.context === undefined ? undefined : __wjs2_dataBytes(algorithm.context);
+          return st.alg.name === "ED25519"
+            ? __wjs2_ed_verify(st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data))
+            : __wjs2_ed448_verify(st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data), ctx);
         } catch (e) {
-          if (e instanceof DOMException) throw e;
+          if (e instanceof DOMException) {
+            if (e.name === "DataError") return false;
+            throw e;
+          }
           if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          if (String(e?.message ?? "").startsWith("DataError:")) return false;
           throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
         }
       }
@@ -371,8 +395,12 @@ pub const CRYPTO_OPS_JS: &str = r#"
         try {
           return __wjs2_ecdsa_verify(st.alg.namedCurve, hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
         } catch (e) {
-          if (e instanceof DOMException) throw e;
+          if (e instanceof DOMException) {
+            if (e.name === "DataError") return false;
+            throw e;
+          }
           if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          if (String(e?.message ?? "").startsWith("DataError:")) return false;
           throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
         }
       }

@@ -132,14 +132,14 @@ function __wjs2_allowedUsages(name, kind) {
     return null;
   }
   if (kind === "public") {
-    if (name === "ECDSA" || name === "ED25519") return ["verify"];
+    if (name === "ECDSA" || name === "ED25519" || name === "ED448") return ["verify"];
     if (name === "ECDH" || name === "X25519") return [];
     if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-PSS") return ["verify"];
     if (name === "RSA-OAEP") return ["encrypt", "wrapKey"];
     return null;
   }
   if (kind === "private") {
-    if (name === "ECDSA" || name === "ED25519") return ["sign", "verify"];
+    if (name === "ECDSA" || name === "ED25519" || name === "ED448") return ["sign", "verify"];
     if (name === "ECDH" || name === "X25519") return ["deriveKey", "deriveBits"];
     if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-PSS") return ["sign", "verify"];
     if (name === "RSA-OAEP") return ["decrypt", "unwrapKey"];

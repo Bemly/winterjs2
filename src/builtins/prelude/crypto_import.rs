@@ -170,7 +170,12 @@ globalThis.crypto = {
         return { publicKey: mkPub, privateKey: mkPriv };
       }
       if (name === "ED448") {
-        throw new Error(`NotSupportedError: generateKey ${name} needs follow-up`);
+        const seed = __wjs2_ed448_generate();
+        const pub = __wjs2_ed448_public(seed);
+        const { pubU: edPubU, privU: edPrivU } = __wjs2_splitUsages(usages);
+        const mkPub = __wjs2_makeKey({ name }, pub, edPubU, !!extractable, "public");
+        const mkPriv = __wjs2_makeKey({ name }, seed, edPrivU, !!extractable, "private");
+        return { publicKey: mkPub, privateKey: mkPriv };
       }
       throw __wjs2_domErr("NotSupportedError", "Unrecognized algorithm name");
       })();
@@ -339,10 +344,10 @@ globalThis.crypto = {
         }
         throw new Error(`NotSupportedError: importKey ${format} for EC needs jwk/pkcs8/spki/raw`);
       }
-      if (name === "ED25519" || name === "X25519") {
+      if (name === "ED25519" || name === "X25519" || name === "ED448") {
         // JWK crv 用混合大小写（RFC 8037；内部 name 全大写，不外泄）。
         // algorithm 面无 namedCurve（OKP 真机口径，与 generateKey 一致）。
-        const crv = name === "ED25519" ? "Ed25519" : "X25519";
+        const crv = name === "ED25519" ? "Ed25519" : name === "ED448" ? "Ed448" : "X25519";
         const keyAlg = { name };
         const isPrivFmt = format === "pkcs8" || (format === "jwk" && keyData !== null && typeof keyData === "object" && typeof keyData.d === "string");
         if (isPrivFmt && usages.length === 0) {
@@ -356,33 +361,35 @@ globalThis.crypto = {
           }
           if (!keyData.crv) throw badData();
           if (keyData.crv !== crv) throw new Error('JWK "crv" Parameter and algorithm name mismatch');
-          __wjs2_checkJwkMeta(keyData, name === "ED25519" ? ["EdDSA"] : null, name === "ED25519", !!extractable);
+          const okpSize = name === "ED448" ? 57 : 32;
+          __wjs2_checkJwkMeta(keyData, name === "X25519" ? null : ["EdDSA"], name !== "X25519", !!extractable);
           __wjs2_checkKeyOps(keyData, usages, name, typeof keyData.d === "string" ? "private" : "public");
           let x;
           try {
             x = __wjs2_b64urlDecode(keyData.x);
           } catch { throw badData(); }
-          if (x.length !== 32) throw badData();
+          if (x.length !== okpSize) throw badData();
           if (typeof keyData.d === "string") {
             let seed;
             try {
               seed = __wjs2_b64urlDecode(keyData.d);
             } catch { throw badData(); }
-            if (seed.length !== 32) throw badData();
+            if (seed.length !== okpSize) throw badData();
             // 私钥一致性：JWK 的 x 须与 d 对应（防混入）。
-            const expect = name === "ED25519" ? __wjs2_ed_public(seed) : __wjs2_x_public(seed);
-            const same = expect.length === 32 && expect.every((b, i) => b === x[i]);
+            const expect = name === "ED25519" ? __wjs2_ed_public(seed) : name === "ED448" ? __wjs2_ed448_public(seed) : __wjs2_x_public(seed);
+            const same = expect.length === okpSize && expect.every((b, i) => b === x[i]);
             if (!same) throw badData();
             return __wjs2_makeKey(keyAlg, seed, usages, !!extractable, "private");
           }
           return __wjs2_makeKey(keyAlg, x, usages, !!extractable, "public");
         }
         if (format === "raw") {
+          const okpSize = name === "ED448" ? 57 : 32;
           let v;
           try {
             v = __wjs2_keyBytes(keyData);
           } catch { throw badData(); }
-          if (v.length !== 32) throw badData();
+          if (v.length !== okpSize) throw badData();
           return __wjs2_makeKey(keyAlg, v, usages, !!extractable, "public");
         }
         if (format === "pkcs8") {

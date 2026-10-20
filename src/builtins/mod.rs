@@ -131,8 +131,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // 10e：Ed448（ed448-goldilocks 特批钉版；RFC 8032 纯签名）
             ("__wjs2_ed448_generate", Some(crypto::ed448_generate), 0),
             ("__wjs2_ed448_public", Some(crypto::ed448_public), 1),
-            ("__wjs2_ed448_sign", Some(crypto::ed448_sign), 2),
-            ("__wjs2_ed448_verify", Some(crypto::ed448_verify), 3),
+            ("__wjs2_ed448_sign", Some(crypto::ed448_sign), 3),
+            ("__wjs2_ed448_verify", Some(crypto::ed448_verify), 4),
             ("__wjs2_x_generate", Some(crypto::x_generate), 0),
             ("__wjs2_x_public", Some(crypto::x_public), 1),
             ("__wjs2_x_derive", Some(crypto::x_derive), 2),

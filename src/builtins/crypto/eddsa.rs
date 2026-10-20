@@ -5,6 +5,7 @@ use super::common::*;
 use mozjs::context::JSContext;
 use mozjs::jsval::{JSVal};
 use crate::jsapi_glue::{report_error, value_to_string, view_bytes, wrap_cx, Frame};
+use super::common::opt_view_bytes;
 
 /// RFC 8410 定长 DER 编解码（Ed25519 oid …70 / X25519 …6e；纯函数，可单测）。
 /// PKCS#8: `30 2E 02 01 00 30 05 06 03 2B 65 OID 04 22 04 20 <32B>`；
@@ -365,10 +366,10 @@ pub unsafe extern "C" fn ed_verify(
         return false;
     };
     let ok = (|| {
-        use ed25519_dalek::Verifier as _;
         let vk = ed25519_dalek::VerifyingKey::from_bytes(&publ).ok()?;
         let sig = ed25519_dalek::Signature::try_from(sig.as_slice()).ok()?;
-        vk.verify(&data, &sig).is_ok().then_some(true)
+        // eddsa 套件：小阶点即 false（verify_strict；延展性套件无覆盖，真机同款）。
+        vk.verify_strict(&data, &sig).is_ok().then_some(true)
     })();
     match ok {
         Some(true) => {
@@ -433,7 +434,7 @@ pub unsafe extern "C" fn ed448_public(
     set_rval_bytes(&mut cx, &frame, publ)
 }
 
-/// `__wjs2_ed448_sign(seedU8, dataU8)` → 114B 签名（确定性纯签名，真机同款）。
+/// `__wjs2_ed448_sign(seedU8, dataU8[, ctxU8])` → 114B 签名（context 即 Ed448 ctx，真机同款）。
 pub unsafe extern "C" fn ed448_sign(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -452,15 +453,34 @@ pub unsafe extern "C" fn ed448_sign(
     ) else {
         return false;
     };
+    let ctx = if frame.argc() >= 3 {
+        match opt_view_bytes(&mut cx, frame.arg(2), "Ed448 context") {
+            Some(c) => c,
+            None => return false,
+        }
+    } else {
+        None
+    };
     let Ok(sk) = ed448_goldilocks::SigningKey::try_from(seed.as_slice()) else {
         report_error(&mut cx, "DataError: bad Ed448 seed (must be 57 bytes)");
         return false;
     };
-    let sig = sk.sign_raw(&data);
+    let ctx_ref = ctx.as_deref().unwrap_or(&[]);
+    let sig = if ctx_ref.is_empty() {
+        sk.sign_raw(&data)
+    } else {
+        match sk.sign_ctx(ctx_ref, &data) {
+            Ok(s) => s,
+            Err(e) => {
+                report_error(&mut cx, &format!("OperationError: Ed448 sign failed: {e}"));
+                return false;
+            }
+        }
+    };
     set_rval_bytes(&mut cx, &frame, &sig.to_bytes())
 }
 
-/// `__wjs2_ed448_verify(pubU8, sigU8, dataU8)` → boolean。
+/// `__wjs2_ed448_verify(pubU8, sigU8, dataU8[, ctxU8])` → boolean。
 pub unsafe extern "C" fn ed448_verify(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -480,6 +500,14 @@ pub unsafe extern "C" fn ed448_verify(
     ) else {
         return false;
     };
+    let ctx = if frame.argc() >= 4 {
+        match opt_view_bytes(&mut cx, frame.arg(3), "Ed448 context") {
+            Some(c) => c,
+            None => return false,
+        }
+    } else {
+        None
+    };
     let (Ok(publ), Ok(sig)) = (
         <[u8; 57]>::try_from(publ.as_slice()),
         <[u8; 114]>::try_from(sig.as_slice()),
@@ -487,10 +515,19 @@ pub unsafe extern "C" fn ed448_verify(
         report_error(&mut cx, "DataError: bad Ed448 key/signature length");
         return false;
     };
+    let ctx_ref = ctx.as_deref().unwrap_or(&[]);
     let ok = (|| {
         let vk = ed448_goldilocks::VerifyingKey::from_bytes(&publ).ok()?;
+        // eddsa 套件：小阶点即 false（4P 恒等判定；零新增依赖，真机同款）。
+        if vk.to_edwards().double().double() == ed448_goldilocks::EdwardsPoint::IDENTITY {
+            return None;
+        }
         let sig = ed448_goldilocks::Signature::from_slice(&sig).ok()?;
-        vk.verify_raw(&sig, &data).ok()
+        if ctx_ref.is_empty() {
+            vk.verify_raw(&sig, &data).ok()
+        } else {
+            vk.verify_ctx(&sig, ctx_ref, &data).ok()
+        }
     })();
     match ok {
         Some(()) => {

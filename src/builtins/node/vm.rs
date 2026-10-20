@@ -872,7 +872,11 @@ pub unsafe extern "C" fn vm_release(
         None => return false,
     };
     let _ = &mut cx;
-    frame.set_rval(BooleanValue(state::vm_release(id)));
+    let released = state::vm_release(id);
+    if released {
+        super::vm_module::vm_mod_requests_drop_ctx(id);
+    }
+    frame.set_rval(BooleanValue(released));
     true
 }
 

@@ -10,11 +10,35 @@ use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::{transform_str_to_source_text, CompileOptionsWrapper};
 
-use crate::jsapi_glue::{report_error, wrap_cx, Frame};
+use crate::jsapi_glue::{exc_name, raw_handle, report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
 use super::vm::{arg_string, lookup_global};
 use super::vm_error::throw_vm;
+
+// ── 静态请求表（linker 切片；`state::VmMod` 在 state/mod.rs 跨 lane 文件中，
+// 本 lane 不碰——请求 JSON 存本文件进程级表，id 单调不复用无 ABA，
+// `vm_mod_release`/ctx 摘除时清（见 `vm_mod_requests_drop_ctx`）。────────────
+
+/// 静态请求表（纯逻辑子模块；`#[path]` 挂接，不碰 `mod.rs`）。
+#[path = "vm_requests.rs"]
+mod requests;
+use requests::{VmRequest, extract_requests, requests_json};
+
+static VM_MOD_REQUESTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, (u64, String)>>> =
+    std::sync::OnceLock::new();
+
+fn vm_mod_requests_map(
+) -> &'static std::sync::Mutex<std::collections::HashMap<u64, (u64, String)>> {
+    VM_MOD_REQUESTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// ctx 摘除时清其名下请求表（`vm.rs` release 路径调用；幂等）。
+pub(super) fn vm_mod_requests_drop_ctx(ctx: u64) {
+    if let Ok(mut m) = vm_mod_requests_map().lock() {
+        m.retain(|_, (c, _)| *c != ctx);
+    }
+}
 
 /// 模块 ctx 实参（"main"→主 realm 哨兵；真机无 context 模块跑主域）。
 fn mod_ctx_id(
@@ -101,11 +125,26 @@ pub unsafe extern "C" fn vm_mod_compile(
         }
     };
     let has_imports = !loaded.imports.is_empty();
+    // 静态请求表（linker/moduleRequests 同源）：二次解析引擎编译文本
+    //（转译后，语句序，属性/phase 俱全）；解析失手（理论不可达——引擎已编译
+    // 通过）回落 loader 的 spec 表，保证 deps 永与引擎请求集一致。
+    // 附带 `with` 子句剥离物（V8 不透明口径，见 extract_requests）：引擎喂剥离版。
+    let (mut reqs, stripped) = extract_requests(&loaded.js, ext.unwrap_or("js"));
+    if reqs.is_empty() && has_imports {
+        reqs = loaded
+            .imports
+            .iter()
+            .map(|spec| VmRequest { spec: spec.clone(), attrs: Vec::new(), phase: "evaluation" })
+            .collect();
+    }
+    let compile_js = stripped.as_deref().unwrap_or(&loaded.js);
+    let specs: Vec<String> = reqs.iter().map(|r| r.spec.clone()).collect();
+    let has_imports = !reqs.is_empty();
     let c_filename =
         std::ffi::CString::new(identifier.as_str()).unwrap_or_else(|_| c"vm_module.js".to_owned());
     let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
     let options = CompileOptionsWrapper::new(&realm, c_filename, 1);
-    let mut src = transform_str_to_source_text(&loaded.js);
+    let mut src = transform_str_to_source_text(compile_js);
     // SAFETY: realm 内；options/src 存活到调用返回；null 即编译失败
     let record = unsafe { CompileModule1(&mut realm, options.ptr, &mut src) };
     if record.is_null() {
@@ -117,12 +156,17 @@ pub unsafe extern "C" fn vm_mod_compile(
         throw_vm(&mut realm, "SyntaxError", &msg);
         return false;
     }
-    let id = state::vm_mod_add(ctx, identifier, record, has_imports, loaded.imports);
+    let id = state::vm_mod_add(ctx, identifier, record, has_imports, specs);
+    if let Ok(mut m) = vm_mod_requests_map().lock() {
+        m.insert(id, (ctx, requests_json(&reqs)));
+    }
     id.to_string().to_jsval(&mut realm, frame.rval_mut());
     true
 }
 
-/// 取静态依赖表：`__wjs2_vm_mod_deps(modId)` → JSON 数组串。
+/// 取静态请求表：`__wjs2_vm_mod_deps(modId)` → JSON 数组串
+///（`[{specifier,attributes,phase}]`，首现序全键去重；`dependencySpecifiers`
+/// 与 `moduleRequests` 同源派生）。
 pub unsafe extern "C" fn vm_mod_deps(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -139,7 +183,16 @@ pub unsafe extern "C" fn vm_mod_deps(
         report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
         return false;
     };
-    let Some(json) = state::vm_mod_deps_json(id) else {
+    // state 侧存在性（记录与请求表同生共死；ctx 摘除即双清，见 drop_ctx）。
+    if state::vm_mod_deps_json(id).is_none() {
+        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+        return false;
+    }
+    let json = vm_mod_requests_map()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&id).map(|(_, j)| j.clone()));
+    let Some(json) = json else {
         report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
         return false;
     };
@@ -147,8 +200,9 @@ pub unsafe extern "C" fn vm_mod_deps(
     true
 }
 
-/// 链接模块：`__wjs2_vm_link(modId)` → undefined。
-/// 零导入恒过；带导入 v1 报 `ERR_VM_MODULE_LINK_FAILURE`（linker 切片后续）。
+/// 链接模块：`__wjs2_vm_link(modId[, sessionJson])` → undefined。
+/// 无会话即零导入旧路（`load_dependencies` + `ModuleLink`；带导入仍拒绝——
+/// JS 壳将会话路由到图路，此处为防御）；有会话走链接器图（见下）。
 pub unsafe extern "C" fn vm_mod_link(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -169,6 +223,11 @@ pub unsafe extern "C" fn vm_mod_link(
             return false;
         }
     };
+    // 图路：JS 壳已做 linker BFS（校验 + 去重 + transitivity），此处只做引擎接线。
+    if frame.argc() > 1 {
+        let sess = value_to_string(&mut cx, frame.arg(1));
+        return vm_mod_link_graph(&mut cx, frame, id, &sess);
+    }
     let Some((record, ctx, has_imports, _linked, _evaluated)) = state::vm_mod_get(id) else {
         report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
         return false;
@@ -379,6 +438,9 @@ pub unsafe extern "C" fn vm_mod_release(
         return false;
     };
     let _ = &mut cx;
+    if let Ok(mut m) = vm_mod_requests_map().lock() {
+        m.remove(&id);
+    }
     frame.set_rval(BooleanValue(state::vm_mod_release(id)));
     true
 }
@@ -405,6 +467,283 @@ pub unsafe extern "C" fn vm_mod_settled(
     frame.set_rval(UndefinedValue());
     true
 }
+
+// ── 链接器图（link/linkRequests 引擎接线；Gecko153 无 SetModuleResolveHook，
+// 唯一解析通道是进程级 load hook——此处临时换装 vm 会话 hook，复原；见 Modules.h
+// `LoadRequestedModules` 注释：边经 hook 命中，循环由引擎处理）────────────────
+///
+/// 会话 JSON（JS 壳 BFS 产物）：`{modules:[id…], edges:[[referrerId,spec,depId]…]}`
+///（id 皆字符串形态数字）。JS 已校验（模块身份/同 ctx/键一致），此处复核存在性
+/// 与 ctx 一致即接线；缺边（内部不一致）报 `ERR_VM_MODULE_LINK_FAILURE`。
+struct VmLinkSession {
+    edges: std::collections::HashMap<(u64, String), u64>,
+    modules: Vec<u64>,
+}
+
+thread_local! {
+    static VM_LINK_SESSIONS: std::cell::RefCell<Vec<VmLinkSession>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static VM_LINK_ERROR: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 图链接（`vm_mod_link` 图路；调用方已进 realm，record 有效 rooted 用）。
+/// UNSAFE-BOUNDARY: session 来自 JS 壳 BFS（id 串 → u64 解析失败即内部错）；
+/// hook 换装期同线程无重入（LoadRequestedModules 同步驱动），覆盖见 tests/node/vm.rs。
+fn vm_mod_link_graph(
+    cx: &mut mozjs::context::JSContext,
+    frame: Frame,
+    entry: u64,
+    sess: &str,
+) -> bool {
+    use mozjs::rust::wrappers2::{LoadRequestedModules, ModuleLink};
+    let fail = |cx: &mut mozjs::context::JSContext, msg: &str| {
+        report_error(cx, msg);
+        false
+    };
+    let v: serde_json::Value = serde_json::from_str(sess).unwrap_or(serde_json::Value::Null);
+    let mut modules = Vec::new();
+    let mut edges = std::collections::HashMap::new();
+    for m in v.get("modules").and_then(|m| m.as_array()).into_iter().flatten() {
+        let Some(id) = m.as_str().and_then(|s| s.parse::<u64>().ok()) else {
+            return fail(cx, "ERR_VM_MODULE_LINK_FAILURE: vm link session has a bad module id");
+        };
+        modules.push(id);
+    }
+    for e in v.get("edges").and_then(|m| m.as_array()).into_iter().flatten() {
+        let arr = e.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        if arr.len() != 3 {
+            return fail(cx, "ERR_VM_MODULE_LINK_FAILURE: vm link session has a bad edge");
+        }
+        let (Some(r), Some(sp), Some(d)) = (
+            arr[0].as_str().and_then(|s| s.parse::<u64>().ok()),
+            arr[1].as_str(),
+            arr[2].as_str().and_then(|s| s.parse::<u64>().ok()),
+        ) else {
+            return fail(cx, "ERR_VM_MODULE_LINK_FAILURE: vm link session has a bad edge");
+        };
+        edges.insert((r, sp.to_owned()), d);
+    }
+    if !modules.contains(&entry) {
+        return fail(cx, "ERR_VM_MODULE_LINK_FAILURE: vm link session misses the entry");
+    }
+    // 存在性 + ctx 一致（JS 已查，此处引擎接线前复核；跨 ctx 按真机拒）。
+    let mut entry_ctx = None;
+    for id in modules.iter().chain(edges.values()) {
+        let Some((_, ctx, _, _, _)) = state::vm_mod_get(*id) else {
+            return fail(cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+        };
+        match entry_ctx {
+            None => entry_ctx = Some(ctx),
+            Some(c) if c != ctx => {
+                return fail(
+                    cx,
+                    "ERR_VM_MODULE_DIFFERENT_CONTEXT: Linked modules must use the same context",
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    let Some((record, _, _, _, _)) = state::vm_mod_get(entry) else {
+        return fail(cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+    };
+    VM_LINK_SESSIONS.with(|s| {
+        s.borrow_mut().push(VmLinkSession { edges, modules: modules.clone() });
+    });
+    VM_LINK_ERROR.with(|e| *e.borrow_mut() = None);
+    // SAFETY: 单 Runtime 进程级 hook；换装—驱动—复原全同步，无重入点
+    let rt = unsafe { mozjs::jsapi::JS_GetRuntime(cx.raw_cx()) };
+    let prev = unsafe { mozjs::jsapi::GetModuleLoadHook(rt) };
+    unsafe { mozjs::jsapi::SetModuleLoadHook(rt, Some(vm_link_hook)) };
+    let out = {
+        rooted!(&in(cx) let entry_root: *mut JSObject = record);
+        rooted!(&in(cx) let undef = UndefinedValue());
+        // SAFETY: entry 有效 rooted；hook 按会话表命中（miss/属性墙即 rejected 暂存）
+        let ok = unsafe {
+            LoadRequestedModules(
+                cx,
+                entry_root.handle(),
+                undef.handle(),
+                Some(vm_link_resolved),
+                Some(vm_link_rejected),
+            )
+        };
+        // rejected 先行（属性墙等同步拒收：LoadRequestedModules 照常 true，
+        // 真因在 stash；此时接线必败，不再进 ModuleLink 掩盖真因）。
+        if VM_LINK_ERROR.with(|e| e.borrow().is_some()) {
+            None
+        } else if !ok {
+            None
+        } else {
+            // SAFETY: 加载态已就绪；失败 pending 原样透传（SyntaxError 等引擎错）
+            let linked = unsafe { ModuleLink(cx, entry_root.handle()) };
+            Some(linked)
+        }
+    };
+    unsafe { mozjs::jsapi::SetModuleLoadHook(rt, prev) };
+    VM_LINK_SESSIONS.with(|s| {
+        s.borrow_mut().pop();
+    });
+    match out {
+        None => {
+            if let Some(msg) = VM_LINK_ERROR.with(|e| e.borrow_mut().take()) {
+                fail(cx, &msg)
+            } else {
+                // SAFETY: 仅清残留 pending（hook 已按约定处理），防污染后继
+                unsafe { mozjs::jsapi::JS_ClearPendingException(cx.raw_cx()) };
+                fail(cx, "ERR_VM_MODULE_LINK_FAILURE: vm module dependencies failed to load")
+            }
+        }
+        Some(false) => {
+            rooted!(&in(cx) let mut exc = UndefinedValue());
+            // SAFETY: ModuleLink 失败必有 pending；error_info 消费为定位错
+            //（compile 路同款：先取 info，再读异常名，信封重建保 instanceof）
+            match { let i = mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()); crate::jsapi_glue::fill_message(cx, i, exc.get()) } {
+                Some(info) => {
+                    let name = exc_name(cx, exc.get()).unwrap_or_else(|| "Error".to_owned());
+                    throw_vm(cx, &name, &info.message);
+                    false
+                }
+                None => fail(cx, "ERR_VM_MODULE_LINK_FAILURE: vm module failed to link"),
+            }
+        }
+        Some(true) => {
+            for id in modules.iter() {
+                state::vm_mod_set_linked(*id);
+            }
+            frame.set_rval(UndefinedValue());
+            true
+        }
+    }
+}
+
+/// 成功置旗（无状态可记；失败侧 hook 暂存）。
+unsafe extern "C" fn vm_link_resolved(
+    _cx: *mut mozjs::jsapi::JSContext,
+    _v: mozjs::jsapi::Handle<JSVal>,
+) -> bool {
+    true
+}
+
+/// 会话 miss/引擎拒收（属性墙等）：错误值串化暂存；hook 按约定返回 false。
+/// 注：SM153 仅支持 `type` 属性键（Modules.cpp `We only support "type"`），
+///
+/// 其余键走 `FailWithUnsupportedAttributeException` 经 rejected 回调到此。
+unsafe extern "C" fn vm_link_rejected(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    _host_defined: mozjs::jsapi::Handle<JSVal>,
+    error: mozjs::jsapi::Handle<JSVal>,
+) -> bool {
+    // SAFETY: 引擎回调提供的 raw cx 有效
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    // SAFETY: 参数 Handle 在调用期内有效
+    let msg = unsafe { value_to_string(&mut cx, *error.ptr) };
+    VM_LINK_ERROR.with(|e| {
+        *e.borrow_mut() = Some(format!("ERR_VM_MODULE_LINK_FAILURE: {msg}"));
+    });
+    // SAFETY: 拒绝侧清场，避免 pending 污染外层接线判定
+    unsafe { mozjs::jsapi::JS_ClearPendingException(cx.raw_cx()) };
+    true
+}
+
+/// SAFETY: 引擎以有效参数回调（HostLoadImportedModule 约定；签名与进程 hook 同构）。
+unsafe extern "C" fn vm_link_hook(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    referrer: mozjs::jsapi::Handle<*mut mozjs::jsapi::JSScript>,
+    module_request: mozjs::jsapi::Handle<*mut JSObject>,
+    _host_defined: mozjs::jsapi::Handle<JSVal>,
+    payload: mozjs::jsapi::Handle<JSVal>,
+    _line: u32,
+    _col: mozjs::jsapi::ColumnNumberOneOrigin,
+) -> bool {
+    use mozjs::rust::wrappers2::{
+        FinishLoadingImportedModule, GetModuleRequestSpecifier, GetModuleScript,
+    };
+    // SAFETY: 引擎回调提供的 raw cx 有效
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let miss = |cx: &mut mozjs::context::JSContext, msg: &str| {
+        VM_LINK_ERROR.with(|e| *e.borrow_mut() = Some(msg.to_owned()));
+        report_error(cx, msg);
+        false
+    };
+    // SAFETY: 参数 Handle 在调用期内有效
+    let referrer_ptr = unsafe { *referrer.ptr };
+    // 会话定位（内层优先）+ referrer→模块 id（脚本指针比对）。
+    let found = VM_LINK_SESSIONS.with(|s| {
+        let sessions = s.borrow();
+        let mut out = None;
+        for sess in sessions.iter().rev() {
+            for id in sess.modules.iter() {
+                let rec = state::vm_mod_get(*id).map(|(r, _, _, _, _)| r);
+                if rec.is_none() {
+                    continue;
+                }
+                rooted!(&in(cx) let rec_root: *mut JSObject = rec.unwrap());
+                // SAFETY: rec 有效 rooted；GetModuleScript 纯读
+                let script = unsafe { GetModuleScript(rec_root.handle()) };
+                if !script.is_null() && script == referrer_ptr {
+                    out = Some((*id, sess as *const VmLinkSession));
+                    break;
+                }
+            }
+            if out.is_some() {
+                break;
+            }
+        }
+        out.map(|(id, p)| (id, unsafe { &*p }))
+    });
+    let Some((referrer_id, sess)) = found else {
+        return miss(&mut cx, "ERR_VM_MODULE_LINK_FAILURE: vm link request misses its session");
+    };
+    // 同一会话必同 ctx（入口复核过）；进其 realm 读请求（§4.1 铁律）。
+    let Some((_, ctx, _, _, _)) = state::vm_mod_get(referrer_id) else {
+        return miss(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+    };
+    let Some(ptr) = mod_global(&mut cx, ctx) else {
+        return miss(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+    };
+    rooted!(&in(cx) let global = ptr);
+    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+    let cx: &mut mozjs::context::JSContext = &mut realm;
+    // SAFETY: request Handle 调用期内有效；转成带生命期的 rust Handle
+    let spec = unsafe {
+        let req = mozjs::gc::Handle::from_marked_location(&*module_request.ptr);
+        let jsstr = GetModuleRequestSpecifier(cx, req);
+        if jsstr.is_null() {
+            return miss(cx, "ERR_VM_MODULE_LINK_FAILURE: cannot read import specifier");
+        }
+        mozjs::conversions::jsstr_to_string(cx, std::ptr::NonNull::new_unchecked(jsstr))
+    };
+    let Some(dep) = sess.edges.get(&(referrer_id, spec.clone())) else {
+        return miss(
+            cx,
+            &format!("ERR_VM_MODULE_LINK_FAILURE: vm link session misses a dependency"),
+        );
+    };
+    let Some((record, _, _, _, _)) = state::vm_mod_get(*dep) else {
+        return miss(cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
+    };
+    let dynamic = {
+        // SAFETY: payload 只读出（是否 Promise 决定动/静路径）
+        let v = unsafe { *payload.ptr };
+        v.is_object() && {
+            let obj = v.to_object();
+            rooted!(&in(cx) let obj_root: *mut JSObject = obj);
+            // SAFETY: obj_root 为有效 rooted 对象；谓词无 GC 点
+            unsafe { mozjs::jsapi::IsPromiseObject(raw_handle(obj_root.as_ptr())) }
+        }
+    };
+    rooted!(&in(cx) let record_root: *mut JSObject = record);
+    // SAFETY: 槽位转换（from_marked_location）+ safe wrapper 调用
+    unsafe {
+        let referrer_h = mozjs::gc::Handle::from_marked_location(&*referrer.ptr);
+        let request = mozjs::gc::Handle::from_marked_location(&*module_request.ptr);
+        let payload_h = mozjs::gc::Handle::from_marked_location(&*payload.ptr);
+        FinishLoadingImportedModule(cx, referrer_h, request, payload_h, record_root.handle(), dynamic)
+    }
+}
+
+// ── Promise 内态 ─────────────────────────────────────────────────────────────
 
 /// Promise 结算内态（`util.inspect` 显示用）：`__wjs2_promise_state(p)` → 0/1/2
 ///（pending/fulfilled/rejected）；`__wjs2_promise_result(p)` → 结算值（仅已结算）。

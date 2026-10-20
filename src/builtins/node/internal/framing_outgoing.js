@@ -675,8 +675,8 @@ export function withHttpServer(Base) {
         // 后续响应仍须可写），被截断的请求体提前夭折（'aborted' 语义）。
         // CONNECT/升级劫持后跳过（connect 套件：隧道内 FIN 不得销毁用户
         // socket；监听计数保留 end:1）。仅 CONNECT 形（升级 FIN 语义另行，
-        // 不动）。
-        sock.on("end", () => {
+        // 不动）。存根供劫持摘除（同 __detachSrvData）。
+        sock.__srvSockOnEnd = () => {
           if (sock.__connectHijacked) return;
           sock.__finReceived = true;
           if (!self.httpAllowHalfOpen) {
@@ -725,7 +725,8 @@ export function withHttpServer(Base) {
               });
             }
           }
-        });
+        };
+        sock.on("end", sock.__srvSockOnEnd);
         // 连接即开 headers 计时（headersTimeout 内须收到完整头，否则 408）。
         self.__armIdleTimers(st, sock);
         // node 口径：requestTimeout 从连接起算（delayed-headers 套件：零字节

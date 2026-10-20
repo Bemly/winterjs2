@@ -156,6 +156,71 @@ console.log("kept", net.getDefaultAutoSelectFamilyAttemptTimeout());
 }
 
 #[test]
+fn net_listen_sync_address_faces() {
+    // P0：无 host 监听同步 bind——紧随 address() 即见端口；报错带 address；
+    // 显式 host 同步 address 即 null（真机同）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+// 正常：同步 address 有效。
+const s1 = net.createServer();
+s1.listen(0);
+console.log("sync", typeof s1.address().port === "number" && s1.address().port > 0);
+// 边界：显式 host 同步 address 即 null。
+const s2 = net.createServer();
+s2.listen(0, "127.0.0.1");
+console.log("explicit", s2.address() === null);
+s2.on("listening", () => {
+  console.log("async", s2.address().port > 0);
+  // 报错：占用端口错带 address/port。
+  const s3 = net.createServer();
+  s3.on("error", (e) => {
+    console.log("inuse", e.code, e.address, e.port, e.syscall);
+    s1.close(() => s2.close(() => s3.close()));
+  });
+  s3.listen(s2.address().port, "127.0.0.1");
+});
+"#,
+    );
+    assert!(out.contains("sync true"), "out: {out}");
+    assert!(out.contains("explicit true"), "out: {out}");
+    assert!(out.contains("async true"), "out: {out}");
+    assert!(out.contains("inuse EADDRINUSE 127.0.0.1"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn net_socket_validation_faces() {
+    // P0：构造校验 + legacy 面——objectMode 拒、_connecting 透传、end 门计数。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const t = (f) => { try { f(); return "NO-THROW"; } catch (e) { return e.code + "|" + e.message; } };
+// 报错：objectMode 系。
+console.log("om", t(() => new net.Socket({ objectMode: true })));
+console.log("ro", t(() => new net.Socket({ readableObjectMode: true })));
+// 正常：legacy _connecting 与 connecting 同值；end 门恒 1。
+const s = new net.Socket();
+console.log("pre", s.connecting, s._connecting);
+console.log("endn", s.listenerCount("end"));
+console.log("fam", net.getDefaultAutoSelectFamily());
+"#,
+    );
+    assert!(out.contains("om ERR_INVALID_ARG_VALUE|The property 'options.objectMode' is not supported. Received true"), "out: {out}");
+    assert!(out.contains("ro ERR_INVALID_ARG_VALUE|The property 'options.readableObjectMode' is not supported. Received true"), "out: {out}");
+    assert!(out.contains("pre false false"), "out: {out}");
+    assert!(out.contains("endn 1"), "out: {out}");
+    assert!(out.contains("fam true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn socket_settimeout_fires_without_closing() {
     // 10f timers 对拍：socket.setTimeout(ms[, cb]) 真实现——单发 'timeout'
     // 事件（Node 口径：不关连接、socket 仍可写；cb 注册为 once 监听），

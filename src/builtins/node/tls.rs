@@ -324,7 +324,7 @@ pub unsafe extern "C" fn tls_connect(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| host.clone());
     handle.spawn(async move {
-        let tcp = match crate::builtins::node::net_pumps::tcp_connect_resolved(host.as_str(), port as u16, None).await {
+        let tcp = match crate::builtins::node::net_pumps::tcp_connect_resolved(host.as_str(), port as u16, None, 0).await {
             Ok(s) => {
                 // https 客户端默认 noDelay（Node https.js 口径）。
                 let _ = s.set_nodelay(true);

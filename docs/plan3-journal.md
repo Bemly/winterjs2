@@ -2587,3 +2587,25 @@ G1/G2/G3/G9 已收官。）
   编码期首件复判定去留。
 - allow-half-open（本段空跑，MUSTCALL:22 未现）→ 编码期复判。
 
+## 2026-10-20 net P0 13件落地（报文/校验形）
+
+- address-null ×5：真机 listen 无 host 即同步 bind（显式 host 异步，同步 address
+  即 null）→ native 第 5 参同步路（std bind + rval `id:port`，失败仍异步
+  ServerError/Close 不抛；UDS 面既有同款），JS 仅 host===null 置旗并同步落
+  `__listening`（地址沿用 0.0.0.0，不跟真机 `::`，保既有绿）。
+- better-error ×2：`__bindHost` 跟踪 + 错体补 `address` + 失败清 stale。
+- validation ×4：getsockname 咨询（node `address EPERM` 形）/ 构造器 objectMode
+  三键（lib/net.js:625 口径，先于 fd）/ lookup 校验序（先 IP 整数组、次 family；
+  all:true 对象数组走 HE 旧路）/ 缺省读旗（attemptTimeout 500/`=v` 覆盖 +
+  autoSelect 三态直读剥存，存根分不出缺席）。
+- legacy ×2：`_connecting` 透传 + 自门常驻（构造期首挂，用户监听后触发）。
+- 监听数连锁（node 真机计数：fresh 1/active 2/池态 1/detach 1）：agent 门存根化
+  （回池/响应收齐/隧道摘除同步摘，出池重挂）+ req 面 end 递延 socket 事件后一拍
+  （I/O 不穿插 microtask）+ 服务端 abort 门劫持摘除。附带修好 keepalive/cli-sock/
+  http_timeout_deep（srv 1）三计数。
+- localPort 透传（client-bind-twice）：native 第 6 参 + resolved 签名扩展（tls
+  调用点补 0），占用即 EADDRINUSE。
+- 验证：P0 13/13（含双旗形）+ 双黑盒新件绿；`net_` 19/19、`http_` 35/35、
+  `tls_` 15/15、`https_` 12/12；custom-lookup 单发抖动复跑 5/5（load 并发 flake
+  记一笔）；冒烟 5/5；双守门绿；`split-js` 未触发（tls.js 960/net 全员 <1000）。
+

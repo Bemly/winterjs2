@@ -204,10 +204,9 @@
       };
       sock.on("error", __sockOnError);
       sock.__reqSockOnError = __sockOnError;
-      // node socketOnEnd 口径（真机 toString 逐字）：无响应收到 FIN（'end'）
-      // → req 'socket hang up'（ECONNRESET）+ 销毁；本仓宽容口径——无监听不
-      // 加崩（emitErrorEvent 差异记档）。有 res 时只销毁，截断宽容路径不变
-      //（__onSockCloseEv 收口）。监听存 sock 供 __finishSock 入池前摘除。
+      // node 计数口径：'socket' 事件时仅 own+agent（=2）——req 面 end 监听递延
+      // 其后一拍挂载（I/O 不穿插 microtask，hang-up 窗无损；agent:false 直挂）。
+      // 监听存 sock 供 __finishSock 入池前摘除。
       const __sockOnEnd = function socketOnEnd() {
         const req = this._httpMessage;
         if (req !== undefined && req !== null && !req.destroyed &&
@@ -221,8 +220,17 @@
         }
         try { this.destroy(); } catch { /* gone */ }
       };
-      sock.on("end", __sockOnEnd);
-      sock.__reqSockOnEnd = __sockOnEnd;
+      if (this.agent) {
+        const __selfReq = this;
+        queueMicrotask(() => {
+          if (__selfReq.destroyed || sock.destroyed) return;
+          sock.on("end", __sockOnEnd);
+          sock.__reqSockOnEnd = __sockOnEnd;
+        });
+      } else {
+        sock.on("end", __sockOnEnd);
+        sock.__reqSockOnEnd = __sockOnEnd;
+      }
       sock.on("close", this.__onSockClose);
       sock.__reqSockOnClose = this.__onSockClose;
       // 复用连接已连通：递延一拍再刷（loopback 套件：构造后同步 setHeader

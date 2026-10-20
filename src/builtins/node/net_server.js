@@ -134,6 +134,7 @@ class __ServerClass extends EventEmitter {
         }
         if (cb) this.once("listening", cb);
         this.__port = 0; this.__udsPath = String(p);
+        this.__bindHost = String(p);
         this.__setupHandle();
         this.__id = Number(__wjs2_net_listen(0, "UDS:" + String(p) + "\n" + modeBits, this));
         this.__applyUnrefLatch();
@@ -147,7 +148,19 @@ class __ServerClass extends EventEmitter {
     this.__setupHandle();
     // reusePort 直通 native 第 4 参（child reuseport 套件：fork 共享端口；
     // BoundSocket-adopt 路径早有同款，此处 direct 路径补齐）。
-    this.__id = Number(__wjs2_net_listen(Number(port), host === null ? "0.0.0.0" : host, this, reusePort === true ? "1" : ""));
+    // node 真机：host 缺省即同步 bind（紧随 address() 即见端口；显式 host 走异步
+    // DNS 路，真机同步 address 即 null）→ native 第 5 参 "1" 仅 host===null 时置。
+    const wantSync = host === null && reusePort !== true;
+    const r = String(__wjs2_net_listen(Number(port), host === null ? "0.0.0.0" : host, this, reusePort === true ? "1" : "", wantSync ? "1" : ""));
+    this.__bindHost = host === null ? "0.0.0.0" : host;
+    if (wantSync) {
+      const [idStr, portStr] = r.split(":");
+      this.__id = Number(idStr);
+      const bp = Number(portStr);
+      if (bp > 0) this.__listening = { address: "0.0.0.0", port: bp, family: "IPv4" };
+    } else {
+      this.__id = Number(r);
+    }
     this.__applyUnrefLatch();
     return this;
   }
@@ -274,19 +287,37 @@ class __ServerClass extends EventEmitter {
         const o = JSON.parse(payload);
         const e = __netErr(o.code, o.msg);
         e.port = this.__listening ? this.__listening.port : this.__port;
+        // better-error 套件：listen 失败错带 address（尝试 host/path）。
+        if (e.address === undefined) e.address = this.__bindHost ?? this.__udsPath;
         // node bind 系标配：syscall + errno（EADDRINUSE=-4091/-48；EACCES=-4092/-13）。
         e.syscall = "listen";
         e.errno = o.code === "EADDRINUSE" ? -4091 : (o.code === "EACCES" ? -4092 : -4094);
         // listen 失败柄即清：error 后可立即重听（node 口径，call-listen-multiple
         // 第一段；ALREADY_LISTEN 守卫读 `_handle`，不清即卡死重听）。
-        this._handle = null; this.__id = 0;
+        // 同步 bind 成功后任务内翻车（from_std 系）亦清 stale address。
+        this._handle = null; this.__id = 0; this.__listening = null;
         this.emit("error", e);
         break;
       }
       case "close": this.__listening = null; this.emit("close"); break;
     }
   }
-  address() { return this.__listening; }
+  address() {
+    // socket-address 套件：_handle.getsockname 存在即咨询（mock 返非零即抛 node 形错）。
+    const h = this._handle;
+    if (h && typeof h.getsockname === "function") {
+      const out = {};
+      let r;
+      try { r = h.getsockname(out); } catch { r = 0; }
+      if (r !== 0 && r !== undefined) {
+        const name = r === -1 ? "EPERM" : (r === -13 ? "EACCES" : (r === -48 ? "EADDRINUSE" : "UNKNOWN"));
+        const e = new Error(`address ${name}`);
+        e.code = name;
+        throw e;
+      }
+    }
+    return this.__listening;
+  }
   // node 口径：getConnections(cb) 异步回现存连接数；无 cb 直回数（真机同）。
   // 计数位由 connection/+socket-close 维护（server 侧 socket close 即减）。
   getConnections(cb) {
@@ -707,6 +738,21 @@ export function isIPv6(input) { return isIP(input) === 6; }
 let __autoSelectTimeout = 500;
 // 默认自动族选择开关（真机 26 默认 true，实测）；连接侧 Happy Eyeballs 未实现，记档。
 let __autoSelectFamily = true;
+// node 缺省（lib/net.js:164-165）：attemptTimeout 缺省 500（`=v` 旗覆盖），
+// autoSelectFamily 缺省真（`--no-network-family-autoselection` 禁）。
+// 直读 CLI 剥存（internal/options 存根 `?? false` 分不出缺席，此处三态直判）。
+(() => {
+  const flags = Array.isArray(globalThis.__wjs2_nodeCompat) ? globalThis.__wjs2_nodeCompat : [];
+  const kTimeout = "--network-family-autoselection-attempt-timeout=";
+  for (const f of flags) {
+    if (f === "--no-network-family-autoselection") __autoSelectFamily = false;
+    else if (f === "--network-family-autoselection") __autoSelectFamily = true;
+    else if (typeof f === "string" && f.startsWith(kTimeout)) {
+      const v = Number(f.slice(kTimeout.length));
+      if (Number.isInteger(v)) __autoSelectTimeout = v;
+    }
+  }
+})();
 export function getDefaultAutoSelectFamily() { return __autoSelectFamily; }
 export function setDefaultAutoSelectFamily(value) { __autoSelectFamily = !!value; }
 export function getDefaultAutoSelectFamilyAttemptTimeout() { return __autoSelectTimeout; }

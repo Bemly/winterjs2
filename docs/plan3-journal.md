@@ -1527,3 +1527,12 @@ G1/G2/G3/G9 已收官。）
 - lane/http2-c2（compat 壳 10/18）：客户端 destroy 语义三修 + 服务端 expect/CONNECT 路由两修 + 校验面（link/socket 背书）+ Rust 头到即 response/增量 data/Close 清任务。余 8 件三类 bound：interim 系×4（hyper 单 HEADERS 无 interim API）、serverresponse-end HEAD 块（`NetCmd::H2Respond.end_stream` 一字段，net.rs）、early-hints×2（码形已 exact，卡 `__ev` 抛错到 uncaughtException 的 runtime 投递）、createpushresponse 成功路（push bound，错误双路径已 exact）。
 - lane/https-misc（close-idle/host-headers/keep-alive-drop/client-get-url 转绿 + http close-idle 附带）：setHost Boolean 归一；超额管线 503 走正常响应管线；半截头连接非空闲；已关 server 再 close 回 `ERR_SERVER_NOT_RUNNING`；`NODE_TLS_REJECT_UNAUTHORIZED=0` 缺省 + Host→servername 归一。N1-N4 移交 wave-2（见下）。
 - 合流验证：builtins 40/40、events 10/10、stream 12/12、util 9/9、worker 17/17、tls 8/8、http2 12/12、https 6/6、http 36/36；W1/USP/H1 回归抽查绿；worker:: 一次 flaky（4.275 家族，复跑绿，记一笔）。
+
+## 2026-10-20 wave-2 五道合流（R18）
+
+- L-A tls-strict（strict 15/15）：v3 无 SAN 证书 CN 回落（SAN 在场/IP 永不回落）；自签两处判定（verify_v1 先判已受信 + UnknownIssuer 路），哨兵透 `DEPTH_ZERO_SELF_SIGNED`；webpki Display 形补进 ALTNAME 映射。sni-N 记 bound（rustls 无 raw-SNI API）；autoselect/address-family 系 net-dialing 缺口（另道）；4 verify 红经 parent-swap 复现皆 pre-existing。
+- L-B framing+https（N1/N2/N2b/close-竞速/free 全绿）：Server 参数门镜像 http；socketPath 双钩透传 + globalAgent 活引用（附带修 `NODE_TLS_REJECT_UNAUTHORIZED` 池键污染）；并发 write+end 空包竞速（net 自动回 FIN 抢跑→allowHalfOpen 收链 + end 收口）；agent 'free' 缺失补发。http 36/36 零回归（顺手修 2 transient）。
+- L-C http2-C3（compat-serverresponse-end HEAD 块 + close-idle 束转绿）：`NetCmd::H2Respond.end_stream` 一字段；idle-conn 250ms 递延杀 + session stream 序 + finish→close + clean-close 免 abort + GOAWAY drain；自致 3 回归当场修。余：interim×4（hyper 无 interim API，bound）、early-hints×2（码 exact，卡 uncaughtException runtime 投递）、push 成功路（bound）；TIMEOUT 50 全表定级（7 已绿/1 runtime/3 node 自红/24 hyper-bound/15 actionable-shell 待 wave-3）。
+- L-D vm-triage（timeout 四件 + 描述符两件转绿）：中断回调一发制 + 看门续发 + 模块 rejected-completion 转码认领；syncOut 三旗回写 + vm_set 重定义清旗。余：linker/membrane/每-context 队列/宿主 import/SM 文案/TLA 无 API/跨域，一律引擎墙记档；blackbox 17/17。
+- L-E loader-json（encoding-singlebyte 29/28，余 import.meta.dirname）：ESM `.json` 走 export-default 合成（transpile.rs +39，loader 18/18）；whatwg 9 红复核 bound（7 internal-tree/infra + canparse V8 内禀 + custom-inspect 需 prelude+url-crate 双动）；console/util 全量 triage 表交付（ignoreErrors 簇 4 件 + inspect-core 缺口 + 5 小校验）。
+- 主仓 fix-forward 两件：USP 初始化归一（序列 key-presence 判定/定长二元组/record 含 symbol 键/Map 去重）+ USP inspect 面（含迭代器余项/depth<0 坍缩/`inspect.custom` 导出）。

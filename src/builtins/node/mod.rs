@@ -56,6 +56,7 @@ mod quic_api;
 mod quic_driver;
 mod quic_tls;
 pub mod readline;
+pub mod readline_promises;
 /// 10c-3: node:repl（REPLServer/start/Recoverable，骑 readline Interface）。
 pub mod repl;
 pub mod require;
@@ -181,6 +182,7 @@ const BUILTINS: &[(&str, &str)] = &[
     ("node:module", nodemodule::SOURCE),
     ("node:v8", v8::SOURCE),
     ("node:readline", readline::SOURCE),
+    ("node:readline/promises", readline_promises::SOURCE),
     ("node:repl", repl::SOURCE),
     ("node:url", url::SOURCE),
     // 10d：node:sqlite（turso 底座；DatabaseSync/StatementSync）
@@ -288,6 +290,7 @@ pub fn normalize_spec(spec: &str) -> Option<&'static str> {
         "module" => Some("node:module"),
         "v8" => Some("node:v8"),
         "readline" => Some("node:readline"),
+        "readline/promises" => Some("node:readline/promises"),
         "repl" => Some("node:repl"),
         "url" => Some("node:url"),
         // 10d

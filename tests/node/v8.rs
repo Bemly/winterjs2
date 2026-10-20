@@ -7,6 +7,8 @@ use assert_fs::prelude::*;
 fn v8_readline_surface() {
     // v8：startupSnapshot 守卫（vite try 内调用）；readline：10c-2 起全面实现，
     // 旧宽松口径（question 抛未实现/非法入参带码）已退役，此处按新语义断言。
+    // readline 轮：顶层光标件按 callbacks.js 真机口径恒写序列（null 流回 true，
+    // 旧 `__delegate` 有方法才转调口径已废——真机 `cursorTo(null)===true`）。
     let dir = assert_fs::TempDir::new().unwrap();
     let file = dir.child("vr.mjs");
     file.write_str(
@@ -23,10 +25,10 @@ itf.setPrompt("> ");
 console.log("rl-open", itf.getPrompt() === "> " && itf.closed === false);
 itf.close();
 console.log("rl-close", closed && itf.closed);
-console.log("rl-cursor", cursorTo(null, 0, 0) === false && clearScreenDown(null) === false);
+console.log("rl-cursor", cursorTo(null, 0, 0) === true && clearScreenDown(null) === true);
 try { emitKeypressEvents(null); } catch (e) { console.log("rl-emitnull", e.code); }
-itf.question("q?", () => {});
-console.log("rl-q", "no-throw");
+try { itf.question("q?", () => {}); console.log("rl-q FAIL"); }
+catch (e) { console.log("rl-q", e.code); }
 try { createInterface(42); } catch (e) { console.log("rl-bad", e.constructor.name, e.code); }
 console.log("rl-def", typeof rl.createInterface === "function");
 "#,
@@ -47,7 +49,7 @@ console.log("rl-def", typeof rl.createInterface === "function");
         "rl-close true",
         "rl-cursor true",
         "rl-emitnull ERR_INVALID_ARG_TYPE",
-        "rl-q no-throw",
+        "rl-q ERR_USE_AFTER_CLOSE",
         "rl-bad TypeError undefined",
         "rl-def true",
     ] {

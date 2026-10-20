@@ -214,7 +214,16 @@ globalThis.EventTarget = class EventTarget {
       for (const entry of list) {
         if (es.immediate || entry.removed) continue;
         if (entry.signal?.aborted) continue;
-        if (entry.once) this.removeEventListener(es.type, entry.listener, { capture: entry.capture });
+        // node 口径：once 到点内部摘除，不走 public removeEventListener
+        //（原生引擎不可观察；经 public 会误触用户覆写，abort 套件钉住）。
+        if (entry.once) {
+          entry.removed = true;
+          const lst = st.get(es.type);
+          if (lst !== undefined) {
+            const i = lst.indexOf(entry);
+            if (i >= 0) lst.splice(i, 1);
+          }
+        }
         es.currentTarget = this;
         // passive 窗内派发（preventDefault 递延门消费后复位；嵌套派发按栈恢复）。
         const prevPassive = es.passiveNow;

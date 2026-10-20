@@ -2496,3 +2496,29 @@ G1/G2/G3/G9 已收官。）
 - 未动/偏离：Rust 原生 time 面留作回落（输出通道/缩进仍原生）；长时
   `h:mm:ss` 全局面已随 formatTime 对齐；`_times` 为 Map 非 SafeMap
   （套件面等价，不 bound）。
+## 2026-10-20 tls-close-error 硬失败中止（链错发 alert）
+
+- 现象（sweep 新红）：`test-tls-close-error`（客户端无 ca 自签）服务端误派
+  secureConnection（mustNotCall 炸）；客户端侧本就对（error UNABLE_TO_VERIFY +
+  close 带错）。
+- 根因：P2-tls-b 捕获式校验（CaptureVerifier）链错亦捕获放行，两端握手走完才由
+  JS 裁决销毁——服务端已派 secureConnection；node（OpenSSL）链错握手期发 fatal
+  alert，对端永不 secure（node 侧实测：server 仅 tlsClientError ECONNRESET）。
+- 修法：`CaptureVerifier` 增 `abort` 旗（`capture_client_config(ca, reject)`；
+  reject 真 + 非名失配哨兵即返 Err 中止，rustls 依例发 alert；哨兵恒捕获走 CSI；
+  reject 假走 NoVerifier 不动）+ 回程 err 点亦带校验原文（授权位映射）+
+  JS `__pump` 先冲 out（alert 上网）再销毁 + 中止错同步授权位（旧捕获路径等价）。
+  客户端可见错经同一 `__handshakeErr` 映射逐字不变。
+- 验证：本件转绿；探针双边对（CLI error/close 带错 authorized=false；
+  SRV 无 secureConnection + tlsClientError；码面 ECONNRESET 系传输实现差，不断言）；
+  黑盒 `tls_close_error_reports`（3/3 稳）绿；`tls_` 15/15、`x509` 6/6；
+  附带回归：裸 socket 缺省改假后 `retain-handle-no-abort` 转绿（node 真机：
+  构造期 `!!options.rejectUnauthorized` 恒假，见下）。
+- 构造路径默认（真回归修补）：node `new TLSSocket()` 缺省不校验
+  （`wrap.js:954`），仅 `exports.connect` 归一缺省真；旧码两路恒真致裸连误校验。
+  修法：export 归一显式化 + 包裹面缺省看 `__viaConnectApi`（显式值恒优先）。
+- 全量子集回归（最终二进制，tls+https 244 件 25s 盒逐件 + node 双边分类）：
+  真红 97 / 双红 2（既有 internal 系）/ 对 base18 新红 0 / 转绿 45；
+  黑盒 `tls_` 15/15（含新件）、Rust 单测 tls 10 + x509 9、builtins 41/41
+  （中途 1 发 load 并发 flake，复跑双绿，4.140 口径记一笔）；冒烟 5/5；双守门绿。
+

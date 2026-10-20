@@ -25,6 +25,8 @@ export function connect(...args) {
     ciphers: __api.DEFAULT_CIPHERS,
     checkServerIdentity: __api.checkServerIdentity,
     minDHSize: 1024,
+    // node exports.connect：rejectUnauthorized 缺省真（裸 socket 直连保持假，见 TLSSocket）。
+    rejectUnauthorized: o.rejectUnauthorized !== false,
     ...o,
   };
   __tlsVFunction(options.checkServerIdentity, "options.checkServerIdentity");

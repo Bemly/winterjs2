@@ -291,12 +291,14 @@ pub unsafe extern "C" fn tls_connect(
         .unwrap_or_default();
     let target = frame.arg(3);
     ensure_provider();
-    // node 口径：链错与名错分离——链错（unknown issuer/过期等）握手照旧失败由 JS
-    // 按 `rejectUnauthorized` 处置；名错（SAN/CN 不匹配）永不中止握手、只走 JS
-    // `checkServerIdentity` 定夺。rustls 合并校验，故恒用捕获式 verifier：
-    // 名失配记哨兵（见 tls_wrap::NAME_MISMATCH_SENTINEL），JS 侧重跑身份校验。
+    // node 口径：链错与名错分离——链错（unknown issuer/过期等）`reject` 为真即
+    // 中止握手发 alert（close-error 套件；对端无 secureConnection），为假即捕获由
+    // JS 处置；名错（SAN/CN 不匹配）永不中止、只走 JS `checkServerIdentity` 定夺。
+    // rustls 合并校验，名失配记哨兵（见 tls_wrap::NAME_MISMATCH_SENTINEL）。
+    let reject = opts.reject_unauthorized.unwrap_or(true);
     let (mut cfg, caught) = match crate::builtins::node::tls_wrap::capture_client_config(
         opts.ca_pem.as_deref(),
+        reject,
     ) {
         Ok((c, h)) => (c, Some(h)),
         Err(e) => {

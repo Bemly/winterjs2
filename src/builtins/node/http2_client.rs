@@ -3,7 +3,7 @@
 use mozjs::jsval::JSVal;
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
-use super::http2::{BodyFeeds, BodyMsg, ChanBody, Exec, TokioIo, b64, b64dec, ensure_provider, h2_err_msg_rst, headers_json, read_body, report_error_static, opt_num, set_rval_str};
+use super::http2::{BodyFeeds, BodyMsg, ChanBody, Exec, TokioIo, b64, b64dec, ensure_provider, h2_err_msg_rst, headers_json, report_error_static, opt_num, set_rval_str};
 use super::net::{NetCmd, NetEvent, NetKind};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -249,20 +249,17 @@ async fn drive_session<S>(
                                     });
                                 }
                                 Ok(resp) => {
+                                    use http_body::Body as _;
+                                    use std::future::poll_fn;
                                     let status = resp.status().as_u16();
                                     let head = headers_json(resp.headers());
-                                    // 先收完体再发 response 事件（通道序保证
-                                    // response 先于 data/end，§4.35 不变）：
-                                    // 空体且无 trailer ⇒ END_STREAM 随头出线，
-                                    // flags = 4|1 = 5（head-request/204/304 套件
-                                    // 断言 flags 5）；否则 4。hyper Incoming 无
-                                    // END_STREAM 预判，只能事后推断（偏差记档）。
-                                    let read = read_body(resp.into_body()).await;
-                                    let (b, trailers, body_err) = match read {
-                                        Ok((b, t)) => (b, t, None),
-                                        Err((e, rst)) => (Vec::new(), Vec::new(), Some((e, rst))),
-                                    };
-                                    let flags = if body_err.is_none() && b.is_empty() && trailers.is_empty() { 5 } else { 4 };
+                                    // c2：response 头到即发（node 头到即 'response'；
+                                    // 修前整收体后才发，flushheaders 套件服务端等
+                                    // response 才 end 即双边互等挂死）。flags 取
+                                    // 真 END_STREAM（hyper Incoming::is_end_stream），
+                                    // 不再事后推断。
+                                    let flags =
+                                        if resp.body().is_end_stream() { 5 } else { 4 };
                                     let _ = ev2.send(NetEvent {
                                         id,
                                         kind: NetKind::H2Stream {
@@ -271,18 +268,46 @@ async fn drive_session<S>(
                                             payload: serde_json::json!({ "status": status, "flags": flags, "headers": head }).to_string(),
                                         },
                                     });
+                                    // 增量读体：DATA 到即发（close/aborted 套件：
+                                    // 服务端只写不终结时客户端仍见 data）。
+                                    let mut body = resp.into_body();
+                                    let mut trailers: Vec<(String, String)> = Vec::new();
+                                    let mut body_err: Option<(String, Option<u32>)> = None;
+                                    loop {
+                                        match poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await {
+                                            None => break,
+                                            Some(Ok(f)) => {
+                                                if let Some(d) = f.data_ref() {
+                                                    if !d.is_empty() {
+                                                        let _ = ev2.send(NetEvent {
+                                                            id,
+                                                            kind: NetKind::H2Stream {
+                                                                stream_id,
+                                                                what: "data".into(),
+                                                                payload: b64(d),
+                                                            },
+                                                        });
+                                                    }
+                                                }
+                                                if let Some(t) = f.trailers_ref() {
+                                                    for (k, v) in t.iter() {
+                                                        trailers.push((
+                                                            k.as_str().to_owned(),
+                                                            String::from_utf8_lossy(v.as_bytes())
+                                                                .into_owned(),
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            Some(Err(e)) => {
+                                                let (msg, rst) = h2_err_msg_rst(&e);
+                                                body_err = Some((msg, rst));
+                                                break;
+                                            }
+                                        }
+                                    }
                                     match body_err {
                                         None => {
-                                            if !b.is_empty() {
-                                                let _ = ev2.send(NetEvent {
-                                                    id,
-                                                    kind: NetKind::H2Stream {
-                                                        stream_id,
-                                                        what: "data".into(),
-                                                        payload: b64(&b),
-                                                    },
-                                                });
-                                            }
                                             if !trailers.is_empty() {
                                                 let _ = ev2.send(NetEvent {
                                                     id,
@@ -355,6 +380,12 @@ async fn drive_session<S>(
                         }
                     }
                     Some(NetCmd::Close) | None => {
+                        // c2：在途请求任务持有 sender 克隆——hyper Transport 疑似被
+                        // sender 续命，须先 abort 任务再退，否则 socket 永不关
+                        //（aborted/close 套件：destroy 后服务端永不见 FIN）。
+                        for (_, h) in stream_tasks.lock().unwrap().iter() {
+                            h.abort();
+                        }
                         if state::net_close_once(id) {
                             for (stream_id, done) in open.lock().unwrap().iter() {
                                 if !*done {

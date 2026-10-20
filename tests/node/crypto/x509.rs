@@ -25,7 +25,7 @@ console.log("fp", x.fingerprint.split(":").length === 20, x.fingerprint256.split
 console.log("pem", x.toString().startsWith("-----BEGIN CERTIFICATE-----"), x.raw.length > 100);
 console.log("legacy", x.toLegacyObject().subject.CN === "www.example.com");
 console.log("ku", JSON.stringify(x.keyUsage) === JSON.stringify(["Digital Signature", "Key Encipherment"]));
-try { new X509Certificate("nope"); } catch (e) { console.log("bad", e.code === "ERR_INVALID_ARG_VALUE"); }
+try { new X509Certificate("nope"); } catch (e) { console.log("bad", e.code === "ERR_OSSL_PEM_NO_START_LINE"); }
 try { x.verify(); } catch (e) { console.log("verify", e.code === "ERR_INVALID_ARG_TYPE"); }
 console.log("verifyself", x.verify(x.publicKey) === true);
 try { new Certificate(); } catch (e) { console.log("legacy-cert", e.code === "ERR_NOT_SUPPORTED"); }

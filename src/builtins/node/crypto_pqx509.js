@@ -42,9 +42,12 @@ class X509Certificate {
     if (typeof pemOrDer === "string") {
       const pem = __pemDecode(pemOrDer);
       if (!pem || pem.label !== "CERTIFICATE") {
-        const err = new TypeError("X509 needs a CERTIFICATE PEM or DER");
-        err.code = "ERR_INVALID_ARG_VALUE";
-        throw err;
+        // 真机：垃圾串同 Buffer 垃圾走 PEM 行错（N1 黑盒 error-servername 系口径）。
+        const e = new Error("error:0480006C:PEM routines::no start line");
+        e.library = "PEM routines";
+        e.reason = "no start line";
+        e.code = "ERR_OSSL_PEM_NO_START_LINE";
+        throw e;
       }
       der = pem.der;
     } else {
@@ -91,21 +94,36 @@ class X509Certificate {
   toString() { return __pemEncode("CERTIFICATE", this.__der); }
   toJSON() { return this.toLegacyObject(); }
   toLegacyObject() {
-    // node X509Certificate.toLegacyObject 键名（tls getPeerCertificate 同形）：valid_from/valid_to
-    // 下划线形、fingerprint 三档、ca、raw。
+    // node 19 键定序（tls getPeerCertificate 同形；N/A 键显式 undefined 不缺席；
+    // N1：RSA modulus/exponent/bits + EC asn1Curve/nistCurve/bits + pubkey
+    //（RSA 取 SPKI 整段、EC 取点字节）；ext_key_usage 缺席即 undefined）。
+    const info = this.__info;
+    const isRsa = info.pkMod !== null && info.pkMod !== undefined;
+    const isEc = !isRsa && info.pkPointB64 !== null && info.pkPointB64 !== undefined;
+    let pubkey;
+    if (isRsa) pubkey = Buffer.from(info.spkiB64, "base64");
+    else if (isEc) pubkey = Buffer.from(info.pkPointB64, "base64");
+    else pubkey = undefined;
     return {
-      subject: this.__info.subjectObj,
-      issuer: this.__info.issuerObj,
-      subjectaltname: this.__info.subjectAltName,
-      infoAccess: undefined,
+      subject: info.subjectObj,
+      issuer: info.issuerObj,
+      subjectaltname: info.subjectAltName ?? undefined,
+      infoAccess: info.infoAccess ?? undefined,
       ca: this.ca,
-      valid_from: this.__info.validFrom,
-      valid_to: this.__info.validTo,
+      modulus: info.pkMod ?? undefined,
+      exponent: info.pkExp ?? undefined,
+      pubkey,
+      bits: info.pkBits ?? undefined,
+      valid_from: info.validFrom,
+      valid_to: info.validTo,
       fingerprint: this.fingerprint,
       fingerprint256: this.fingerprint256,
       fingerprint512: this.fingerprint512,
-      serialNumber: this.__info.serialNumber,
+      ext_key_usage: info.extKeyUsage ?? undefined,
+      serialNumber: info.serialNumber,
       raw: Buffer.from(this.__der),
+      asn1Curve: info.pkCurveAsn1 ?? undefined,
+      nistCurve: info.pkCurveNist ?? undefined,
     };
   }
   verify(publicKey) {

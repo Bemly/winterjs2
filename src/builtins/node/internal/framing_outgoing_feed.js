@@ -751,9 +751,14 @@ export function withClientRequest(openSocket, flavor) {
       this.__validation = options.httpValidation ?? (options.insecureHTTPParser === true || __cliInsecDefault ? "insecure" : undefined);
       this.insecureHTTPParser = options.insecureHTTPParser ?? __cliInsecDefault;
       this.socket = null;
-      this.agent = options.agent === undefined
-        ? (typeof flavor.__getDefaultAgent === "function" ? flavor.__getDefaultAgent() : (flavor.defaultAgent ?? null))
-        : (options.agent || null);
+      // node 口径（lib/_http_client.js）：显式 createConnection 且无显式 agent
+      // 即不挂默认 agent（sync-write-error 套件：Connection: close）——
+      // 池化无从谈起，直建直连。
+      this.agent = (options.agent === undefined || options.agent === null) && typeof options.createConnection === "function"
+        ? null
+        : (options.agent === undefined
+          ? (typeof flavor.__getDefaultAgent === "function" ? flavor.__getDefaultAgent() : (flavor.defaultAgent ?? null))
+          : (options.agent || null));
       this.__agentFalse = options.agent === false;
       this.__defaultPort = this.agent !== null && this.agent.defaultPort !== undefined
         ? this.agent.defaultPort : flavor.defaultPort;

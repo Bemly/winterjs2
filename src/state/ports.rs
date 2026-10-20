@@ -194,8 +194,11 @@ pub fn port_post(id: u64, json: String) -> bool {    enum Route {
             // 跨会话 ID 碰撞修正：各会话 worker_next_id 各自计数，main 的 peer id
             // 极易撞上本会话本地端口 id——必须互惠校验（q.peer == p.id），否则
             // 跨线程回包误投本地同 id 端口（message-channel 块 3 回环根因）。
+            // 直投跨线程修正：承接迁移项（via 非空）永不充当本地对端——跨会话
+            // 偶合下其 peer 恰为自身 id 时会自匹配成环（postMessageToThread 回包
+            // 无限自环根因）；真本地 pair 两端 via 恒空，不受影响。
             if !p.peer_is_worker
-                && s.worker_ports.iter().any(|q| q.id == p.peer && q.peer == p.id && q.open && !q.moved)
+                && s.worker_ports.iter().any(|q| q.id == p.peer && q.peer == p.id && q.open && !q.moved && q.via.is_none())
             {
                 return Some(Route::Local { peer: p.peer });
             }

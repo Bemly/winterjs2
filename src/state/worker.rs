@@ -76,6 +76,7 @@ pub fn worker_terminated() -> bool {
 
 /// 登记 worker 句柄（主会话；运行中计 1 存活，可 unref 摘）。
 pub fn worker_handle_add(h: WorkerHandle) {
+    thread_register(h.thread_id, h.inbox_tx.clone());
     with_plain(|p| {
         if h.counted {
             p.worker_open += 1;
@@ -146,4 +147,59 @@ pub fn worker_target_remove(id: u64) -> bool {
         s.worker_targets.retain(|t| t.id != id);
         s.worker_targets.len() != n0
     })
+}
+
+// ── 线程直投（`postMessageToThread`；node lib/internal/worker/messaging.js 口径）
+// 落法：进程级 threadId→会话收件箱注册表。worker 起服 rendezvous 成功即登记
+// （`worker_handle_add` 内，派生会话无关——注册表进程全局）；`WExit` 派发点摘
+// 除（worker.rs `dispatch`），发送失败回扫。主线程（0）不登记——0 号目标直走
+// 发送方会话的 `worker_main_inbox`（node 主线程接收特殊化，无需端口表）。
+// 投递恒异步（收件箱事件），回执经事件内携带的 `reply_tx` 原路返回；等待侧
+// 不续命事件循环（node `Atomics.waitAsync` 同款），timeout 由 JS 侧计时竞速。
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+type ThreadTx = tokio::sync::mpsc::UnboundedSender<crate::builtins::node::worker::WorkerEvent>;
+
+static THREAD_INBOX: OnceLock<Mutex<HashMap<u64, ThreadTx>>> = OnceLock::new();
+
+fn thread_inbox() -> &'static Mutex<HashMap<u64, ThreadTx>> {
+    THREAD_INBOX.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// worker 起服登记（rendezvous 成功，会话收件箱有效；重复登记即覆盖）。
+pub fn thread_register(thread_id: u64, tx: ThreadTx) {
+    if let Ok(mut m) = thread_inbox().lock() {
+        m.insert(thread_id, tx);
+    }
+}
+
+/// 线程消亡摘除（`WExit` 派发点 + 发送失败回扫；幂等）。
+pub fn thread_unregister(thread_id: u64) {
+    if let Ok(mut m) = thread_inbox().lock() {
+        m.remove(&thread_id);
+    }
+}
+
+/// 寻址（克隆发送端；`send` 失败由调用方判无路由并回扫）。
+pub fn thread_route(thread_id: u64) -> Option<ThreadTx> {
+    thread_inbox().lock().ok()?.get(&thread_id).cloned()
+}
+
+/// 直投会话桥接目标保留 id（worker id 单调自 worker_next_id，永不触及 u64::MAX）。
+const THREAD_BRIDGE_ID: u64 = u64::MAX;
+
+/// 登记直投桥接目标（`node:worker_threads` 模块求值期 attach 一次；收发共用，
+/// `__ev("thread-msg"|"thread-ack", …)` 双工；会话生命期常驻，禁摘除）。
+pub fn thread_bridge_attach(target: JSVal) {
+    with_rooted(|s| {
+        s.worker_targets.retain(|t| t.id != THREAD_BRIDGE_ID);
+        s.worker_targets.push(WorkerTarget { id: THREAD_BRIDGE_ID, target: Heap::boxed(target) });
+    });
+}
+
+/// 取直投桥接目标（模块未加载即 None，调用方按无监听处理）。
+pub fn thread_bridge() -> Option<JSVal> {
+    worker_target(THREAD_BRIDGE_ID)
 }

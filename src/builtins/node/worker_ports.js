@@ -479,11 +479,112 @@ class __WorkerStdio {
   }
 }
 
+// ── 线程直投（postMessageToThread；node lib/internal/worker/messaging.js 口径）
+// 路由：worker 起服 rendezvous 即登记进程级 threadId→收件箱（Rust 侧，与派生者
+// 无关）；0 号目标直走发送方会话 worker_main_inbox（node 主线程接收特殊化）。
+// 主线程发送序探针先行（node 主线程先查路由后序列化），worker 线程组装先行
+// （node worker 侧 postMessage 即克隆，路由失败亦先抛 DataCloneError）；同线程
+// SAME_THREAD；无路由/无监听 FAILED；监听抛错 ERRORED；timeout 竞速 TIMEOUT。
+// transfer 走 __toWire 信封（offer/accept 表进程级，端口跨线程照常迁移）。
+const __selfTid = threadId;
+function __threadErr(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+const __threadPending = new Map();
+let __threadSeq = 0;
+function __threadBridgeEv(kind, payload) {
+  try {
+    if (kind === "thread-ack") {
+      const s = String(payload);
+      const i = s.lastIndexOf(" ");
+      const nonce = s.slice(0, i);
+      const w = __threadPending.get(nonce);
+      if (w === undefined) return "ok";
+      __threadPending.delete(nonce);
+      if (w.timer !== null) clearTimeout(w.timer);
+      const code = s.slice(i + 1);
+      if (code === "0") w.resolve();
+      else if (code === "2") w.reject(__threadErr("ERR_WORKER_MESSAGING_ERRORED", "The destination thread threw an error while processing the message"));
+      else w.reject(__threadErr("ERR_WORKER_MESSAGING_FAILED", "Cannot find the destination thread or listener"));
+      return "ok";
+    }
+    if (kind !== "thread-msg") return "1";
+    const s = String(payload);
+    const i = s.indexOf("\n");
+    const j = s.indexOf("\n", i + 1);
+    const source = Number(s.slice(i + 1, j));
+    const wire = s.slice(j + 1);
+    let value;
+    try {
+      value = __fromWirePorts(wire).message;
+      __withdrawPorts(wire);
+    } catch {
+      return "2";
+    }
+    try {
+      return globalThis.process.emit("workerMessage", value, source) ? "0" : "1";
+    } catch {
+      return "2";
+    }
+  } catch {
+    return "2";
+  }
+}
+// 收发共用桥接（Rust 侧保留 id 登记，会话生命期常驻；模块求值期 attach 一次）。
+__wjs2_thread_bridge_attach({ __ev: __threadBridgeEv });
+export async function postMessageToThread(threadId, value, transferList, timeout) {
+  // node 口径：第三参数字 + 无第四参即 timeout 简写。
+  if (typeof transferList === "number" && timeout === undefined) {
+    timeout = transferList;
+    transferList = [];
+  }
+  if (timeout !== undefined) {
+    if (typeof timeout !== "number") throw new codes.ERR_INVALID_ARG_TYPE("timeout", "number", timeout);
+    if (Number.isNaN(timeout) || timeout < 0) throw new codes.ERR_OUT_OF_RANGE("timeout", ">= 0", timeout);
+  }
+  if (threadId === __selfTid) {
+    throw __threadErr("ERR_WORKER_MESSAGING_SAME_THREAD", "Cannot sent a message to the same thread");
+  }
+  const dest = (typeof threadId === "number" && Number.isInteger(threadId) && threadId >= 0) ? String(threadId) : "";
+  const nonce = `tm${__selfTid}.${++__threadSeq}.${Math.floor(Math.random() * 36 ** 6).toString(36)}`;
+  if (isMainThread) {
+    // 主线程序：先探针（无路由即 FAILED，不组装）。
+    if (__wjs2_post_to_thread(dest, "", "", "") !== true) {
+      throw __threadErr("ERR_WORKER_MESSAGING_FAILED", "Cannot find the destination thread or listener");
+    }
+  }
+  const wire = __toWire(value, transferList);
+  return new Promise((resolve, reject) => {
+    const waiter = { resolve, reject, timer: null };
+    __threadPending.set(nonce, waiter);
+    if (timeout !== undefined && Number.isFinite(timeout)) {
+      waiter.timer = setTimeout(() => {
+        if (__threadPending.delete(nonce)) {
+          reject(__threadErr("ERR_WORKER_MESSAGING_TIMEOUT", "Sending a message to another thread timed out"));
+        }
+      }, timeout);
+    }
+    let queued = false;
+    try {
+      queued = __wjs2_post_to_thread(dest, nonce, String(__selfTid), wire) === true;
+    } catch {
+      queued = false;
+    }
+    if (!queued) {
+      __threadPending.delete(nonce);
+      if (waiter.timer !== null) clearTimeout(waiter.timer);
+      reject(__threadErr("ERR_WORKER_MESSAGING_FAILED", "Cannot find the destination thread or listener"));
+    }
+  });
+}
+
 const __api = {
   isMainThread, threadId, threadName, parentPort, workerData, resourceLimits, SHARE_ENV,
   MessagePort, MessageChannel, BroadcastChannel, Worker, markAsUncloneable,
   markAsUntransferable, isMarkedAsUntransferable,
   moveMessagePortToContext, receiveMessageOnPort,
-  setEnvironmentData, getEnvironmentData,
+  setEnvironmentData, getEnvironmentData, postMessageToThread,
 };
 export default __api;

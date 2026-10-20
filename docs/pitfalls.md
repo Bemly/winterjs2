@@ -277,6 +277,8 @@
 - 4.312 conn 收尾与流任务唤醒竞态（2026-10-20，http2 lane）
 - 4.313 hyper CONNECT-upgrade 接管双向隧道（2026-10-20，http2 lane）
 - 4.314 kill -9 丢 println 缓冲（2026-10-20，http2 lane）
+- 4.315 upgrade 句柄丢弃即隧道拆除（2026-10-20，http2 lane）
+- 4.316 EOS-before-200 CONNECT hyper 不升级（2026-10-20，http2 lane）
 
 ## 条目
 

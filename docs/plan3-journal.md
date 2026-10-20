@@ -2738,3 +2738,18 @@ G1/G2/G3/G9 已收官。）
   example.com 环境所致（隧道未通前即 protocol 错）。
 - 过程：单流定序（eprintln）+ 方向归属（evid）+ 帧解码三板斧；`println!` 块缓冲
   坑（4.314）；`git checkout` 回退 proxy 半截活保 lane 可合。
+
+## proxy-over-h2 专项（lane/http2）：隧道架构落地转绿
+
+- 承接 P0 另案设计：服务端读 upgrade 泵 + 写改道（outbox）+ 客户端镜像 + 收尾解耦。
+- 根因终定（4.315）：service 析构 req 连带丢 upgrade 句柄 → close_notify → up_task
+  发空 EOS+RST 拆隧道；隧道字节双向困 hyper 内部，无 API 可取，只能泵接句柄。
+- 落地：serve_conn 取句柄（CONNECT）+ H2Respond-2xx 建链（泵+outbox+升级旗）+
+  Data/End 写改道 + 抑制常规空泵 + CONNECT 恒报 streaming；客户端镜像
+  （resp 取句柄+泵+写改道+跳常规体循环）+ AdoptIo 共用桥（client_adopt 三件）+
+  JS 双向桥（createConnection/stream-emit）+ CONNECT 收尾横扫。
+- 证据：proxy 套件 TIMEOUT→EXIT=0（收尾序与真机一致）；px11 隧道字节通；
+  connect-method 仍红（EOS-before-200 hyper 不升级，4.316，base19 同错）；
+  session-destroy-stream-handler TIMEOUT 系 5s/轮旧码同形慢（node 在此件 abort，
+  从未进 sweep）；server-stream-session-destroy 系 SAME1。
+- 黑盒三件：tunnel_basic/tunnel_factory_error/tunnel_outer_destroy_cascade 全绿。

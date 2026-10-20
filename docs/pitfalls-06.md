@@ -400,3 +400,19 @@
 - 根因：`println!` 到文件是块缓冲，`kill -9` 丢弃未刷新的尾巴；`eprintln!` 无缓冲才保序。多线程下 eprintln 交错亦不可信，本轮单线程（LocalSet）才可用。
 - 修法：调试日志一律 `eprintln!`；JS 侧 console.log/error 跨流不比序。
 - 推广铁律：**取证先对齐时钟**——混合流日志先统一到无缓冲单流，否则时序全是幻觉。
+
+### 4.315 upgrade 句柄丢弃即隧道拆除（2026-10-20，http2 lane）
+
+- 症状：CONNECT-200 后外层自发空 DATA-EOS + RST(0)，隧道字节双向全丢（proxy-over-h2 TIMEOUT）。
+- 根因：hyper 在 extensions 里给应用留 upgrade 句柄（OnUpgrade/H2Upgraded）；service 析构 req 时连带丢弃 → `UpgradedSendStreamBridge::drop` 触发 `close_notify` → up_task 发空 EOS (+RST) 拆隧道。我方旧移植从不取句柄，每隧道必死。
+- 修法：service 预取 `hyper::upgrade::on(&mut req)` 并持有；2xx 起双向中继泵（读→体事件，写←outbox）；句柄在 H2Respond-2xx 门控建链，非 2xx 空收尾。
+- 复现：px12（无 emit 亦有 EOS+RST）；px11（泵起后隧道字节通）。
+- 推广铁律：**轮子给的升级/接管句柄必须持有泵接**——带有效负载的 Future/IO 随容器析构即触发对端动作，丢弃≠无视。
+
+### 4.316 EOS-before-200 CONNECT hyper 不升级（2026-10-20，http2 lane）
+
+- 症状：connect-method 仍红（`'' !== 'hello'`），与 base19 同错；proxy 过而它不过。
+- 根因：客户端 EOS 先于 200 到达时 hyper 不创建 upgrade 对（Pending 永决议），隧道字节困在 hyper 内部 RecvStream，无任何 API 可取（常规 Incoming 对 CONNECT 恒空）。属 hyper 模型局限，非我方状态机可补。
+- 修法：无（本轮不动；候选是客户端 CONNECT end 抑 EOS，改线语义，另案评估）。
+- 复现：px14（end('hello') 即挂）vs px11（只写不 end 即通）。
+- 推广铁律：**半关与升级互斥时先认半关**——隧道类流的 EOS 时序决定底座走哪条管线，探针必须覆盖"先关后应答"序。

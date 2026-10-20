@@ -357,8 +357,10 @@ pub(crate) async fn serve_conn<S>(
             payload: format!("{conn_id} {peer}"),
         },
     });
-    // 共享 IO：serve_connection 持有主份，毒化注入留一_arc（见 inject_proto_error）。
-    let io = SharedIo::new(raw);
+    // 共享 IO：serve_connection 持有主份，毒化/RST 注入留一 arc。
+    // 事件上报装配 server 级（对端 RST 翻 aborted；SETTINGS/GOAWAY 无 server 消费，忽略）。
+    let mut io = SharedIo::new(raw);
+    io.set_ev(ev_tx.clone(), server_id, true);
     let injector = io.clone();
     let responders: Responders = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let bodies: BodyFeeds = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -505,8 +507,8 @@ pub(crate) async fn serve_conn<S>(
     let mut proto_err = false;
     loop {
         tokio::select! {
-            r = &mut conn => {
-                let _ = r;
+                r = &mut conn => {
+                    let _ = r;
                 break;
             }
             cmd = cmd_rx.recv() => {
@@ -561,6 +563,20 @@ pub(crate) async fn serve_conn<S>(
                             });
                         } else {
                             ended.lock().unwrap().insert(stream_id);
+                            // 精确 RST 码线注（hyper service-Err 只给 INTERNAL_ERROR；
+                            // close(code)/destroy(code) 语义要原码，9 号传播面亦赖此）。
+                            // 只在未应答时注：已应答流的体/END 由 hyper 正常发出，
+                            // 此时注 RST 会杀死在途响应体（write-after-destroy）。
+                            // 映射未知即跳过（hyper 自带 RST 兜底，不断连）。
+                            // 头未应答：摘 oneshot 触发 service 分支（hyper 随后 RST）。
+                            let sender = {
+                                let mut responders = responders.lock().await;
+                                responders.remove(&stream_id)
+                            };
+                            if sender.is_some() {
+                                let _ = injector.inject_rst(stream_id, code).await;
+                            }
+                            drop(sender);
                             // 通知 server 侧流被 RST（rstCode 语义；JS 侧据此置 rstCode）
                             let _ = ev_tx.send(NetEvent {
                                 id: server_id,
@@ -575,9 +591,7 @@ pub(crate) async fn serve_conn<S>(
                             } else {
                                 dead.lock().unwrap().insert(stream_id);
                             }
-                            // 头未应答：摘 oneshot 触发 service 分支；已应答：体通道注错/RST。
-                            let sender = responders.lock().await.remove(&stream_id);
-                            drop(sender);
+                            // 已应答：体通道注错/RST；未应答上已摘 oneshot（ hyper 随后 RST）。
                             if code == 0 {
                                 feed_body(stream_id, BodyMsg::End(None), &bodies, &pendings).await;
                             } else {

@@ -423,7 +423,24 @@ function __mkSessionSocket(session, peerObj, localObj) {
   return sock;
 }
 
-// ── 客户端 SETTINGS 事件面（h2_client.js __ev 委托；放此处为守 1000 行门）──
+// ── 客户端事件面（SETTINGS 解码 + RST 码面；h2_client.js __ev 委托，守 1000 行门）──
+// RST 码 → node 流错误（stream-destroy-event-order 真机逐项）：
+// 0/8（NO_ERROR/CANCEL）干净无错；已知码 NGHTTP2_名；未知码用裸数字。
+const __NGHTTP2_NAMES = {
+  1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR",
+  3: "NGHTTP2_FLOW_CONTROL_ERROR", 4: "NGHTTP2_SETTINGS_TIMEOUT",
+  5: "NGHTTP2_STREAM_CLOSED", 6: "NGHTTP2_FRAME_SIZE_ERROR",
+  7: "NGHTTP2_REFUSED_STREAM", 8: "NGHTTP2_CANCEL",
+  9: "NGHTTP2_COMPRESSION_ERROR", 10: "NGHTTP2_CONNECT_ERROR",
+  11: "NGHTTP2_ENHANCE_YOUR_CALM", 12: "NGHTTP2_INADEQUATE_SECURITY",
+  13: "NGHTTP2_HTTP_1_1_REQUIRED",
+};
+function __h2RstError(code) {
+  const n = Number(code);
+  if (!Number.isInteger(n) || n === 0 || n === 8) return undefined;
+  return __h2Err("ERR_HTTP2_STREAM_ERROR",
+    `Stream closed with error code ${__NGHTTP2_NAMES[n] ?? n}`);
+}
 // 服务端 SETTINGS id→名（getUnpackedSettings 同表；未知 id 忽略）。
 function __decodeRemotePairs(pairs) {
   const upd = {};

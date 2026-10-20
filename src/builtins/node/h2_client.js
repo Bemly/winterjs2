@@ -122,13 +122,21 @@ class ClientHttp2Stream extends Duplex {
       this.once("end", () => { if (!this.destroyed) this.destroy(); });
     }
   }
-  __onAborted() {
+  __onAborted(rstCode) {
     if (this.aborted) return;
     // node：session destroy 路径的流 'aborted' 事件发出但 aborted 属性
-    // 保持 false（aborted 属性 = 对端 RST 中断语义；client-destroy 套件）
+    // 保持 false（aborted 属性 = 对端 RST 中断语义；client-destroy 套件）；
+    // 对端 RST 则 aborted 置 true。
+    const n = Number(rstCode);
+    const hasCode = Number.isInteger(n) && (rstCode !== undefined && rstCode !== null && rstCode !== "");
+    if (hasCode) this.aborted = true;
     this.emit("aborted");
     this.push(null);
-    this.destroy(__code("ERR_HTTP2_STREAM_CANCEL"));
+    // 对端 RST 带码（wire 窥探）→ 按码错误；会话收尾（空码）→ 沿用 CANCEL。
+    const err = (hasCode ? __h2RstError(n) : undefined) ??
+      __code("ERR_HTTP2_STREAM_CANCEL");
+    if (hasCode && n !== 0) this.rstCode = n;
+    this.destroy(err);
   }
   priority(options) {
     __h2PriorityDeprecate();
@@ -156,6 +164,15 @@ class ClientHttp2Stream extends Duplex {
     if (!this.destroyed) {
       if (typeof cb === "function") this.once("close", cb);
       this.__ended = true;
+      const rstErr = __h2RstError(code);
+      if (rstErr !== undefined) {
+        // node：非零非 CANCEL 的 close 码即本地流错误（error 先于 close；
+        // stream-destroy-event-order 真机：close(2) → error + close）。
+        this.rstCode = code;
+        this.emit("error", rstErr);
+      } else if ((code ?? 0) !== 0) {
+        this.rstCode = code;
+      }
       if (this.__opened && this.__session.__id) {
         __wjs2_h2_reset(this.__session.__id, this.id, code ?? 0);
       }
@@ -512,7 +529,7 @@ class ClientHttp2Session extends EventEmitter {
         const sid = Number(o.streamId);
         const st = this.__streams.get(sid);
         if (!st) break;
-        st.__onAborted();
+        st.__onAborted(o.payload);
         this.__streams.delete(sid);
         break;
       }

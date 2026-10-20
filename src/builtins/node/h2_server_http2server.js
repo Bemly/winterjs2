@@ -238,8 +238,11 @@ class Http2Server extends EventEmitter {
       case "aborted": {
         const o = JSON.parse(payload);
         const entry = this.__streams.get(Number(o.streamId));
+        // 对端 RST（wire 窥探，payload 为码）：记 abort 码，_destroy 按码合成
+        // 流错误（stream-destroy-event-order）；空 payload 系会话收尾，无错。
         if (entry && o.payload !== undefined && o.payload !== "") {
           entry.stream.rstCode = Number(o.payload);
+          entry.stream.__abortCode = Number(o.payload);
         }
         this.__abortEntry(entry);
         break;

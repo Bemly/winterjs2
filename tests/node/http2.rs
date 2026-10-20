@@ -936,3 +936,50 @@ server.listen(0, () => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_stream_destroy_event_order_faces() {
+    // stream-destroy-event-order：client req.close(2) 即本地 error + close；
+    // 对端 RST(2) 经 wire 窥探翻服务端 aborted → error → close（hyper 吞对端
+    // RST，无窥探即服务端 error 永不到）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "o.mjs",
+        r#"
+import http2 from "node:http2";
+let client;
+let req;
+const server = http2.createServer();
+server.on("stream", (stream) => {
+  stream.on("error", (e) => {
+    console.log("srv-err", e.code);
+    client.close();
+    stream.on("close", () => {
+      console.log("srv-close");
+      server.close();
+    });
+  });
+  req.close(2);
+});
+server.listen(0, () => {
+  client = http2.connect(`http://localhost:${server.address().port}`);
+  req = client.request();
+  req.resume();
+  req.on("error", (e) => {
+    console.log("cli-err", e.code, e.message);
+    req.on("close", () => console.log("cli-close"));
+  });
+});
+"#,
+    );
+    for line in [
+        "cli-err ERR_HTTP2_STREAM_ERROR Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+        "cli-close",
+        "srv-err ERR_HTTP2_STREAM_ERROR",
+        "srv-close",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

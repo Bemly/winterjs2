@@ -359,6 +359,8 @@ class Http2ServerStream extends Duplex {
     __validateStreamClose(code, cb);
     if (typeof cb === "function") this.once("close", cb);
     if (this.__closed || this.__destroyed) return this;
+    // node：非零非 CANCEL 的 close 码记账，_destroy 合成流错误（client 同口径）。
+    if ((code ?? 0) !== 0) this.__closeCode = code;
     if (!this.__trailersSent) {
       __wjs2_h2_reset(this.__conn, this.id, code);
       this.__trailersSent = true;
@@ -443,7 +445,11 @@ class Http2ServerStream extends Duplex {
     this.__destroyed = true;
     this.__session?.__unregisterStream(this);
     this.__abortDownstream();
-    cb(err ?? this.__destroyErr);
+    // node _destroy 合成口径：显式 err 优先；否则非零非 CANCEL 的 close/abort
+    // 码合成流错误（stream-destroy-event-order；干净路无错，回归照旧）。
+    const rstErr = err ?? this.__destroyErr ??
+      __h2RstError(this.__closeCode) ?? __h2RstError(this.__abortCode);
+    cb(rstErr);
   }
   setTimeout(msecs, callback) {
     if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);

@@ -189,20 +189,36 @@ pub unsafe extern "C" fn h2_listen(
     true
 }
 
-// ── 共享 IO（服务端：直写 SETTINGS 帧 + 握手 SETTINGS 落线检测）────────
-// http2.rs serve_conn 用（纯搬移；servo 式集中边界外唯一例外见 §6）。
-// ── 共享 IO（服务端：连接级协议错误需绕过 hyper 直写 SETTINGS 帧；
-// hyper 无 mid-connection SETTINGS API，cant-turn-off 套件要求线上有
-// SETTINGS{ENABLE_CONNECT_PROTOCOL:0}。poll 期串行（conn future 只由
-// serve_conn 的 select 驱动），Mutex 仅解决所有权共享，无实质竞争。
+// ── 共享 IO（双向 wire 窥探 + 帧注入）────────────────────────────────────
+// hyper 无 mid-connection SETTINGS/RST API，下列套件要求线形：
+// - cant-turn-off：服务端直写坏 SETTINGS{8:0}（wire-faithful）；
+// - stream-destroy-event-order：对端 RST 需落 'aborted'/错误（hyper 吞掉 service
+//   的对端 RST 信号——service future 被静默丢弃，无事件；只能线窥探）；
+// - 精确 RST 码（close(code)/session.destroy(code)）：hyper 只发 CANCEL/
+//   INTERNAL_ERROR，线注精确码。
+// poll 期串行（conn future 只由驱动 select 轮询），Mutex 仅解决所有权共享。
+// wire_streams：按序收录 HEADERS 流 id（双向去重）；JS sid↔wire 映射凭位序
+// （hyper 按收序调 service，JS seq 逐个对应；pre-service 拒收即散列，另案记档）。
 #[derive(Debug)]
 pub(crate) struct SharedIo<T> {
     inner: Arc<tokio::sync::Mutex<T>>,
-    /// 发出侧握手 SETTINGS 是否已落线（cant-turn-off：坏帧必须排它之后；
-    /// serve_conn 预轮询凭此旗收敛，不与握手竞速）。
+    /// 发出侧握手 SETTINGS 是否已落线（cant-turn-off：坏帧必须排它之后）。
     hs_sent: Arc<std::sync::atomic::AtomicBool>,
     /// 发出侧帧重组缓冲（写分片跨 poll_write 时拼帧）。
     out_obs: Vec<u8>,
+    /// 读入侧帧重组缓冲。
+    in_obs: Vec<u8>,
+    /// 收录的 HEADERS 流 id（收发双向；RST 映射与精确注入用；conn 作用域）。
+    wire_streams: Arc<std::sync::Mutex<Vec<u32>>>,
+    /// 已见 END_STREAM 的流（读入侧；client：响应收齐后的 RST 不再报 aborted，
+    /// 与 hyper 的 END 处理竞速时序——node 同形：END 后 RST 只是 close）。
+    in_ended: std::collections::HashSet<u32>,
+    /// 已见 END_STREAM 的流（发出侧；server：响应发完后的 RST 不再报 aborted）。
+    out_ended: std::collections::HashSet<u32>,
+    /// 事件上报（client: Some(session 级)；server: Some(server 级)；无则只记不报）。
+    ev: Option<(tokio::sync::mpsc::UnboundedSender<NetEvent>, u64)>,
+    /// 服务端侧（映射位序/事件取舍不同）。
+    is_server: bool,
 }
 
 impl<T> Clone for SharedIo<T> {
@@ -211,6 +227,12 @@ impl<T> Clone for SharedIo<T> {
             inner: Arc::clone(&self.inner),
             hs_sent: Arc::clone(&self.hs_sent),
             out_obs: Vec::new(),
+            in_obs: Vec::new(),
+            wire_streams: Arc::clone(&self.wire_streams),
+            in_ended: std::collections::HashSet::new(),
+            out_ended: std::collections::HashSet::new(),
+            ev: self.ev.clone(),
+            is_server: self.is_server,
         }
     }
 }
@@ -221,16 +243,205 @@ impl<T> SharedIo<T> {
             inner: Arc::new(tokio::sync::Mutex::new(inner)),
             hs_sent: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             out_obs: Vec::new(),
+            in_obs: Vec::new(),
+            wire_streams: Arc::new(std::sync::Mutex::new(Vec::new())),
+            in_ended: std::collections::HashSet::new(),
+            out_ended: std::collections::HashSet::new(),
+            ev: None,
+            is_server: true,
         }
+    }
+
+    /// 事件上报装配（serve_conn: server 级；drive_session: session 级）。
+    pub(crate) fn set_ev(
+        &mut self,
+        ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+        ev_id: u64,
+        is_server: bool,
+    ) {
+        self.ev = Some((ev_tx, ev_id));
+        self.is_server = is_server;
     }
 
     pub(crate) fn hs_sent(&self) -> bool {
         self.hs_sent.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// 发出字节流：首个非 ACK 服务端 SETTINGS 即置 hs_sent。
+    /// wire 序位 → JS sid（server 1 基逐个；client 奇数 1,3,5…）。
+    fn js_sid(&self, wire: u32) -> Option<u64> {
+        let list = match self.wire_streams.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        list.iter().position(|&w| w == wire).map(|i| {
+            if self.is_server {
+                (i + 1) as u64
+            } else {
+                (2 * i + 1) as u64
+            }
+        })
+    }
+
+    /// JS sid → wire 序位（精确 RST 注入用；client 奇数列，server 逐个）。
+    fn wire_sid(&self, js_sid: u64) -> Option<u32> {
+        let list = match self.wire_streams.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        let idx = if self.is_server {
+            js_sid.checked_sub(1)? as usize
+        } else {
+            if js_sid % 2 != 1 {
+                return None;
+            }
+            ((js_sid - 1) / 2) as usize
+        };
+        list.get(idx).cloned()
+    }
+
+    /// 记录 HEADERS 流 id（收发双向去重；位序即 JS sid 序）。
+    fn note_headers(&self, sid: u32) {
+        if sid == 0 {
+            return;
+        }
+        let mut list = match self.wire_streams.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if !list.contains(&sid) {
+            // 防御上限：流表 conn 作用域，超限即冻结（不再收录，映射退化为跳过）。
+            if list.len() < 100000 {
+                list.push(sid);
+            }
+        }
+    }
+
+    fn emit(&self, stream_id: u64, what: &str, payload: String) {
+        if let Some((tx, id)) = &self.ev {
+            let _ = tx.send(NetEvent {
+                id: *id,
+                kind: NetKind::H2Stream {
+                    stream_id,
+                    what: what.into(),
+                    payload,
+                },
+            });
+        }
+    }
+
+    /// 帧流扫描前处理：h2 客户端前导 24 字节 magic（`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`）
+    /// 不是帧——收发任一侧首现即剥离，否则长度域误读致解析器永久卡死
+    ///（stream-destroy-event-order：client 注入映射/RST 窥探全灭即源于此）。
+    fn strip_magic(obs: &mut Vec<u8>) {
+        const MAGIC: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+        if obs.len() >= MAGIC.len() && obs[..MAGIC.len()] == *MAGIC {
+            obs.drain(..MAGIC.len());
+        }
+    }
+
+    /// 读入帧扫描：HEADERS 收录；RST 翻 aborted 事件；client 另解 SETTINGS/GOAWAY。
+    fn observe_in(&mut self, fresh: &[u8]) {
+        if fresh.is_empty() {
+            return;
+        }
+        self.in_obs.extend_from_slice(fresh);
+        if self.in_obs.len() > 65536 {
+            self.in_obs.clear();
+            return;
+        }
+        Self::strip_magic(&mut self.in_obs);
+        loop {
+            if self.in_obs.len() < 9 {
+                break;
+            }
+            let len = ((self.in_obs[0] as usize) << 16)
+                | ((self.in_obs[1] as usize) << 8)
+                | (self.in_obs[2] as usize);
+            if self.in_obs.len() < 9 + len {
+                break;
+            }
+            let ftype = self.in_obs[3];
+            let flags = self.in_obs[4];
+            let sid = u32::from_be_bytes([
+                self.in_obs[5],
+                self.in_obs[6],
+                self.in_obs[7],
+                self.in_obs[8],
+            ]) & 0x7fff_ffff;
+            // END_STREAM 记账（读入侧；RST 迟到即不再报 aborted，见 in_ended）。
+            if flags & 0x1 != 0 && (ftype == 0x1 || ftype == 0x0) && sid != 0 {
+                self.in_ended.insert(sid);
+            }
+            if ftype == 0x1 {
+                // HEADERS（含 trailers/CONTINUATION 首帧同形）：新流收录。
+                // （trailers 复用流 id，去重后无影响。）
+                self.note_headers(sid);
+            } else if ftype == 0x3 && len == 4 {
+                // 对端 RST：仅服务端翻 aborted（service future 被 hyper 静默丢弃，
+                // 无此帧即永无 server-stream error；stream-destroy-event-order）。
+                // 客户端不翻——任务错误（send_request/body）是唯一信号源；
+                // 双源会造 aborted+error 双终点竞速（write-after-destroy）。
+                // 干净码（0/8）亦跳过——node 不为其发 aborted/error。
+                let code = u32::from_be_bytes([
+                    self.in_obs[9],
+                    self.in_obs[10],
+                    self.in_obs[11],
+                    self.in_obs[12],
+                ]);
+                // 该方向已 END 即跳过（END 后 RST 只是 close；与 hyper END
+                // 处理竞速——先报 aborted 会把干净收尾翻成 CANCEL 错误）。
+                let ended = if self.is_server {
+                    self.out_ended.contains(&sid)
+                } else {
+                    self.in_ended.contains(&sid)
+                };
+                if self.is_server && !ended && code != 0 && code != 8 {
+                    if let Some(js) = self.js_sid(sid) {
+                        self.emit(js, "aborted", code.to_string());
+                    }
+                }
+            } else if !self.is_server && ftype == 0x4 && sid == 0 && flags & 0x1 == 0 {
+                let mut pairs: Vec<(u32, u32)> = Vec::new();
+                let mut i = 9;
+                while i + 6 <= 9 + len {
+                    let id = ((self.in_obs[i] as u32) << 8) | (self.in_obs[i + 1] as u32);
+                    let val = u32::from_be_bytes([
+                        self.in_obs[i + 2],
+                        self.in_obs[i + 3],
+                        self.in_obs[i + 4],
+                        self.in_obs[i + 5],
+                    ]);
+                    pairs.push((id, val));
+                    i += 6;
+                }
+                let payload = serde_json::to_string(&pairs).unwrap_or_else(|_| "[]".into());
+                self.emit(0, "remoteSettings", payload);
+            } else if !self.is_server && ftype == 0x7 && len >= 8 {
+                let last_id = u32::from_be_bytes([
+                    self.in_obs[9],
+                    self.in_obs[10],
+                    self.in_obs[11],
+                    self.in_obs[12],
+                ]) & 0x7fff_ffff;
+                let code = u32::from_be_bytes([
+                    self.in_obs[13],
+                    self.in_obs[14],
+                    self.in_obs[15],
+                    self.in_obs[16],
+                ]);
+                if code != 0 {
+                    let payload = serde_json::json!({ "code": code, "lastId": last_id }).to_string();
+                    self.emit(0, "goawayError", payload);
+                }
+            }
+            self.in_obs.drain(..9 + len);
+        }
+    }
+
+    /// 发出字节流扫描：首个非 ACK 服务端 SETTINGS 置 hs_sent；
+    /// 发出侧 HEADERS 流 id 同步收录（client 精确 RST 注入映射用）。
     fn observe_out(&mut self, fresh: &[u8]) {
-        if fresh.is_empty() || self.hs_sent() {
+        if fresh.is_empty() {
             return;
         }
         self.out_obs.extend_from_slice(fresh);
@@ -238,6 +449,7 @@ impl<T> SharedIo<T> {
             self.out_obs.clear();
             return;
         }
+        Self::strip_magic(&mut self.out_obs);
         loop {
             if self.out_obs.len() < 9 {
                 break;
@@ -255,11 +467,15 @@ impl<T> SharedIo<T> {
                 self.out_obs[6],
                 self.out_obs[7],
                 self.out_obs[8],
-            ]);
+            ]) & 0x7fff_ffff;
+            // END_STREAM 记账（发出侧；RST 迟到即不再报 aborted，见 out_ended）。
+            if flags & 0x1 != 0 && (ftype == 0x1 || ftype == 0x0) && sid != 0 {
+                self.out_ended.insert(sid);
+            }
             if ftype == 0x4 && sid == 0 && flags & 0x1 == 0 {
                 self.hs_sent.store(true, std::sync::atomic::Ordering::Release);
-                self.out_obs.clear();
-                break;
+            } else if ftype == 0x1 {
+                self.note_headers(sid);
             }
             self.out_obs.drain(..9 + len);
         }
@@ -283,6 +499,25 @@ impl<T> SharedIo<T> {
         let _ = guard.write_all(BAD).await;
         let _ = guard.flush().await;
     }
+
+    /// 精确 RST_STREAM 注入（JS sid → wire 序位；hyper 无 API，只能线写）。
+    /// 返 false = 映射未知（调用方回落 abort/静默，禁伤及无辜流）。
+    pub(crate) async fn inject_rst(&self, js_sid: u64, code: u32) -> bool
+    where
+        T: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt as _;
+        let Some(wire) = self.wire_sid(js_sid) else {
+            return false;
+        };
+        let mut frame = [0u8; 13];
+        frame[2] = 4;
+        frame[3] = 0x3;
+        frame[5..9].copy_from_slice(&(wire & 0x7fff_ffff).to_be_bytes());
+        frame[9..13].copy_from_slice(&code.to_be_bytes());
+        let mut guard = self.inner.lock().await;
+        guard.write_all(&frame).await.is_ok() && guard.flush().await.is_ok()
+    }
 }
 
 /// poll 期取锁（毒化注入只在循环退出后发生，轮询期永不竞争；万一失手则
@@ -305,24 +540,35 @@ where
     T: tokio::io::AsyncRead + Unpin,
 {
     fn poll_read(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         mut buf: hyper::rt::ReadBufCursor<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
-        let mut guard = match lock_poll(&self.inner, cx) {
-            Some(g) => g,
-            None => return Poll::Pending,
-        };
         // SAFETY: ReadBufCursor 的未填区即合法写区（TokioIo 同款）。
-        let uninit = unsafe { buf.as_mut() };
-        let mut tbuf = tokio::io::ReadBuf::uninit(uninit);
-        futures::ready!(tokio::io::AsyncRead::poll_read(
-            Pin::new(&mut *guard),
-            cx,
-            &mut tbuf
-        ))?;
-        let n = tbuf.filled().len();
+        let (n, fresh): (usize, Option<Vec<u8>>) = {
+            let mut guard = match lock_poll(&self.inner, cx) {
+                Some(g) => g,
+                None => return Poll::Pending,
+            };
+            let uninit = unsafe { buf.as_mut() };
+            let mut tbuf = tokio::io::ReadBuf::uninit(uninit);
+            futures::ready!(tokio::io::AsyncRead::poll_read(
+                Pin::new(&mut *guard),
+                cx,
+                &mut tbuf
+            ))?;
+            let n = tbuf.filled().len();
+            let fresh = if n > 0 {
+                Some(tbuf.filled().to_vec())
+            } else {
+                None
+            };
+            (n, fresh)
+        };
         unsafe { buf.advance(n) };
+        if let Some(f) = fresh {
+            self.as_mut().observe_in(&f);
+        }
         Poll::Ready(Ok(()))
     }
 }

@@ -16,10 +16,20 @@ function __wjs2_rsByobFill(st) {
   while (st.byobReads.length) {
     const r = st.byobReads[0];
     try { new Uint8Array(r.view.buffer, 0, 0); }
-    catch { st.byobReads.shift(); r.reject(new TypeError("BYOB view is detached")); continue; }
-    if (st.error !== undefined) { st.byobReads.shift(); r.reject(st.error); continue; }
+    catch { st.byobReads.shift(); if (st.byobReqRead === r) st.byobReqRead = null; r.reject(new TypeError("BYOB view is detached")); continue; }
+    if (st.error !== undefined) { st.byobReads.shift(); if (st.byobReqRead === r) st.byobReqRead = null; r.reject(st.error); continue; }
     if (st.byteLen === 0) {
-      if (st.closed) { st.byobReads.shift(); r.resolve({ value: undefined, done: true }); continue; }
+      // 闭流且排空：待读按 done 结算；若其为活跃 pull 请求，请求对象快照
+      // 留用（close 后 respondWithNewView 仍须可达并走视图校验，
+      // bad-buffers 套件点名；结算点在 respond 或 pull 收尾后的 pump）。
+      if (st.closed) {
+        st.byobReads.shift();
+        if (st.byobReqRead === r) {
+          st.byobReqSettled = { req: st.byobReq, r };
+          st.byobReqRead = null;
+        }
+        r.resolve({ value: undefined, done: true }); continue;
+      }
       break;
     }
     const n = Math.min(r.view.byteLength, st.byteLen);
@@ -41,14 +51,21 @@ function __wjs2_rsByobFill(st) {
 function __wjs2_rsByobReq(st) {
   const r = st.byobReads[0];
   if (!r) return null;
+  st.byobReqRead = r;
+  st.byobReqSettled = null;
   return {
     get view() { return r.view; },
     respond(n) {
       n = Number(n);
       if (!Number.isInteger(n) || n < 0 || n > r.view.byteLength) throw new RangeError("respond: bad byte count");
-      if (st.byobReads[0] !== r || st.byobReq === null) throw new TypeError("respond: request is not active");
+      if ((st.byobReads[0] !== r || st.byobReq === null) && st.byobReqSettled?.r !== r) {
+        throw new TypeError("respond: request is not active");
+      }
+      st.byobReqSettled = null;
+      if (st.byobReads[0] !== r) return;
       st.byobReads.shift();
       st.byobReq = null;
+      st.byobReqRead = null;
       // 非元素对齐截断（余量丢弃，见头注）
       const take = n - (n % r.viewElem);
       r.resolve({ value: __wjs2_rsViewPrefix(r, take), done: false });
@@ -56,7 +73,23 @@ function __wjs2_rsByobReq(st) {
     },
     respondWithNewView(v) {
       if (!ArrayBuffer.isView(v)) throw new TypeError("respondWithNewView needs a view");
-      if (st.byobReads[0] !== r || st.byobReq === null) throw new TypeError("respondWithNewView: request is not active");
+      // 已结算（close 顺带 done）的活跃请求仍可用（见 ByobFill 快照）。
+      if ((st.byobReads[0] !== r || st.byobReq === null) && st.byobReqSettled?.r !== r) {
+        throw new TypeError("respond: request is not active");
+      }
+      // node 口径（bad-buffers 套件点名码）：空视图 RangeError ARG_VALUE；
+      // detached 视图 TypeError INVALID_STATE（文案 best-effort，码断言）。
+      if (v.byteLength === 0) {
+        const e = new RangeError(`The argument 'view' is invalid. Received ${v.constructor?.name ?? "Object"}(${v.length ?? v.byteLength})`);
+        e.code = "ERR_INVALID_ARG_VALUE";
+        throw e;
+      }
+      try { new Uint8Array(v.buffer, 0, 0); }
+      catch {
+        const e = new TypeError("Invalid state: View or Viewed ArrayBuffer is zero-length or detached");
+        e.code = "ERR_INVALID_STATE";
+        throw e;
+      }
       r.view = v; r.viewCtor = v.constructor; r.viewElem = v.BYTES_PER_ELEMENT ?? 1;
     },
   };
@@ -72,7 +105,9 @@ function __wjs2_rsByteToQueue(st) {
 function __wjs2_rsPull(st) {
   // 早退仍需 pump：关闭/出错后不再拉数据，但排队的取值/close 等待仍要结算
   // （read 消费掉末块后只调 pull，不 pump 即 closeWaiter 永挂）。
-  if (!st.reader || st.closed || st.error !== undefined || st.pulling) { __wjs2_rsPump(st); return; }
+  // start 未决同样早退（byob 套件：start 内 await open，pull 须等 file 就绪，
+  // 真机 pull 门控 start 结算；复位由构造器的 settle 回调做）。
+  if (!st.reader || st.closed || st.error !== undefined || st.pulling || st.starting) { __wjs2_rsPump(st); return; }
   // pull 触发面（防微任务空转饿死事件循环，见 §4.27 追补）：
   // 只在新需求到达（read 推入等待）或有进展且需求还在（pump 尾）时调；
   // 无 pull 方法的源 + 挂起的读，eager 重拉即无限微任务链。
@@ -82,10 +117,14 @@ function __wjs2_rsPull(st) {
   if (st.isBytes && st.byobReads.length && !st.byobReq) st.byobReq = __wjs2_rsByobReq(st);
   try {
     const r = st.source.pull ? st.source.pull(st.controller) : undefined;
-    Promise.resolve(r).then(() => { st.pulling = false; st.byobReq = null; __wjs2_rsPump(st); }, (e) => {
-      st.pulling = false; st.byobReq = null; __wjs2_rsError(st, e);
+    Promise.resolve(r).then(() => {
+      st.pulling = false; st.byobReq = null;
+      if (st.byobReqRead && st.byobReads[0] !== st.byobReqRead) st.byobReqRead = null;
+      __wjs2_rsPump(st);
+    }, (e) => {
+      st.pulling = false; st.byobReq = null; st.byobReqRead = null; __wjs2_rsError(st, e);
     });
-  } catch (e) { st.pulling = false; st.byobReq = null; __wjs2_rsError(st, e); }
+  } catch (e) { st.pulling = false; st.byobReq = null; st.byobReqRead = null; __wjs2_rsError(st, e); }
 }
 function __wjs2_rsPump(st) {
   __wjs2_rsByobFill(st);
@@ -132,7 +171,7 @@ function __wjs2_rsController(stream, st) {
   if (st.isBytes) {
     return {
       get desiredSize() { return st.hwm - st.byteLen; },
-      get byobRequest() { return st.byobReq; },
+      get byobRequest() { return st.byobReq ?? st.byobReqSettled?.req ?? null; },
       enqueue(chunk) {
         if (st.closed || st.error !== undefined) throw new TypeError("stream is not readable");
         if (!ArrayBuffer.isView(chunk)) throw new TypeError("byte stream chunk must be a view");
@@ -183,10 +222,21 @@ globalThis.ReadableStream = class ReadableStream {
     };
     st.controller = __wjs2_rsController(this, st);
     __wjs2_rsState.set(this, st);
-    try {
-      const r = underlyingSource.start ? underlyingSource.start(st.controller) : undefined;
-      Promise.resolve(r).catch((e) => __wjs2_rsError(st, e));
-    } catch (e) { __wjs2_rsError(st, e); }
+    // start 结算前不 pull（见 __wjs2_rsPull 门）；结算后若有待需求即补拉一轮。
+    // 无 start 方法即不同步延迟（既有套件时序不变）。
+    if (underlyingSource.start) {
+      st.starting = true;
+      try {
+        const r = underlyingSource.start(st.controller);
+        Promise.resolve(r).then(() => {
+          st.starting = false;
+          st.pullProgress = true;
+          __wjs2_rsPump(st);
+        }, (e) => { st.starting = false; __wjs2_rsError(st, e); });
+      } catch (e) { st.starting = false; __wjs2_rsError(st, e); }
+    } else {
+      st.starting = false;
+    }
   }
   get locked() { return !!__wjs2_rsState.get(this).reader; }
   cancel(reason) {
@@ -217,14 +267,28 @@ globalThis.ReadableStream = class ReadableStream {
         read(view) {
           return new Promise((resolve, reject) => {
             if (!ArrayBuffer.isView(view)) { reject(new TypeError("BYOB read needs a view")); return; }
-            try { new Uint8Array(view.buffer, 0, 0); }
-            catch { reject(new TypeError("BYOB view is detached")); return; }
-            if (view.byteLength === 0) { reject(new TypeError("BYOB view must not be empty")); return; }
+            // node 口径（bad-buffers 套件点名码与文案）：空视图/detached 背缓冲
+            // 同一 TypeError ERR_INVALID_STATE。
+            let viewBad = view.byteLength === 0;
+            if (!viewBad) {
+              try { new Uint8Array(view.buffer, 0, 0); }
+              catch { viewBad = true; }
+            }
+            if (viewBad) {
+              const e = new TypeError("Invalid state: View or Viewed ArrayBuffer is zero-length or detached");
+              e.code = "ERR_INVALID_STATE";
+              reject(e);
+              return;
+            }
             if (st.error !== undefined) { reject(st.error); return; }
             st.byobReads.push({
               view, viewCtor: view.constructor, viewElem: view.BYTES_PER_ELEMENT ?? 1,
               resolve, reject,
             });
+            // 新需求即置进展旗（in-flight pull 完成后的 pump 尾凭此补拉；
+            // 否则异步源下新读到达时 pulling 恒真、旗恒假，永不再拉——
+            // byob 文件套件现形；default 读端同款已置）。
+            st.pullProgress = true;
             __wjs2_rsByobFill(st);
             __wjs2_rsPull(st);
           });
@@ -548,6 +612,72 @@ globalThis.TransformStream = class TransformStream {
     this.writable = writable;
   }
 };
+// ---- TextEncoderStream / TextDecoderStream（whatwg webstreams-encoding 套件）----
+// 薄封装：编码侧 TransformStream + TextEncoder（chunk 字符串化后编码）；
+// 解码侧同 + 有状态 TextDecoder（跨片多字节正确；label/options 校验复用
+// TextDecoder 码）。真机同款：无 Symbol.toStringTag（node 26.8.1 双侧 undefined）。
+const __wjs2_tesState = new WeakMap();
+function __wjs2_tesBrand(self) {
+  const st = __wjs2_tesState.get(self);
+  if (st === undefined) throw new TypeError("Cannot read private member #handle from an object whose class did not declare it");
+  return st;
+}
+// 取值器品牌门 + node 形栈帧（webstreams-encoding 套件 stack 正则点名
+// `at get <name>`；引擎原生栈为 SpiderMonkey 形 `get <name>@…`，此处前置
+// 一行 node 方言帧，指向真实调用的取值器）。
+function __wjs2_tesGet(self, getter, pick) {
+  try {
+    return pick(__wjs2_tesBrand(self));
+  } catch (e) {
+    try {
+      const cur = typeof e.stack === "string" ? e.stack : String(e);
+      e.stack = `    at get ${getter} (winterjs2:encoding)\n${cur}`;
+    } catch {}
+    throw e;
+  }
+}
+globalThis.TextEncoderStream = class TextEncoderStream {
+  constructor() {
+    const enc = new TextEncoder();
+    const ts = new TransformStream({
+      transform(chunk, c) { c.enqueue(enc.encode(String(chunk))); },
+    });
+    __wjs2_tesState.set(this, { ts });
+  }
+  get encoding() { return __wjs2_tesGet(this, "encoding", () => "utf-8"); }
+  get readable() { return __wjs2_tesGet(this, "readable", (s) => s.ts.readable); }
+  get writable() { return __wjs2_tesGet(this, "writable", (s) => s.ts.writable); }
+};
+globalThis.TextDecoderStream = class TextDecoderStream {
+  constructor(label = "utf-8", options = undefined) {
+    // 选项形校验（undefined/null 缺省；标量即 ARG_TYPE，encoding 套件点名文案）；
+    // label 校验复用 TextDecoder（含 unknown-label 的 NOT_SUPPORTED 码）。
+    if (options !== undefined && options !== null &&
+        (typeof options !== "object" && typeof options !== "function")) {
+      const shown = typeof options === "string" ? `'${options}'` : String(options);
+      const e = new TypeError(`The "options" argument must be of type object. Received type ${typeof options} (${shown})`);
+      e.code = "ERR_INVALID_ARG_TYPE";
+      throw e;
+    }
+    const dec = new TextDecoder(label, options ?? undefined);
+    const ts = new TransformStream({
+      transform(chunk, c) {
+        const out = dec.decode(chunk, { stream: true });
+        if (out) c.enqueue(out);
+      },
+      flush(c) {
+        const out = dec.decode();
+        if (out) c.enqueue(out);
+      },
+    });
+    __wjs2_tesState.set(this, { ts, label: dec.encoding, fatal: dec.fatal, ignoreBOM: dec.ignoreBOM });
+  }
+  get encoding() { return __wjs2_tesGet(this, "encoding", (s) => s.label); }
+  get fatal() { return __wjs2_tesGet(this, "fatal", (s) => s.fatal); }
+  get ignoreBOM() { return __wjs2_tesGet(this, "ignoreBOM", (s) => s.ignoreBOM); }
+  get readable() { return __wjs2_tesGet(this, "readable", (s) => s.ts.readable); }
+  get writable() { return __wjs2_tesGet(this, "writable", (s) => s.ts.writable); }
+};
 // ---- CompressionStream / DecompressionStream（10f 欠账 G9-3：Web 全局 +
 // node:stream/web；真机 26.8.2 对拍——不继承 TransformStream（proto 链独立，
 // instanceof TransformStream false）、format 枚举校验 TypeError（文案逐字）、
@@ -569,7 +699,10 @@ function __wjs2_makeCSClass(name, kinds, reject) {
       const fmt = String(format);
       const kind = kinds[fmt];
       if (kind === undefined) {
-        throw new TypeError(`Failed to construct '${name}': 1st argument '${fmt}' is not a valid enum value of type CompressionFormat.`);
+        // node 口径（webstreams-compression 套件点名码；文案原已逐字）。
+        const e = new TypeError(`Failed to construct '${name}': 1st argument '${fmt}' is not a valid enum value of type CompressionFormat.`);
+        e.code = "ERR_INVALID_ARG_VALUE";
+        throw e;
       }
       // brotli 压缩档位对齐真机默认 11；zlib 族 -1（引擎 clamp 默认）。
       const lv = kind === 8 ? 11 : -1;
@@ -650,8 +783,16 @@ function __wjs2_makeCSClass(name, kinds, reject) {
       });
       __wjs2_csState.set(this, { readable, writable });
     }
-    get readable() { return __wjs2_csState.get(this).readable; }
-    get writable() { return __wjs2_csState.get(this).writable; }
+    get readable() {
+      const s = __wjs2_csState.get(this);
+      if (s === undefined) throw new TypeError("Cannot read private member #transform from an object whose class did not declare it");
+      return s.readable;
+    }
+    get writable() {
+      const s = __wjs2_csState.get(this);
+      if (s === undefined) throw new TypeError("Cannot read private member #transform from an object whose class did not declare it");
+      return s.writable;
+    }
   };
   Object.defineProperty(cls.prototype, Symbol.toStringTag, { value: name, configurable: true });
   return cls;

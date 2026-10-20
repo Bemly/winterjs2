@@ -2234,3 +2234,75 @@ G1/G2/G3/G9 已收官。）
 - 验证：两套件 wjs rc=0；黑盒 console/util 6/6；单测 internal_spec_table；冒烟 5/5；`check-lines` ok（h2_client 994/util 996）；`check-naming` ok。回归抽查：keygen-promisify rc=0；stream-finished DIFF / stream-pipeline SAME1 皆 base18 既有红（干净树重跑另见下）。
 - 定级（自主定级，按口径更新：默认对齐 node+Bun，书面偏离）：timers.setImmediate/setTimeout、readline.question 的 custom 缺失——名断言经通用拷贝路径已绿，行为 custom（timersPromises/AbortSignal）属 timers/readline 域，不在本轮改动（改即跨域行为变更，记档不碰）。console 全局 time/timeLog/timeEnd 未改（Rust Instantms 形；test-console.js 系另一簇，_times 暴露/缺标 warning 等未动）。
 - 交付 commits：8050f60（formatTime 簇）+ 707a929（promisify 簇），已合入 lane/console 基线。
+## 2026-10-20 TIMEOUT C续啃复核（base19 http2 TIMEOUT 25件逐件定级+优先级）
+
+- 口径：L-C 定级（journal:1535）是 base18 50 件 TIMEOUT 的账（7已绿/1 runtime/
+  3 node自红/24 hyper-bound/15 actionable-shell）。base19 http2 TIMEOUT 25 件
+  （base18 50→19 绿+7 DIFF+2 SAME1+22 留守+3 新增），本节按 L-C 五类逐件复核。
+  证据：results.log 全行 wjs=142（我方挂死；HANG_EXIT 自报无输出）+ node 侧
+  （24 件 node=0，settings-unsolicited-ack node=1）+ 逐件套件源码（机制归类）。
+  monitor.log 无 abort（load 10 前后，TIMEOUT 非资源型）。
+- base18 50 件去向：19 转绿（C2/C3/wave：close-idle束/serverresponse-end/
+  connect-method/upload/propagate/server-socket-destroy等）+ 7 转 DIFF
+  （挂死已解，快败断言，见 C-continuation）+ 2 转 SAME1（close-while-writing/
+  server-rst-stream，node 侧同红）+ 22 留守 + 3 新增。
+- 复核分类（25 件）：hyper-bound **13** / actionable-shell **11**
+  （C壳9 + sendfile面2）/ node自红 **1**。L-C 的 7已绿已兑现超额（19绿）；
+  1 runtime（early-hints 主件）现为 DIFF（MUSTCALL 未达，投递缺口仍在，
+  见下）；3 node自红复核为 settings-unsolicited-ack（node=1，
+  首包 initial-SETTINGS 断言漂移）+ close-while-writing/server-rst-stream
+  （T→S1，R16b  trailers 系同族）。
+
+### hyper-bound 13（hyper底座/原始帧/引擎面，C 不开轮，time-box 另议）
+
+- altsvc / origin：ALTSVC/ORIGIN 帧面（R16b B2 bound）。
+- misbehaving-flow-control / -paused：手搓 WINDOW_UPDATE 滥用 → 窗口溢出映射
+  （R16b 帧错映射 bound）。multiplex：手搓 stream-ID 复用 + NghttpError
+  （--expose-internals）→ 会话拆除（原始帧+内禀 bound）。
+  ping-unsolicited-ack：unsolicited PING ack → Protocol error 映射（bound）。
+  reset-flood：手搓非法流 + worker + maxSessionInvalidFrames（bound）。
+- max-settings：maxSettings:1 + 双 settings → 会话即毁无流（hyper SETTINGS
+   enforcement 面；C2 只做了 remoteSettings 嗅探， enforcement 另议）。
+- exceeds-server-trailer-size：wantTrailers + 超大 trailer → frameError
+  NGHTTP2_FRAME_SIZE_ERROR 映射（帧错映射 bound；C 轮 RST 注入机器
+  若覆盖另提单件复判，默认 bound）。
+- allow-http1：hyper ALPN 降级 HTTP/1（底座面）。client-http1-server：
+  HPE_PAUSED_H2_UPGRADE + NghttpError Protocol-error 映射（错映射 bound）。
+- max-session-memory-leak / forget-closed-streams：maxSessionMemory 会计/
+  nghttp2  closed-stream 修剪（hyper 内部 + 1000/10000 次慢型，perf 边界）。
+
+### actionable-shell 11（C续啃，优先级逐件）
+
+- P0（新增 TIMEOUT，先单件复判是回归还是抖动，各跑 3 遍）：
+  compat-socket-destroy-delayed（res.end 后 setImmediate destroy，
+  base18 绿→19 挂；C2 destroy-cascade 疑连带或抖动）；
+  client-proxy-over-http2（CONNECT + emit connection 隧道，C2 connect 面近亲）；
+  goaway-opaquedata（session.goaway opaque 回传；journal:1779 已开工，
+  GOAWAY-drain 机器现成）。
+- P1（机器现成：L-C GOAWAY-drain/destroy-cascade + sendfile lane）：
+  socket-close（socket-timeout-first 关停，L-C/1527/1544/1562 三记未解；
+  定点复判）；graceful-close（server.close+1MB 放空，drain 面）；
+  respond-file-error-pipe-offset（FIFO+offset NOSEEK onError，
+  sendfile lane 范围，先等 open-fix 后复探）；respond-with-file-connection-abort
+  （sendfile 中途 destroy → ECONNRESET，同上）。
+- P2（tls-face/CONNECT 壳，tls lane 协作）：connect-tls-with-delay
+  （手 tls.connect + createConnection 注入 + remoteSettings）；
+  server-unknown-protocol（unknownProtocolTimeout + 非 h2 ALPN fatal alert，
+  ALPN 面 L-A 余温）；client-connection-tunnelling（TLS 上 CONNECT +
+  双 emit connection）。
+- P3（分发壳）：autoselect-protocol（raw net 嗅探 PRI 分发 h1/h2，
+  emit connection 面）。
+- 单件复判要点（run1.sh 缺席，用替式，node-test/test/parallel 下，
+  TMPDIR=/Users/bemly/wjs-data/tmp，槽位自选如 TEST_THREAD_ID=36xx +
+  NODE_COMMON_PORT=31xxx，WINTERJS_HANG_EXIT=20 开自报定位未触发回调）：
+  `TEST_THREAD_ID=36xx NODE_COMMON_PORT=31xxx perl -e 'alarm 40; exec @ARGV or die'   /Users/bemly/Projects/winterjs2/target/debug/winterjs2 --run <file>`；
+  看点：P0 三遍是否稳定挂（抖动即记 flake 回归队尾）；P1 看 close/goaway/
+  drain 回调哪一环未达（自报行即创建点）；sendfile 两件先等 open-fix 合入
+  后复探（现挂含 m 连带可能）；P2 看 remoteSettings/ALPN 回调。
+- C-continuation（base18 TIMEOUT→现 DIFF 7 件，挂死已解，另队不占 C 轮）：
+  client-upload / respond-file-with-pipe（m 连带，open-fix 后自愈，先复探）；
+  expect-continue-check / max-concurrent-streams / too-many-streams
+  （strict-equal 快败，小轮）；early-hints-invalid-{type,value}（hints ARG
+  校验，小轮）；early-hints 主件（MUSTCALL 未达=1 runtime 投递缺口未合，
+  归 runtime 面）；ping-settings-heapdump（v8.getHeapSnapshot 内禀缺口，
+  转范围外/bound，不开轮）。

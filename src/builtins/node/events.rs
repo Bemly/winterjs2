@@ -178,6 +178,10 @@ EventEmitter.setMaxListeners =
         if (isEventTarget(target)) {
           target[kMaxEventTargetListeners] = n;
           target[kMaxEventTargetListenersWarned] = false;
+          // prelude 侧 max 表同步（addEventListener 超限 Warning 用）。
+          try {
+            if (typeof globalThis.__wjs2_etSetMax === "function") globalThis.__wjs2_etSetMax(target, n);
+          } catch {}
         } else if (typeof target?.setMaxListeners === 'function') {
           target.setMaxListeners(n);
         } else {
@@ -659,7 +663,11 @@ function getEventListeners(emitterOrTarget, type) {
     return emitterOrTarget.listeners(type);
   }
   if (isEventTarget(emitterOrTarget)) {
-    // 本仓 Web EventTarget 无 kEvents 存储（偏差见模块头注）。
+    // prelude 侧读桥（直接注册可见；无表即 []）。
+    try {
+      const br = globalThis.__wjs2_etListeners;
+      if (typeof br === "function") return br(emitterOrTarget, type);
+    } catch {}
     return [];
   }
   throw new ERR_INVALID_ARG_TYPE('emitter', ['EventEmitter', 'EventTarget'], emitterOrTarget);
@@ -690,8 +698,11 @@ function listenerCount(emitterOrTarget, type) {
     return emitterOrTarget.listenerCount(type);
   }
   if (isEventTarget(emitterOrTarget)) {
-    // 10f：原生 EventTarget 读侧表（经帮助函数挂载的监听可见；
-    // 用户直调 addEventListener 不可见，记档）。
+    // prelude 侧读桥优先（直接注册可见），回落侧表。
+    try {
+      const br = globalThis.__wjs2_etListeners;
+      if (typeof br === "function") return br(emitterOrTarget, type).length;
+    } catch {}
     return __etCount(emitterOrTarget, type);
   }
   throw new ERR_INVALID_ARG_TYPE('emitter', ['EventEmitter', 'EventTarget'], emitterOrTarget);

@@ -33,7 +33,9 @@ function Console(stdout, stderr, ignoreErrors) {
     // Node 双形态：Console(stream[, stderr]) / Console({ stdout, stderr })。
     let groupIndentation;
     if (stdout !== null && typeof stdout === "object" && typeof stdout.write !== "function") {
-      ignoreErrors = stderr;
+      const __opts = stdout;
+      // options 形态取 ignoreErrors 本体（真机解构口径；旧实现误读第二位置参数）。
+      ignoreErrors = __opts.ignoreErrors;
       groupIndentation = stdout.groupIndentation;
       // inspectOptions 非对象即 ARG_TYPE（真机 validateObject 口径 +
       // common.invalidArgTypeHelper 文案）。
@@ -63,9 +65,12 @@ function Console(stdout, stderr, ignoreErrors) {
       e.code = "ERR_CONSOLE_WRITABLE_STREAM";
       throw e;
     }
-    this._stdout = stdout ?? null;
-    this._stderr = stderr ?? null;
-    this._ignoreErrors = ignoreErrors;
+  this._stdout = stdout ?? null;
+  this._stderr = stderr ?? null;
+  // 真机口径：ignoreErrors 缺省 true（`new Console({stdout})` 即吞写错；
+  // node lib/internal/console/constructor.js `ignoreErrors = true`）。
+  // 显式值按 Boolean 归一（`new Console(s, s, 0)` 即不吞）。
+  this._ignoreErrors = ignoreErrors === undefined ? true : Boolean(ignoreErrors);
     this._counts = new Map();
     this._times = new Map();
     // 组缩进（node 口径：实例级 indent 层数 × groupIndentation 空格，缺省 2；
@@ -103,15 +108,73 @@ Console.prototype._pad = function(text) {
   const p = " ".repeat(this._indent * this._groupIndent);
   return String(text).split("\n").map((l) => l ? p + l : l).join("\n");
 };
+// 栈溢出判定（node internal/errors.isStackOverflowError 同形：与本引擎实爆的
+// RangeError 按 name+message 比对；引擎无关——SpiderMonkey 文案非 V8 形）。
+// 捕获只做一次（惰性，首个写错时才触发；console 高频路径零开销）。
+let __overflowName, __overflowMessage, __overflowCached = false;
+function __isStackOverflow(e) {
+  if (!__overflowCached) {
+    __overflowCached = true;
+    try { const __f = () => __f(); __f(); }
+    catch (err) { __overflowName = err?.name; __overflowMessage = err?.message; }
+  }
+  return !!e && (typeof e === "object" || typeof e === "function") &&
+    e.name === __overflowName && e.message === __overflowMessage;
+}
+function __noop() {}
+// 写错 errorHandler（node createWriteErrorHandler 同形：异步 cb 报错且尚未
+// 派发 error 时补一次性 noop 监听，把随后的 'error' 派发吞掉；成功回调用
+// null（本仓流与 node 一致）即 `err != null` 为假，不做任何事）。
+function __makeWriteErrorHandler(instance, useStdout) {
+  return (err) => {
+    if (err === null || err === undefined) return;
+    let stream = null;
+    try { stream = useStdout ? instance._stdout : instance._stderr; } catch {}
+    if (!stream || !stream._writableState || stream._writableState.errorEmitted) return;
+    try {
+      if (typeof stream.listenerCount === "function" && stream.listenerCount("error") === 0 &&
+          typeof stream.once === "function") stream.once("error", __noop);
+    } catch {}
+  };
+}
 Console.prototype._w = function(stream, text, fb) {
   if (stream !== null && typeof stream.write === "function") {
+    // 真机口径（kWriteToConsole）：ignoreErrors=false 即裸写透传一切错；
+    // 否则同步写错一律吞（唯栈溢出 RangeError 穿透），异步写错走 errorHandler
+    // 吞（noop 监听吃掉随后的 'error' 派发）；sync/async/setImmediate 三形见
+    // test-console-{async,sync}-write-error，primitive throw 见 log-throw 件。
+    if (!this._ignoreErrors) {
+      stream.write(text + "\n");
+      return;
+    }
+    const useStdout = stream === this._stdout;
+    if (useStdout) this._stdoutErrorHandler ??= __makeWriteErrorHandler(this, true);
+    else this._stderrErrorHandler ??= __makeWriteErrorHandler(this, false);
+    const handler = useStdout ? this._stdoutErrorHandler : this._stderrErrorHandler;
     try {
-      // R3b：复用写回调（真机 errorHandler 同形；同 cb 合批即单 TickObject，
-      // samecb-singletick 套件点名一次 init）。
-      stream.write(text + "\n", this._wCb ??= () => {});
+      // 有 error 监听才补 noop（真机同形，先挂后写；有监听即用户自理）。
+      if (typeof stream.listenerCount === "function" && stream.listenerCount("error") === 0 &&
+          typeof stream.once === "function") stream.once("error", __noop);
+      stream.write(text + "\n", handler);
     } catch (e) {
-      // 真机口径：ignoreErrors=false 即透传原错（instance 套件点名 /^Error: out$/）。
-      if (!this._ignoreErrors) throw e;
+      // 真机口径：console 系调试工具，吞错是常态，但栈空间耗尽必须穿透
+      //（test-console-no-swallow-stack-overflow 点名 RangeError）。
+      // 引擎差：本仓 SpiderMonkey 栈溢出为 `InternalError: too much recursion`，
+      // V8/JSC 为 `RangeError: Maximum call stack size exceeded`；node 断言按
+      // RangeError，此处转类（message/stack 原样保留；用户伪造同名同文案与
+      // 真机 isStackOverflowError 同理穿透，保真）。余错仍吞。
+      if (__isStackOverflow(e)) {
+        if (e.name !== "RangeError") {
+          const __re = new RangeError(e.message);
+          try { __re.stack = e.stack; } catch {}
+          throw __re;
+        }
+        throw e;
+      }
+    } finally {
+      try {
+        if (typeof stream.removeListener === "function") stream.removeListener("error", __noop);
+      } catch {}
     }
     return;
   }

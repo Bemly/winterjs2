@@ -1990,3 +1990,36 @@ G1/G2/G3/G9 已收官。）
 - 验证：两套件 wjs rc=0；黑盒 console/util 6/6；单测 internal_spec_table；冒烟 5/5；`check-lines` ok（h2_client 994/util 996）；`check-naming` ok。回归抽查：keygen-promisify rc=0；stream-finished DIFF / stream-pipeline SAME1 皆 base18 既有红（干净树重跑另见下）。
 - 定级（自主定级，按口径更新：默认对齐 node+Bun，书面偏离）：timers.setImmediate/setTimeout、readline.question 的 custom 缺失——名断言经通用拷贝路径已绿，行为 custom（timersPromises/AbortSignal）属 timers/readline 域，不在本轮改动（改即跨域行为变更，记档不碰）。console 全局 time/timeLog/timeEnd 未改（Rust Instantms 形；test-console.js 系另一簇，_times 暴露/缺标 warning 等未动）。
 - 交付 commits：8050f60（formatTime 簇）+ 707a929（promisify 簇），已合入 lane/console 基线。
+
+## 2026-10-20 任务3收尾（lane/console 干净树重验 + 定级）
+
+- 构建：新区首编 `cargo build -j2`（`-j` 须跟子命令后；load<50 错峰，9m33s）。
+  本机无 nextest（`cargo nextest` 无此命令），按旧例 `cargo test` 单 target 兜底。
+- stream 6 红干净树重跑：首跑 17/7——根因为基线内 sibling 已合入提交
+  22f2db2（http2 respond-file/FIFO，注"待验证"）遗留 `void m;`（`fs_async.js:406`，
+  `void` 求值未声明 `m` 即抛）→ 凡走 `fs.open` 的流全炸（`open (node:fs:3064)`）。
+  修法：删该行（单行，无行为；归属 http2 lane，本 lane 为验证让路，commit 注明）。
+  重编后 23/1 → 24/24（`stream_` 全集），三跑记录：fail/pass/fail 唯一波动件
+  `fs::streams::read_stream_fifo_end`（FIFO 会合竞速，sibling 新测试，FLAKY，
+  http2 lane 跟进；4.275 家族时序味）。
+- base19 `m is not defined` 瘟疫复核：45 件中 5 件系 base18 既有
+  （`ShadowRealm` 面），余 40 件（fs 17/stream 6/http2 6/zlib 4/readline 3/…）
+  皆混合二进制（20:03 构建撞 sibling 半截编辑）污染，非语义回归；base19 扫时
+  load 仅 10~33，排除抖动。
+- 对应域回归：console::+util:: 17/17；stream:: 12/12；crypto 域含 keygen-promisify
+  绿（`generateKeyPair` 正名无回退）；promisified exec 功能探针
+  （`promise.child` + `{stdout,stderr}`）正常。两件 `child_*` 红定级：
+  `child_exec_shell_self_and_timeout` 系 journal 既有记档的 HEAD 预存红（stash 对照）；
+  `child_spawn_abort_and_surface` 三跑中时隐时现，spawn/abort 时序敏感，
+  本 lane 改动仅 custom 改名（回调路径零触及）+ 模块加载正常（63 件同跑过），
+  判 flaky 嫌疑，child lane 跟进。http2_faces 全量子集本环境 >20min 不收敛
+  （挂死件超时；connect 改名面已有 node 套件 rc=0 覆盖），记 infra 超时未竟。
+- console 剩余簇（test-console.js，Bun 清单外）逐件探针+定级（草稿见
+  `~/wjs-data/probe/console-remaining-draft.md`）：警告 8 件（Warning 无 code，
+  文本逐字已钉）/ `_times` SafeMap / dup 不重置 / Symbol TypeError /
+  时长 formatTime / 余参续接 / 标签归一 / `__proto__` 可存。
+  定级：模块面 5 小修可转（归一+has 守卫+emitWarning+formatTime 引入）；
+  全局面需 warning 桥 + `_times` 可见面（中修，或按 §7 骑模块面，另立项）；
+  长时 `h:mm:ss` 全局面可记偏离（套件正则短时恒过）。
+- 交付：两套件 rc=0（干净树复验）+ 黑盒/单测/冒烟/双守门全绿（见上轮）；
+  commits：8050f60 + 707a929 + 336e7b0（记账）+ 本轮 void-m 单行（待推）。

@@ -403,7 +403,6 @@ export const open = function (...args) {
     }), cb);
     return;
   }
-  void m;
   let pr;
   try {
     pr = Promise.resolve(openSync(...args.slice(0, -1)));

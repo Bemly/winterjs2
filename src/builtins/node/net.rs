@@ -21,8 +21,8 @@ pub struct NetEvent {
 }
 
 pub enum NetKind {
-    /// 客户端已连接（payload 带 local 地址 JSON）。
-    Connect { local: Option<std::net::SocketAddr> },
+    /// 客户端已连接（payload 带 local/peer 地址 JSON；peer 供 'lookup' 事件）。
+    Connect { local: Option<std::net::SocketAddr>, peer: Option<std::net::SocketAddr> },
     Data { data_b64: String },
     /// 远端 FIN。
     End,
@@ -147,7 +147,7 @@ pub(crate) use super::net_pumps::spawn_pumps;
 use super::net_pumps::{opt_num, set_rval_str};
 pub use super::net_pumps::{
     net_attach, net_bind, net_connect, net_destroy, net_end, net_isip, net_listen,
-    net_write,
+    net_reset, net_write,
 };
 
 
@@ -298,6 +298,23 @@ pub unsafe extern "C" fn net_halfhold(
     true
 }
 
+/// `__wjs2_net_rehold(id)`：续命装回（pause-unhold 的逆操作；未知 id 静默，不抛）。
+/// SAFETY: 同 net_ref。
+pub unsafe extern "C" fn net_rehold(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: rehold: id must be a number");
+        return false;
+    };
+    state::net_rehold(id as u64);
+    true
+}
+
 // ── 事件循环派发 ────────────────────────────────────────────────────────────
 
 /// 网络事件派发：调 target 的 `__ev(kind, payload)`（payload 空串或 JSON）。
@@ -391,8 +408,8 @@ pub fn dispatch(
     rooted!(&in(cx) let fun_r = fun); // §4.80：裸 JSVal 跨 json!/to_jsval 分配即悬垂
     let is_conn_close = matches!(&ev.kind, NetKind::H2Stream { what, .. } if what == "connClose");
     let (kind, payload): (&str, String) = match &ev.kind {
-        NetKind::Connect { local } => {
-            ("connect", serde_json::json!({ "local": local }).to_string())
+        NetKind::Connect { local, peer } => {
+            ("connect", serde_json::json!({ "local": local, "peer": peer }).to_string())
         }
         NetKind::Data { data_b64 } => ("data", data_b64.clone()),
         NetKind::TlsInfo { json } => ("tlsInfo", json.clone()),
@@ -497,6 +514,7 @@ fn with_str_args(
 /// `net_server.js` Server/BoundSocket/校验族，concat 字节恒等）。
 pub const SOURCE: &str = concat!(
     include_str!("net_socket.js"),
+    include_str!("net_socket_ev.js"),
     include_str!("net_socket_end.js"),
     include_str!("net_server.js"),
 );

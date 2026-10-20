@@ -91,6 +91,10 @@ class Socket extends EventEmitter {
         this.__adoptUds = h.__isPipe ? h.__udsPath : null;
         options = { ...options };
         delete options.handle;
+      } else if (h !== null && typeof h === "object") {
+        // setnodelay 套件：普通柄对象（setNoDelay/readStart）暂存，_handle
+        // 初始化后接管（node kHandle 口径；直接赋值会被下行 null 初始化覆盖）。
+        this.__ctorHandle = h;
       }
     }
     this.__id = 0;
@@ -149,13 +153,32 @@ class Socket extends EventEmitter {
     this.__pendW = [];          // 连接完成前的缓冲写（node write 语义）
     // Node 默认 allowHalfOpen=false：收到远端 FIN（'end'）后自动 end 本端。
     // no-halfopen-enforcer 套件：内部 end 门常驻（listenerCount恒1，构造期首挂，
-    // 用户监听之后触发——node 真机序）。
+    // 用户监听之后触发——node 真机序）。自动收尾走完整 end() 语义
+    // （allow-half-open 套件：无显式 end 亦发 finish；标志递延一拍，
+    // 'end' 处理器内 writable 仍真，写仍放行）。
     this.allowHalfOpen = !!(options && options.allowHalfOpen);
-    this.on("end", () => { if (!this.allowHalfOpen && this.__id) { try { this.__nativeEnd(); } catch {} } });
+    this.on("end", () => {
+      if (!this.allowHalfOpen && this.__id && !this.destroyed && !this.__ended) {
+        try { this.__nativeEnd(); } catch {}
+        // 注：必须经 setImmediate 递延——本仓 I/O 回调内 queueMicrotask 晚于
+        // setImmediate(0) 执行（与 node 相反，ord 探针实证），microtask 版在此处
+        // 恒晚于用户 setImmediate 写，EPIPE 判空。
+        setImmediate(() => {
+          if (!this.allowHalfOpen && !this.destroyed && !this.__ended && !this.__finishEmitted) {
+            this.__ended = true;
+            this.writable = false;
+            this.__finishEmitted = true;
+            try { this.emit("finish"); } catch {}
+          }
+        });
+      }
+    });
     // node 口径：_handle 只在连接存活期非空（构造时/close 后恒 null，真机 26 实测；
     // after-close 套件点名 `c._handle === null`）。连接建立（__realConnect/__attach*）
     // 时建桩，destroy/__ev-close 置空。setNoDelay/setKeepAlive 恒可调（无柄只缓存）。
     this._handle = null;
+    // 构造柄接管（见上；BoundSocket adopt 走独立分支不受影响）。
+    if (this.__ctorHandle !== undefined) { this._handle = this.__ctorHandle; this.__ctorHandle = undefined; }
     this.__tos = 0;            // getTypeOfService 缓存（真机默认 0；连接前设置同样缓存）
     this.__kaState = null;     // setKeepAlive 去重缓存 [enable, delaySec, intervalSec, count]
     this.__hadError = false;   // close(hadError) 口径：error 发过即 true
@@ -238,6 +261,11 @@ class Socket extends EventEmitter {
     this.on("newListener", (__evName) => {
       // 入表前触发（§4.47），只递延冲刷不读表。
       if (__evName === "data") queueMicrotask(() => this.__flushData());
+      // pause-unhold 逆操作：data 监听即复活续命（G11 半开已 FIN 的让路）。
+      if (__evName === "data" && this.__pauseUnheld === true && !this.__peerFin) {
+        this.__pauseUnheld = false;
+        try { if (this.__id) __wjs2_net_rehold(this.__id); } catch {}
+      }
     });
     // Node Writable/Readable 内部面（ws 等 npm 库直接翻字段/调用）：
     // cork/uncork no-op（JS 层写本就不聚合，行为等价）；setNoDelay/
@@ -252,7 +280,16 @@ class Socket extends EventEmitter {
     this.uncork = () => { if (this.__corkCnt > 0) this.__corkCnt--; return this; };
     Object.defineProperty(this, "writableCorked", { get: () => this.__corkCnt, enumerable: true });
     // _handle 为空（未连接/已关闭）时 no-op 只缓存（after-close 套件：close 后调不抛）。
-    this.setNoDelay = (enable) => { if (this._handle && typeof this._handle.setNoDelay === "function") { try { this._handle.setNoDelay(enable !== false); } catch {} } else { this.__noDelayApplied = enable !== false; } return this; };
+    // node 真机（lib/net.js）：`enable = Boolean(undefined→true)`；无柄只记
+    // `kSetNoDelay`；有柄同值跳过、变值透传（setnodelay 套件 1/0/3 次矩阵）。
+    this.__noDelaySet = false;
+    this.setNoDelay = (enable) => {
+      const v = enable === undefined ? true : !!enable;
+      if (this.__noDelaySet === v) return this;
+      this.__noDelaySet = v;
+      if (this._handle && typeof this._handle.setNoDelay === "function") { try { this._handle.setNoDelay(v); } catch {} }
+      return this;
+    };
     // node 口径（真机 26 实测）：setKeepAlive(enable, initialDelay, interval, count) /
     // setKeepAlive({enable, initialDelay, interval, count})；ms→s 下取整转发
     // （5000→5），缺省 interval/count 转发 undefined（JSON 呈 null，typeof 仍 undefined）；
@@ -317,6 +354,12 @@ class Socket extends EventEmitter {
       if (!__was) {
         queueMicrotask(() => { try { this.emit("pause"); } catch { /* 监听抛错不阻暂停 */ } });
       }
+      // connect-paused 套件：连接前 pause 即摘续命（真机同：无 data 监听的
+      // paused 闲置不续命；resume/data 监听装回，G11 半开已 FIN 的让路）。
+      if (!this.__connected && !this.destroyed && this.__id && !this.__peerFin) {
+        this.__pauseUnheld = true;
+        try { __wjs2_net_halfhold(this.__id); } catch {}
+      }
       return this;
     };
     this.resume = () => {
@@ -324,6 +367,10 @@ class Socket extends EventEmitter {
       this.__paused = false;
       if (__was) {
         queueMicrotask(() => { try { this.emit("resume"); } catch { /* 监听抛错不阻续流 */ } });
+      }
+      if (this.__pauseUnheld === true && !this.__peerFin) {
+        this.__pauseUnheld = false;
+        try { if (this.__id) __wjs2_net_rehold(this.__id); } catch {}
       }
       // node 流语义：resume 异步续流（同步冲刷会抢在调用方 resume 之后的
       // 语句前发 data——pause-on-connect 套件 stopped 旗现形）。
@@ -346,7 +393,22 @@ class Socket extends EventEmitter {
     // timer 对象（_idleTimeout 可读）。
     this[kTimeout] = null;
     this.setTimeout = (ms, cb) => {
-      const delay = Number(ms) || 0;
+      // socket-timeout 套件（真机逐字）：非 number 即 ARG_TYPE；NaN/±Inf/负数
+      // 即 OUT_OF_RANGE（0/小数/1e6 合法；invalidArgTypeHelper 口径）。
+      if (typeof ms !== "number") {
+        const got = ms === undefined ? "undefined" : `type ${typeof ms} (${typeof ms === "string" ? `'${ms}'` : String(ms)})`;
+        const e = new TypeError(`The "msecs" argument must be of type number. Received ${got}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
+      if (Number.isNaN(ms) || !Number.isFinite(ms) || ms < 0) {
+        const e = new RangeError(`The value of "msecs" is out of range. It must be a non-negative finite number. Received ${String(ms)}`);
+        e.code = "ERR_OUT_OF_RANGE"; throw e;
+      }
+      const delay = ms || 0;
+      if (cb !== undefined && typeof cb !== "function") {
+        const e = new TypeError(`The "callback" argument must be of type function. Received ${typeof cb === "symbol" ? String(cb) : typeof cb}`);
+        e.code = "ERR_INVALID_ARG_TYPE"; throw e;
+      }
       if (this.__wjs2_stimer) { clearTimeout(this.__wjs2_stimer); this.__wjs2_stimer = null; }
       this[kTimeout] = null;
       // node 口径：socket.timeout 反映最后一次 setTimeout（client-set-timeout
@@ -636,15 +698,41 @@ class Socket extends EventEmitter {
       try {
         __lookup(String(host), { family: __famOpt || 0, hints: 0, all: __heAll }, (err, addr, family) => {
           if (called) return; called = true;
-          if (err) { queueMicrotask(() => this.destroy(err)); return; }
+          // node emitLookup 口径：自定义 lookup 结果恒发 'lookup'（错即 (err) 形；
+          // 发射异步——同步回调用 mock 亦须在调用方挂载监听后送达）。
+          const __emitLookup = (args) => queueMicrotask(() => {
+            try { this.emit("lookup", ...args); } catch { /* 监听抛错不阻 */ }
+          });
+          if (err) {
+            __emitLookup([err, undefined, undefined, String(host)]);
+            queueMicrotask(() => this.destroy(err)); return;
+          }
           // node onlookup 校验序（单地址形，lib/net.js emitLookup 口径）：先 ip 串形
           //（ERR_INVALID_IP_ADDRESS，参数原样 inspect——数组即整数组），
           // 次 family（ERR_INVALID_ADDRESS_FAMILY 带 host/port）。
-          // all:true 有效多地址数组（{address,family} 逐项）走下行既有处理；
+          // all:true 对象数组逐项校验地址（坏值即该值错，真机 validIps 口径）；
           // 串条目数组（broken mock）即整数组 IP 错（真机同形）。
-          const __heAddrsOk = __heAll && Array.isArray(addr) &&
-            addr.every((e) => e !== null && typeof e === "object");
-          if (!__heAddrsOk) {
+          if (__heAll && Array.isArray(addr) && addr.every((e) => e !== null && typeof e === "object")) {
+            for (const e of addr) {
+              if (typeof e.address !== "string" || !isIP(e.address)) {
+                const er = new TypeError(`Invalid IP address: ${String(e.address)}`);
+                er.code = "ERR_INVALID_IP_ADDRESS";
+                queueMicrotask(() => this.destroy(er)); return;
+              }
+            }
+            if (addr.length > 1) {
+              for (const e of addr) {
+                __emitLookup([null, e.address, e.family, String(host)]);
+              }
+              this.__heStart(addr, __doConnect, cb);
+              return;
+            }
+            if (addr.length === 1) {
+              __emitLookup([null, addr[0].address, addr[0].family, String(host)]);
+              __doConnect(String(addr[0].address));
+              return;
+            }
+          } else {
             if ((typeof addr !== "string") || !isIP(addr)) {
               const shown = Array.isArray(addr)
                 ? `[ ${addr.map((x) => typeof x === "string" ? `'${x}'` : String(x)).join(", ")} ]`
@@ -660,10 +748,7 @@ class Socket extends EventEmitter {
             }
           }
           const first = Array.isArray(addr) ? addr[0].address : addr;
-          if (__heAll && Array.isArray(addr) && addr.length > 1) {
-            this.__heStart(addr, __doConnect, cb);
-            return;
-          }
+          __emitLookup([null, String(first), family, String(host)]);
           __doConnect(String(first));
         });
       } catch (e) { queueMicrotask(() => this.destroy(e)); return this; }
@@ -714,6 +799,16 @@ class Socket extends EventEmitter {
   }
   // 真连接段（blockList/lookup 前置之后；adopt 预置 local 面）。
   __realConnect(finalHost, port, cb, __noDelay, signal, sockPath) {
+    // connect 期 noDelay 显式值落缓存（node kSetNoDelay 口径；建柄后透传；
+    // 缺席不断用户预置——setNoDelay(true) 后裸连仍生效）。
+    if (__noDelay !== undefined) this.__noDelaySet = !!__noDelay;
+    // perf_hooks 'net' 条目计时起点（仅 TCP；UDS 不记，真机同）。
+    if (sockPath === null) {
+      try {
+        this.__perfStart = (typeof performance !== "undefined" && typeof performance.now === "function")
+          ? performance.now() : Date.now();
+      } catch { this.__perfStart = 0; }
+    }
     // UDS 面：remoteAddress/localAddress 恒 undefined（真机实证），address() 回 {}。
     // adopt 面：localAddress/localPort 预置 bound 值（connect 前后一致，真机实证）。
     // remote* 不在此发布（连接完成前恒 undefined，见构造注）；目标另存供报错整形。
@@ -732,6 +827,12 @@ class Socket extends EventEmitter {
     // 建柄（_handle 存活期起点；连接前缓存的 keepAlive 随建即直通新柄）。
     this.__handleClosed = false;
     this._handle = this.__makeHandle();
+    // connect-nodelay 套件：缓存真值即调柄 setNoDelay(true)（mock 可观测；
+    // node lib/net.js:2180 口径， kSetNoDelay 真即透传；建连异步发出，
+    // 使用方 connect 调用后同步打补丁仍可观测）。
+    if (this.__noDelaySet === true) {
+      queueMicrotask(() => { try { this._handle.setNoDelay(true); } catch {} });
+    }
     if (this.__kaState) { const [ke, kd, ki, kc] = this.__kaState; try { this._handle.setKeepAlive(ke, kd, ki, kc); } catch {} }
     if (sockPath !== null && this.__adoptUds) {
       this.localAddress = this.__adoptUds;
@@ -745,233 +846,4 @@ class Socket extends EventEmitter {
     if (this.__unrefLatched === true && this.__id) {
       try { __wjs2_net_unref(this.__id); } catch { /* entry gone 即无事 */ }
     }
-  }
-  // 事件循环派发钩子（Rust dispatch 调用；kind/data 均为字符串）
-  __ev(kind, payload) {
-    switch (kind) {
-      case "connect": {
-        try {
-          const o = JSON.parse(payload || "{}");
-          // serde SocketAddr → "ip:port"（IPv6 为 "[ip]:port"）
-          // adopt-TCP 不回填（真机 fd 复用：local 恒为 bound 值；OS 重分漂移时以预置为准）。
-          if (typeof o.local === "string" && this.__adoptPort === undefined) {
-            const m = o.local.match(/^\[?([^\]]+?)\]?:(\d+)$/);
-            if (m) { this.localAddress = m[1]; this.localPort = Number(m[2]); }
-          }
-          if (this.localAddress !== undefined && this.localAddress !== null)
-            this.localFamily = String(this.localAddress).includes(":") ? "IPv6" : "IPv4";
-        } catch {}
-        // 远端面在此发布（UDS 恒 undefined；TCP 取 __realConnect 存的目标）。
-        this.remoteAddress = this.__targetHost ?? undefined;
-        this.remotePort = this.__targetPort ?? undefined;
-        this.remoteFamily = this.remoteAddress === undefined ? undefined
-          : (String(this.remoteAddress).includes(":") ? "IPv6" : "IPv4");
-        this.__connected = true;
-        this.readable = true; this.writable = true;
-        const pend = this.__pendW; this.__pendW = [];
-        this.__pendBytes = 0;
-        for (const [u8, cb2] of pend) {
-          this.__nativeWrite(u8);
-          // bytesWritten 已在 write 时同步计入 base，此处只补写队列记账。
-          this.__sockQAdd(u8.length);
-          if (cb2) queueMicrotask(cb2);
-        }
-        if (this.__endAfterFlush) {
-          this.__endAfterFlush = false;
-          if (this.__id) __wjs2_net_end(this.__id);
-        }
-        // HE 成功：拆回落钩（此后 close 走正常路径）。
-        this.__heOnErr = null; this.__heSeq = null;
-        this.emit("connect");
-        // node 口径：connect 后同步发 'ready'（onconnection 原文；已接受端不走
-        // 此分支故不发）。旧"暂不发射"记档（§4.126 并行 -10 强相关）作废：
-        // 欠账清零要求语义到位；§4.126 禁并行压力负载后常规验证无复现。
-        this.emit("ready");
-        break;
-      }
-      case "data": {
-        const u8 = __b64dec(payload);
-        this.__ingestData(u8);
-        break;
-      }
-      case "end": {
-        this.readable = false;
-        this.__peerFin = true;
-        // 暂存先行（FIN 前到的字节先于 end 交付；无监听即留待迟挂冲刷）。
-        try { this.__flushData(); } catch { /* 监听抛错不阻收尾 */ }
-        // 池化空闲 socket 见 FIN 即销毁（半关不可复用；否则写端永活、条目永泄，
-        // 10b https 保活案；Node 同样把 end 掉的 socket 踢出池）。
-        if (this.__inPool) {
-          this.destroy();
-          break;
-        }
-        // setEncoding 残余字节 flush（分包切断的多字节尾在 end 前补齐）
-        if (this.__dec) {
-          const rest = this.__dec.end();
-          if (rest) this.emit("data", rest);
-        }
-        this.emit("end");
-        // （自动回 FIN 由构造期内部门执行，用户监听之后触发；此处不重复。）
-        // G11 半开案：allowHalfOpen 持有半开即不再续命（真机同款——读停转后
-        // 空闲句柄不 ref 循环；k9/k12 实证：ref() 也留不住，真机照常退出）。
-        // 递延一轮：end 监听内同步 destroy/auto-end 的走正常收尾通道，此处只收
-        // 无动作的稳定半开；写侧仍可用，Close 派发照常 purge 结算。
-        if (this.allowHalfOpen && !this.destroyed && this.__id) {
-          const __s = this;
-          queueMicrotask(() => {
-            if (__s.allowHalfOpen && !__s.destroyed && __s.__id && __s.__peerFin) {
-              try { __wjs2_net_halfhold(__s.__id); } catch { /* entry gone 即无事 */ }
-            }
-          });
-        }
-        break;
-      }
-      case "error": {
-        const o = JSON.parse(payload);
-        const se = __netErr(o.code, o.msg);
-        this.__hadError = true;
-        // 已销毁 socket 的迟到 teardown 噪声不 chạm 用户监听（真机口径：destroy 后
-        // 底层 RST/EOF 竞速错不再派发；write-after-close 套件双块并发下必现 flaky）。
-        if (this.destroyed) break;
-        // node connect 系标配：syscall + errno（uv 负值；ENOENT=-2/EACCES=-13/ECONNREFUSED=-61
-        // /ENOTSOCK=-38/EADDRNOTAVAIL=-49；未知 -4094；ENOTFOUND 系 getaddrinfo -3008）。
-        se.syscall = "connect";
-        se.errno = { ENOENT: -2, EACCES: -13, ECONNREFUSED: -61, ENOTSOCK: -38, EADDRNOTAVAIL: -49, EINVAL: -22, EADDRINUSE: -48 }[o.code] ?? -4094;
-        if (o.code === "ENOTFOUND") {
-          se.syscall = "getaddrinfo";
-          se.errno = -3008;
-        }
-        // node connect 错误消息形："connect CODE <target>"（target=host:port 或 path）。
-        // native msg 已是 "CODE: <os>"，此处按目标重塑（expectsError 逐字断言面）；
-        // getaddrinfo 形保留原文（dns-error 套件 node 口径）。
-        if (typeof o.msg === "string" && !o.msg.startsWith("connect ") && !o.msg.startsWith("IP(") &&
-            !o.msg.startsWith("getaddrinfo ")) {
-          const rh = this.__targetHost ?? this.remoteAddress;
-          const rp = this.__targetPort ?? this.remotePort;
-          const tgt = this.__udsTarget ?? ((rh !== undefined && rh !== null && rp !== undefined && rp !== null) ? `${rh}:${rp}` : null);
-          if (tgt) se.message = `connect ${o.code} ${tgt}`;
-        }
-        // HE 串行回落：中间地址的连接失败被钩吞（不落用户监听），close 后重试。
-        if (this.__heOnErr) { this.__heLast = se; break; }
-        // node：socket 错误经 destroy(err) 递送——'error' 监听里 destroyed 已为 true
-        // （修前 false；tls/net 回环套件 `socket.destroyed` 断言现形）。
-        this.destroyed = true; this.writable = false; this.readable = false;
-        this.emit("error", se);
-        break;
-      }
-      case "close":
-        // HE：失败尝试的 close → 推进下一地址（或末位失败收口）。
-        if (this.__heOnErr) { this.__heAdvance(); break; }
-        this.destroyed = true; this._handle = null; this.__dataBuf = [];
-        this.emit("close", this.__hadError === true); break;
-    }
-  }
-  // node 口径：pending = 尚无可用句柄——连接中 true、连接完成 false、
-  // close 后**仍为 true**（test-net-connect-buffer 'close' 处理器点名）。
-  // node 口径：net.Socket 亦有 writableEnded（remove-header 套件点名
-  // response.socket.writableEnded；end() 后 true）。
-  // node 口径 writableLength（socket 写队列积压 + 连接前缓冲；reuse-drained
-  // 套件点名 req.socket.writableLength === 0 / > 0）。
-  get writableLength() { return (this.__sockQ ?? 0) + (this.__pendBytes ?? 0); }
-  get writableEnded() { return this.__ended === true; }
-  get pending() { return !this.__connected || this.destroyed; }
-  get connecting() { return !this.__connected && !this.destroyed && this.__id > 0; }
-  // socket-connecting 套件： legacy `_connecting` 与 connecting 同值。
-  get _connecting() { return this.connecting; }
-  get readyState() {
-    if (this.destroyed) return "closed";
-    // 真机：new Socket() 未连接即 "open"（构造 readable/writable 初始真；connect 前即 open）。
-    // 连接中（__id 已发）才 "opening"。
-    if (!this.__connected && this.__id) return "opening";
-    if (this.readable && this.writable) return "open";
-    return this.readable ? "readOnly" : "writeOnly";
-  }
-  // node Socket async iterable（for await over data；end/close 终结、error 拒绝）
-  [Symbol.asyncIterator]() {
-    const st = { q: [], wake: null, done: false, err: null };
-    const push = (fn, v) => { st[fn] && 0; };
-    const onData = (c) => { st.q.push({ v: c }); if (st.wake) { st.wake(); st.wake = null; } };
-    const onDone = () => { st.done = true; if (st.wake) { st.wake(); st.wake = null; } };
-    const onErr = (e) => { st.err = e; st.done = true; if (st.wake) { st.wake(); st.wake = null; } };
-    this.on("data", onData);
-    this.on("end", onDone);
-    this.on("close", onDone);
-    this.once("error", onErr);
-    const cleanup = () => { this.off("data", onData); this.off("end", onDone); this.off("close", onDone); this.off("error", onErr); };
-    return {
-      next: () => new Promise((resolve, reject) => {
-        const step = () => {
-          if (st.q.length) resolve({ value: st.q.shift().v, done: false });
-          else if (st.err) { const e = st.err; st.err = null; cleanup(); reject(e); }
-          else if (st.done) { cleanup(); resolve({ done: true }); }
-          else st.wake = step;
-        };
-        step();
-      }),
-      return: () => { cleanup(); this.destroy(); return Promise.resolve({ done: true }); },
-      throw: (e) => { cleanup(); this.destroy(); return Promise.reject(e); },
-    };
-  }
-  // node 口径（lib/net.js writeGeneric + stream Writable.write）：
-  // destroyed/!writable → 有 cb 走 cb(err)+error 事件（返回 false），无 cb 才同步抛；
-  // err 形状：write after end / connect 未完成 → ERR_STREAM_WRITE_AFTER_END（writableLength 0），
-  // 其余 destroyed → ERR_STREAM_DESTROYED。§4.119 同源：包装/状态检查不吞场景口径。
-  __writeErr(cb2) {
-    const ended = this.__ended === true || this.__finSent === true;
-    const code = ended ? "ERR_STREAM_WRITE_AFTER_END" : "ERR_STREAM_DESTROYED";
-    const e = __netErr(code, ended ? "write after end" : "Cannot call write after a stream was destroyed");
-    if (typeof cb2 === "function") { queueMicrotask(() => { try { cb2.call(this, e); } catch {} }); return false; }
-    throw e;
-  }
-  write(data, enc, cb) {
-    const cb2 = typeof enc === "function" ? enc : cb;
-    // net 口径（write-after-end-nt 套件真机形）：本地已 end 且对端已 FIN 后再写
-    // → Error EPIPE 'This socket has been ended by the other party'——cb 与 error
-    // 事件都下一 tick。两条件缺一不可：仅对端 FIN（writable 套件 'end' 后写）
-    // 与仅本地 end（G7 write-after-end 形 STREAM_WRITE_AFTER_END）都不走此路。
-    if (this.__peerFin === true && this.__ended === true && this.allowHalfOpen !== true) {
-      const e = new Error("This socket has been ended by the other party");
-      e.code = "EPIPE"; e.errno = 32; e.syscall = "write";
-      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e); } catch {} });
-      queueMicrotask(() => this.emit("error", e));
-      return false;
-    }
-    // 真机逐字（writable.js _write）：仅 null → ERR_STREAM_NULL_VALUES（undefined 落
-    // ARG_TYPE 'Received undefined'）；chunk 类型校验先于 after-end/destroyed 状态检查。
-    if (data === null) {
-      const e = new TypeError("May not write null values to stream");
-      e.code = "ERR_STREAM_NULL_VALUES";
-      if (typeof cb2 === "function") { queueMicrotask(() => { try { cb2.call(this, e); } catch {} }); return false; }
-      throw e;
-    }
-    const u8 = __chunkU8(data, typeof enc === "string" ? enc : undefined);
-    if (this.destroyed || !this.writable) return this.__writeErr(cb2);
-    // node 口径（write-after-close 套件双形，真机 26 实测均为异步 error 事件非同步抛）：
-    // 已连接但 _handle 被置空后写 → ERR_SOCKET_CLOSED('Socket is closed')；
-    // _handle.close() 后（柄关而对象在）写 → Error('write EBADF'，win 系 EPIPE)。
-    if (this.__connected && this._handle === null) {
-      const e2 = new Error("Socket is closed"); e2.code = "ERR_SOCKET_CLOSED";
-      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e2); } catch {} });
-      queueMicrotask(() => this.emit("error", e2));
-      return false;
-    }
-    if (this.__handleClosed === true) {
-      const e = new Error(`write ${typeof process !== "undefined" && process.platform === "win32" ? "EPIPE" : "EBADF"}`);
-      if (typeof cb2 === "function") queueMicrotask(() => { try { cb2.call(this, e); } catch {} });
-      queueMicrotask(() => this.emit("error", e));
-      return false;
-    }
-    this.__bwBase += u8.length;
-    this.__bwSub(u8.length);
-    if (!this.__connected) {
-      // node 口径：连接完成前 write 缓冲（connect 完成时按序冲刷）
-      this.__pendW.push([u8, cb2]);
-      this.__pendBytes += u8.length;
-      return u8.length + this.__pendBytes - u8.length <= this._writableState.highWaterMark;
-    }
-    this.__nativeWrite(u8);
-    // 记账：底层同步写队列，无 flush 语义，回调即刻（排空/drain 见 __sockQAdd）。
-    const __wret = this.__sockQAdd(u8.length);
-    if (cb2) queueMicrotask(cb2);
-    return __wret;
   }

@@ -388,7 +388,7 @@ pub unsafe extern "C" fn tls_connect(
                     )
                 };
                 let _ = ev_tx.send(NetEvent { id, kind: NetKind::TlsInfo { json: info } });
-                let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None } });
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None, peer: None } });
                 let (r, w) = tokio::io::split(tls);
                 spawn_pumps(id, TlsCleanEof(r), w, ev_tx, cmd_rx);
             }

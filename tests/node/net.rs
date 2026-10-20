@@ -115,7 +115,8 @@ fn net_http_stream_stubs() {
         .args(["--eval",
         r#"const net = await import("node:net"); const http = await import("node:http");
 const s = new net.Socket();
-console.log("sock", s.pause() === s, s.resume() === s, s.setTimeout() === s, s.read() === null, s.cork() === s, s.uncork() === s, s.setNoDelay() === s, s.setKeepAlive() === s);
+console.log("sock", s.pause() === s, s.resume() === s, s.setTimeout(0) === s, s.read() === null, s.cork() === s, s.uncork() === s, s.setNoDelay() === s, s.setKeepAlive() === s);
+try { s.setTimeout(); console.log("BAD st-noarg"); } catch (e) { console.log("st-noarg", e.code); }
 console.log("isip", net.isIP("127.0.0.1"), net.isIP("::1"), net.isIP("nope"), net.isIPv4("1.2.3.4"), net.isIPv6("::1"));
 const req = new http.IncomingMessage();
 console.log("req", req.pause() === req, req.resume() === req, req.read() === null);
@@ -126,7 +127,7 @@ console.log("res", res.cork() === res, res.uncork() === res);"#])
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        "sock true true true true true true true true\nisip 4 6 0 true true\nreq true true true\nres true true\n"
+        "sock true true true true true true true true\nst-noarg ERR_INVALID_ARG_TYPE\nisip 4 6 0 true true\nreq true true true\nres true true\n"
     );
 }
 
@@ -217,6 +218,118 @@ console.log("fam", net.getDefaultAutoSelectFamily());
     assert!(out.contains("pre false false"), "out: {out}");
     assert!(out.contains("endn 1"), "out: {out}");
     assert!(out.contains("fam true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn net_reset_rst_faces() {
+    // P1：resetAndDestroy——已连接发 RST（对端 ECONNRESET，本端无 error）；
+    // 空闲调即 ERR_SOCKET_CLOSED；链式返回自身。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const idle = new net.Socket();
+idle.on("error", (e) => console.log("idle-err", e.code));
+idle.on("close", () => console.log("idle-close"));
+idle.resetAndDestroy();
+const server = net.createServer((sock) => {
+  sock.on("error", (e) => console.log("srv-err", e.code));
+  sock.on("close", () => { console.log("srv-close"); server.close(); });
+});
+server.listen(0, "127.0.0.1", () => {
+  const c = net.connect(server.address().port, "127.0.0.1", () => {
+    c.on("error", () => console.log("BAD cli error"));
+    c.on("close", () => console.log("cli-close"));
+    console.log("chain", c.resetAndDestroy() === c);
+  });
+});
+"#,
+    );
+    assert!(out.contains("idle-err ERR_SOCKET_CLOSED"), "out: {out}");
+    assert!(out.contains("idle-close"), "out: {out}");
+    assert!(out.contains("chain true"), "out: {out}");
+    assert!(out.contains("cli-close"), "out: {out}");
+    assert!(out.contains("srv-err ECONNRESET"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(!out.contains("BAD"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn net_lookup_event_faces() {
+    // P1：'lookup' 事件——主机名成功（null+ip+family+host）；IP 字面不发；
+    // 坏域名失败（err+undefined）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const server = net.createServer((sock) => { sock.end(); });
+server.listen(0, "127.0.0.1", () => {
+  const port = server.address().port;
+  const c1 = net.connect(port, "localhost");
+  c1.on("lookup", (err, ip, type, host) => console.log("named", err, typeof ip === "string", type === 4 || type === 6, host));
+  c1.on("error", () => {});
+  const c2 = net.connect(port, "127.0.0.1");
+  c2.on("lookup", () => console.log("BAD literal"));
+  c2.on("error", () => {});
+  c2.on("close", () => {
+    const c3 = net.connect(42, "*".repeat(64));
+    c3.on("lookup", (err, ip, type) => console.log("bad", err && err.code, ip, type));
+    c3.on("error", () => {});
+    c3.on("close", () => server.close());
+  });
+});
+"#,
+    );
+    assert!(out.contains("named null true true localhost"), "out: {out}");
+    assert!(!out.contains("BAD literal"), "out: {out}");
+    assert!(out.contains("bad ENOTFOUND undefined undefined"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn net_epipe_write_faces() {
+    // P1：对端 FIN 后写 EPIPE（cb+error）；销毁后写同步抛 DESTROYED；
+    // setTimeout 非法值校验。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import net from "node:net";
+const s = new net.Socket();
+try { s.setTimeout("100"); } catch (e) { console.log("st", e.code); }
+try { s.setTimeout(-1); } catch (e) { console.log("stn", e.code); }
+const server = net.createServer((sock) => {
+  sock.on("data", () => {});
+  sock.on("error", (e) => console.log("srv-err", e.code));
+  sock.on("end", () => {
+    setImmediate(() => {
+      sock.write("x", (er) => console.log("wcb", er && er.code));
+      sock.on("close", () => server.close());
+    });
+  });
+});
+server.listen(0, "127.0.0.1", () => {
+  const c = net.connect(server.address().port, "127.0.0.1");
+  c.on("error", () => {});
+  c.end("hi");
+  c.on("close", () => {
+    try { c.write("late"); } catch (e) { console.log("wae", e.code); }
+  });
+});
+"#,
+    );
+    assert!(out.contains("st ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("stn ERR_OUT_OF_RANGE"), "out: {out}");
+    assert!(out.contains("wcb EPIPE"), "out: {out}");
+    assert!(out.contains("srv-err EPIPE"), "out: {out}");
+    assert!(out.contains("wae ERR_STREAM_DESTROYED"), "out: {out}");
     dir.close().unwrap();
 }
 
@@ -521,7 +634,12 @@ for (const v of [true, 1, [], {}]) {
   catch (e) { console.log("chunk", e.code, e.message.startsWith('The "chunk" argument')); }
 }
 console.log("reset", typeof socket.resetAndDestroy);
-const srv = net.createServer((sock) => { sock.resume(); sock.on("data", () => {}); });
+const srv = net.createServer((sock) => {
+  sock.resume(); sock.on("data", () => {});
+  // node 真机同：对端 resetAndDestroy 即 RST，本端读侧 ECONNRESET（无监听即崩，
+  // 此处断言形状）。
+  sock.on("error", (e) => console.log("srv-reset", e.code));
+});
 srv.listen(0, "127.0.0.1", () => {
   const c = net.connect(srv.address().port, "127.0.0.1", () => {
     c.on("error", () => console.log("BAD reset error"));
@@ -537,6 +655,7 @@ srv.listen(0, "127.0.0.1", () => {
     assert!(out.contains("chunk ERR_INVALID_ARG_TYPE true"), "out: {out}");
     assert!(out.contains("reset function"), "out: {out}");
     assert!(out.contains("reset-close"), "out: {out}");
+    assert!(out.contains("srv-reset ECONNRESET"), "out: {out}");
     assert!(!out.contains("BAD"), "out: {out}");
     dir.close().unwrap();
 }

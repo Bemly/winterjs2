@@ -438,11 +438,13 @@
     try { this._closed = true; } catch {}
     // node 口径：暂停的服务端 req 随 res 收尾唤醒（req-res-close 套件：无 data
     // 监听时 req 'end' 在 res-close 之后；有监听即 flowing 不受影响。升级/
-    // 劫持形无 st 即跳过）。
+    // 劫持形无 st 即跳过）。用 res 自身 req 引用（__onDone 先清 st.req，
+    // 此处再查 st 必空——server-keepalive-end 套件实录）。
     try {
       const __ss = this.__sock;
       const __st = __ss !== null && __ss !== undefined ? __ss.__httpState : null;
-      const __rq = __st !== null && __st !== undefined ? __st.req : null;
+      const __rq = (this.req !== undefined && this.req !== null) ? this.req :
+        ((__st !== null && __st !== undefined) ? __st.req : null);
       if (__rq !== null && __rq !== undefined && !__rq.destroyed &&
           typeof __rq.resume === "function") {
         try { __rq.resume(); } catch { /* 唤醒永不阻收尾 */ }

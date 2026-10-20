@@ -93,6 +93,20 @@
             req.headersDistinct = headersDistinct;
           req.socket = sock;
           req.connection = sock;
+          // node parser.incoming 口径（server-keepalive-end 套件）：派发即指向
+          // 本 req；req 'end' 后递延清零（'end' 内断言仍见 req，nextTick 后为
+          // null——clearIncoming 同款。once 自摘，不污染 listenerCount 断言）。
+          try {
+            if (sock.parser !== undefined && sock.parser !== null) {
+              sock.parser.incoming = req;
+              req.once("end", () => {
+                const __p = sock.parser;
+                process.nextTick(() => {
+                  try { if (__p !== undefined && __p !== null && __p.incoming === req) __p.incoming = null; } catch { /* gone */ }
+                });
+              });
+            }
+          } catch { /* gone */ }
           // 背压恢复钩（node IncomingMessage._read → readStart 口径）：消费端
           // 拉数据即解暂停续读（__feed 置 st.__reqPaused 后在此恢复；
           // no-read-no-dump 流控面——只 pause 不恢复即永不续读）。

@@ -207,6 +207,65 @@ console.log("nocert", tls.createServer({{}}) instanceof tls.Server);
 }
 
 #[test]
+fn tls_peer_certificate_pubkey_material() {
+    // N1：legacy 19 键——RSA modulus/exponent/bits + EC asn1Curve/nistCurve/bits +
+    // pubkey（RSA 取 SPKI 整段、EC 取点字节）；N/A 键显式 undefined 不缺席。
+    let out = run_fs_file(
+        &assert_fs::TempDir::new().unwrap(),
+        "s.mjs",
+        r#"
+import { X509Certificate } from "node:crypto";
+const RSA = `-----BEGIN CERTIFICATE-----
+MIIC6jCCAdKgAwIBAgIUaN+vftnBZXfz3MBulRhR01+kaq4wDQYJKoZIhvcNAQEL
+BQAwFTETMBEGA1UEAwwKbjFyc2EudGVzdDAeFw0yNjEwMjAxMzA3MThaFw0yNjEw
+MjIxMzA3MThaMBUxEzARBgNVBAMMCm4xcnNhLnRlc3QwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQC5km8B1houPkBjrc/51z/9DcdWokppQxdtdLKAT+Qe
+qV+uSb+P0lMDvqJYn7ZeSULm3wc1f8b/LLfyf4O9jBsBTR0j2I1m6Byr3HWhCaF8
+XyaeTt002t3MPwAtbrv7rkAF3YakgDOdAbCbNCJ//C63FuS9rASgeyJ6EUYZg8gS
+j4PWyQNCJHjeBHRd4IBlMWlpTHrhOJLVLDAZidMkZOsFNdI7yWUz0QJYWLVwJ6Ff
+ro2XDzbCDtidwALWst1T6GdWlL3bCYCJqWUAVvStmCT0Gx0Rt6OCBAY2Jqq/+52g
+g4gP3Rxlww0kpqyluMeJ5JiuxEy4PiyehYMMgsXHC7HpAgMBAAGjMjAwMB0GA1Ud
+DgQWBBRYXXH+bBpWJp3UeeZt8rEFOirCXjAPBgNVHRMBAf8EBTADAQH/MA0GCSqG
+SIb3DQEBCwUAA4IBAQCRvRsptGAH2FM4NmFucGRkGt1x9BzmElWCPBiibhsaPCVn
+CmF/A99zLTV4Hwq5o1oIOeCd//mvZQR9p8YUo3RN35FgkeFFxSzPuZNSHu/CMD/f
+2TGWWHr1vh1+/7bGDixEg+VlVCqW0tc6Ura4UZc6a1htWPFZ99ficgC6xDgAhG1O
+4VcWksScvplWt921PQQFtWMdzHJn3ty4FLfAlfST4sseoXoskgdOnX39FDFMzWAz
+ilp0xT/z1OgjOJ+MZx+Ooli2ZHoRtWT8qMkvPnaRLuFPoWcVDeOJ7xCv+32O1SAR
+knJVGia4eYgFRkK6k1o6cMFzimsmNbizkyLM4hQp
+-----END CERTIFICATE-----`;
+const EC = `-----BEGIN CERTIFICATE-----
+MIIBXDCCAQKgAwIBAgIUQtKwLQdCGGkYDqtpykn0yfzpb40wCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJbjFlYy50ZXN0MB4XDTI2MTAyMDEzMDcxOFoXDTI2MTAyMjEz
+MDcxOFowFDESMBAGA1UEAwwJbjFlYy50ZXN0MFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAEx8Pt/7BV54e8cKGdz9fnGrcFherMtcsRfBmbtORbqxb4kiSL4JCc4ohP
+YpRIMxeW75HzwjuTBtSMHyTpeSX/76MyMDAwHQYDVR0OBBYEFLukrMBRUTfqGBmU
+60tutZp55JdEMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgVHuX
+wTqTIrfpS4vDX0pLLMgSl7SSU4i6xQdVSX8ZdtkCIQC0R9cplTTBhx+a9bQ1dolE
+mH8YMtIgHKRp+fIzIGwitA==
+-----END CERTIFICATE-----`;
+// 正常：RSA 七键形（interp：modulus 大写 512、exponent 0x10001、SPKI 头 0x30）。
+const rsa = new X509Certificate(RSA).toLegacyObject();
+console.log("rsa", Object.keys(rsa).length, rsa.bits, rsa.exponent, rsa.asn1Curve, rsa.nistCurve, rsa.ext_key_usage, rsa.modulus.length, rsa.pubkey.length, rsa.pubkey[0], /^[0-9A-F]+$/.test(rsa.modulus));
+// 正常：EC 七键形（点头 0x04、65B）。
+const ec = new X509Certificate(EC).toLegacyObject();
+console.log("ec", ec.bits, ec.asn1Curve, ec.nistCurve, ec.exponent, ec.modulus, ec.pubkey.length, ec.pubkey[0]);
+// 报错：坏块抛 PEM 行错码。
+try { new X509Certificate("zz"); console.log("bad NO-THROW"); } catch (e) { console.log("bad", e.code); }
+// 边界：19 键定序与真机一致。
+console.log("order", JSON.stringify(Object.keys(rsa)) === JSON.stringify(["subject","issuer","subjectaltname","infoAccess","ca","modulus","exponent","pubkey","bits","valid_from","valid_to","fingerprint","fingerprint256","fingerprint512","ext_key_usage","serialNumber","raw","asn1Curve","nistCurve"]));
+"#,
+    );
+    for line in [
+        "rsa 19 2048 0x10001 undefined undefined undefined 512 294 48 true",
+        "ec 256 prime256v1 P-256 undefined undefined 65 4",
+        "bad ERR_OSSL_PEM_NO_START_LINE",
+        "order true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+}
+
+#[test]
 fn tls_secure_context_validation() {
     // P2（2026-09-26）：SecureContext/createSecureContext/configSecureContext 按 node 逐字移植——
     // 选项校验、OpenSSL 可观察报错（未知方法 / no cipher match / 密钥不配对）、Server 构造器校验、

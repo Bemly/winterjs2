@@ -2202,6 +2202,30 @@ G1/G2/G3/G9 已收官。）
   余红（sni-option/servername/server-client/empty-sni）皆服务端选链
   （`no server certificate chain resolved`）即 addContext 未下沉 bound，不在 N2 内。
 
+## 2026-10-20 N1 公钥七键落地（x509-cert 0.3 复用，零新依赖）
+
+- 轮子结论：树内 `x509-cert = "0.3"`（直引）+ `der = "0.8"`（直引）足够——
+  SPKI 算法 OID/参数/BIT STRING 全公开可读，RSA 内层 PKCS#1 由 `der_tlv` 手工取，
+  曲线名/端口径静态表，无需新 crate，不走 dependencies3 追加。
+- node 形状（探针实证）：RSA（bits 2048/exp `0x10001`/modulus 大写 512 无前缀/
+  pubkey 取 SPKI 整段 294B）/ EC（asn1Curve `prime256v1`/nistCurve `P-256` 字符串形/
+  bits 256/pubkey 取点字节 65B 头 `0x04`）/ 他族（Ed25519 七键全 undefined）/
+  EKU 缺席 undefined、有值点分 OID 数组 / 19 键恒在定序（N/A 显式 undefined 不缺席）。
+- 修法：`crypto_x509.rs` `x509_parse` 增 pkBits/pkExp/pkMod/pkCurveAsn1/pkCurveNist/
+  pkPointB64（RSA der_tlv 取模幂 + BN_bn2hex 去前导零字符口径；EC parameters 解
+  曲线 OID + 点字节 b64；AIA 1.3.6.1.5.5.7.1.1→infoAccess OCSP/CA-Issuers 表；
+  subject/issuerObj 多值 RDN 数组化）+ `crypto_pqx509.js` `toLegacyObject` 19 键定序
+  透传（含 subjectaltname 空值 undefined 化）+ 构造器垃圾串改 PEM 行错
+  （旧 `ERR_INVALID_ARG_VALUE` 系偏差，x509 黑盒旧断言同步翻转）+
+  附带服务端自持首证 `__ownCert`（wrap/派发双路，multi-keys 套件）。
+- 验证：node 套件 `peer-certificate`（pubkey 哈希钉死 + OCSP URI + 链）/
+  `peer-certificate-multi-keys`（OU 数组 + 服务端自持）双转绿；
+  黑盒 `tls_peer_certificate_pubkey_material`（RSA/EC/坏块/定序）绿；
+  `--test node tls_` 14/14、`x509` 6/6、`builtins` 41/41；冒烟 5/5；双守门绿。
+  出界记档（非 N1）：`getcertificate-x509` 需 X509 链解析（issuerCertificate 挂链）、
+  `client-getephemeralkeyinfo` 需 DH 临时密钥面（rustls 无 DHE/无临时密钥 API），
+  另轮定级。
+
 
 
 

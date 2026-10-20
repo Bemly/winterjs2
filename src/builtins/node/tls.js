@@ -444,6 +444,13 @@ class TLSSocket extends Socket {
       const cert = cert0 !== undefined && extra0 !== undefined ? cert0 + "\n" + extra0 : cert0;
       if (key !== undefined) wire.key = key;
       if (cert !== undefined) wire.cert = cert;
+      // N1 附带：服务端自持首证 DER-b64（getCertificate/multi-keys 套件；出示链取首块；
+      // 仅 PEM 形，DER 原字节不动——白名单外不碰）。
+      if (cert0 !== undefined && String(cert0).includes("-----BEGIN CERTIFICATE-----")) {
+        const body = String(cert0).split("-----END CERTIFICATE-----")[0]
+          .replace(/-----(BEGIN|END) CERTIFICATE-----/g, "").replace(/\s+/g, "");
+        if (body !== "") this.__ownCert = body;
+      }
       if (typeof mo.SNICallback === "function") this.__SNICB = mo.SNICallback;
     } else {
       // node：servername 缺省 host（host 为 IP 禁设）。
@@ -813,6 +820,15 @@ class Server extends EventEmitter {
         s.server = this;
         s.__tlsServer = this;
         s.authorized = false;
+        // N1 附带：派发面服务端自持首证（同 __wrapWire 服务端面；multi-keys 套件）。
+        try {
+          const pem = this.__tlsOpts?.secureContext?.context?.cert ?? this.__tlsOpts?.cert;
+          if (typeof pem === "string" && pem.includes("-----BEGIN CERTIFICATE-----")) {
+            const body = pem.split("-----END CERTIFICATE-----")[0]
+              .replace(/-----(BEGIN|END) CERTIFICATE-----/g, "").replace(/\s+/g, "");
+            if (body !== "") s.__ownCert = body;
+          }
+        } catch { /* 取不到即无自持 */ }
         this.__conns = (this.__conns ?? 0) + 1;
         s.once("close", () => { this.__conns = Math.max(0, (this.__conns ?? 1) - 1); });
         // node：connection 在 TCP accept 即发（握手未定）；secureConnection 由

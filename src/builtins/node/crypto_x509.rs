@@ -99,6 +99,14 @@ fn hex_colon(bytes: &[u8]) -> String {
     out
 }
 
+/// INTEGER 前导零字节剥离（node bignum 十六进制无前导零口径）。
+fn strip_leading_zeros(mut s: &[u8]) -> &[u8] {
+    while s.len() > 1 && s[0] == 0 {
+        s = &s[1..];
+    }
+    s
+}
+
 /// `__wjs2_x509_parse(derU8)` → 证书 JSON（字段见 9e-1d；SAN/用法齐备；
 /// 9i-3 增 `ca`（BasicConstraints）与 `spkiB64`（公钥重建），验签底座走 `__wjs2_x509_verify`）。
 pub unsafe extern "C" fn x509_parse(
@@ -164,6 +172,9 @@ pub unsafe extern "C" fn x509_parse(
     let mut key_usage: Option<Vec<String>> = None;
     let mut ext_key_usage: Option<Vec<String>> = None;
     let mut ca = false;
+    // N1 AuthorityInfoAccess（legacy infoAccess：{"OCSP - URI":[…], "CA Issuers - URI":[…]}；
+    // 缺席即 null；位置只收 URI/DNS/邮箱串形）。
+    let mut info_access: Option<serde_json::Map<String, serde_json::Value>> = None;
     if let Some(exts) = tbs.extensions() {
         for ext in exts.iter() {
             let oid = ext.extn_id.to_string();
@@ -243,11 +254,63 @@ pub unsafe extern "C" fn x509_parse(
                 if let Ok(eku) = Vec::<der::asn1::ObjectIdentifier>::from_der(bytes) {
                     ext_key_usage = Some(eku.iter().map(|o| o.to_string()).collect());
                 }
+            } else if oid == "1.3.6.1.5.5.7.1.1" {
+                use x509_cert::ext::pkix::name::GeneralName;
+                if let Ok(aia) = x509_cert::ext::pkix::AuthorityInfoAccessSyntax::from_der(bytes) {
+                    let mut map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+                    for ad in aia.0.iter() {
+                        let key = match ad.access_method.to_string().as_str() {
+                            "1.3.6.1.5.5.7.48.1" => "OCSP - URI",
+                            "1.3.6.1.5.5.7.48.2" => "CA Issuers - URI",
+                            _ => continue,
+                        };
+                        let loc = match &ad.access_location {
+                            GeneralName::UniformResourceIdentifier(s) => Some(s.to_string()),
+                            GeneralName::DnsName(s) => Some(s.to_string()),
+                            GeneralName::Rfc822Name(s) => Some(s.to_string()),
+                            _ => None,
+                        };
+                        if let Some(loc) = loc {
+                            map.entry(key.to_owned())
+                                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                                .as_array_mut()
+                                .map(|a| a.push(serde_json::Value::String(loc)));
+                        }
+                    }
+                    if !map.is_empty() {
+                        info_access = Some(map);
+                    }
+                }
             }
         }
     }
+    // N1 多值 RDN（multi-keys 套件：同名属性两次出现即数组，单值仍字符串）。
     let obj_of = |pairs: &[(String, String)]| -> serde_json::Map<String, serde_json::Value> {
-        pairs.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect()
+        let mut map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        for (k, v) in pairs.iter() {
+            match map.remove(k) {
+                None => {
+                    map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                }
+                Some(serde_json::Value::String(s)) => {
+                    map.insert(
+                        k.clone(),
+                        serde_json::Value::Array(vec![
+                            serde_json::Value::String(s),
+                            serde_json::Value::String(v.clone()),
+                        ]),
+                    );
+                }
+                Some(serde_json::Value::Array(mut a)) => {
+                    a.push(serde_json::Value::String(v.clone()));
+                    map.insert(k.clone(), serde_json::Value::Array(a));
+                }
+                Some(other) => {
+                    map.insert(k.clone(), other);
+                }
+            }
+        }
+        map
     };
     // SPKI DER（`x509.publicKey` 重建公钥 KeyObject 用；der::Encode 忠实重编）
     use der::Encode as _;
@@ -260,6 +323,80 @@ pub unsafe extern "C" fn x509_parse(
                 return false;
             }
         }
+    };
+    // N1 公钥材料（tls getPeerCertificate 19 键：RSA modulus/exponent/bits、
+    // EC asn1Curve/nistCurve/bits、pubkey；x509-cert 0.3 + der 0.8 零新依赖）。
+    let spki = tbs.subject_public_key_info();
+    let alg = spki.algorithm.oid.to_string();
+    // (pkAlg, bits, exponent"0x…" , modulus大写, curveAsn1, curveNist, pointB64)
+    let (pk_bits, pk_exp, pk_mod, pk_curve_asn1, pk_curve_nist, pk_point_b64): (
+        Option<u64>, Option<String>, Option<String>, Option<&str>, Option<&str>, Option<String>,
+    ) = if alg == "1.2.840.113549.1.1.1" || alg == "1.2.840.113549.1.1.10" {
+        // RSA：BIT STRING 内层即 PKCS#1 SEQUENCE{modulus, exponent}（der_tlv 手工取，
+        // INTEGER 去前导零；node modulus 大写无前缀、exponent 0x 前缀、bits 为模比特长）。
+        let mut out = (None, None, None, None, None, None);
+        let inner = spki.subject_public_key.raw_bytes();
+        if let Some((_, ohl, _)) = crate::builtins::crypto::der_tlv(inner) {
+            let mut rest = &inner[ohl..];
+            let mut ints: Vec<&[u8]> = Vec::new();
+            for _ in 0..2 {
+                if rest.is_empty() || rest[0] != 0x02 {
+                    break;
+                }
+                let Some((_, hl, cl)) = crate::builtins::crypto::der_tlv(rest) else {
+                    break;
+                };
+                if rest.len() < hl + cl {
+                    break;
+                }
+                ints.push(&rest[hl..hl + cl]);
+                rest = &rest[hl + cl..];
+            }
+            if ints.len() == 2 {
+                // node BN_bn2hex 口径：十六进制去前导零字符（至少留一位）；
+                // exponent 另加 0x 前缀，modulus 裸大写。
+                let hex_nib = |b: &[u8]| -> String {
+                    let t = hex_upper(strip_leading_zeros(b)).trim_start_matches('0').to_owned();
+                    if t.is_empty() { "0".to_owned() } else { t }
+                };
+                let m = strip_leading_zeros(ints[0]);
+                let e = strip_leading_zeros(ints[1]);
+                let bits = if m.is_empty() {
+                    0
+                } else {
+                    ((m.len() - 1) * 8 + (8 - m[0].leading_zeros() as usize)) as u64
+                };
+                out = (Some(bits), Some(format!("0x{}", hex_nib(e))), Some(hex_nib(m)), None, None, None);
+            }
+        }
+        out
+    } else if alg == "1.2.840.10045.2.1" {
+        // EC：parameters 即命名曲线 OID（真机 OpenSSL 名）；pubkey 取 BIT STRING
+        // 内容（非压缩点形，非 SPKI）。
+        let mut curve: Option<String> = None;
+        if let Some(params) = spki.algorithm.parameters.as_ref() {
+            if let Ok(oid) = params.decode_as::<der::asn1::ObjectIdentifier>() {
+                curve = Some(oid.to_string());
+            }
+        }
+        let (asn1, nist, bits) = match curve.as_deref() {
+            Some("1.2.840.10045.3.1.7") => (Some("prime256v1"), Some("P-256"), Some(256)),
+            Some("1.3.132.0.34") => (Some("secp384r1"), Some("P-384"), Some(384)),
+            Some("1.3.132.0.35") => (Some("secp521r1"), Some("P-521"), Some(521)),
+            Some("1.3.132.0.10") => (Some("secp256k1"), None, Some(256)),
+            _ => (None, None, None),
+        };
+        use base64::Engine as _;
+        (
+            bits,
+            None,
+            None,
+            asn1,
+            nist,
+            Some(base64::engine::general_purpose::STANDARD.encode(spki.subject_public_key.raw_bytes())),
+        )
+    } else {
+        (None, None, None, None, None, None)
     };
     let json = serde_json::json!({
         "subject": subject,
@@ -279,8 +416,15 @@ pub unsafe extern "C" fn x509_parse(
         "subjectAltName": if san_parts.is_empty() { None } else { Some(san_parts.join(", ")) },
         "keyUsage": key_usage,
         "extKeyUsage": ext_key_usage,
+        "infoAccess": info_access,
         "ca": ca,
         "spkiB64": spki_b64,
+        "pkBits": pk_bits,
+        "pkExp": pk_exp,
+        "pkMod": pk_mod,
+        "pkCurveAsn1": pk_curve_asn1,
+        "pkCurveNist": pk_curve_nist,
+        "pkPointB64": pk_point_b64,
     })
     .to_string();
     set_rval_str(&mut cx, &frame, &json);

@@ -1,4 +1,5 @@
-//! tests/node/readline.rs — 对齐 src/builtins/node/readline.rs（node:readline）。
+//! tests/node/readline.rs — 对齐 src/builtins/node/readline.rs（node:readline）
+//! + readline_promises.rs（node:readline/promises）。
 
 use crate::helpers::*;
 
@@ -186,7 +187,7 @@ setTimeout(() => console.log("end-ok"), 300);
 "#,
     );
     for line in [
-        "keys [[\"a\",\"a\",false,false,false,null],[\"\\r\",\"return\",false,false,false,null],[\"\",\"backspace\",false,false,false,null],[null,\"up\",false,false,false,\"[A\"],[\"\\u0003\",\"c\",true,false,false,null],[\"\\u001bx\",\"x\",false,true,false,null],[\"\\n\",\"enter\",false,false,false,null]]",
+        "keys [[\"a\",\"a\",false,false,false,null],[\"\\r\",\"return\",false,false,false,null],[\"\",\"backspace\",false,false,false,null],[null,\"up\",false,false,false,\"[A\"],[\"\\u0003\",\"c\",true,false,false,null],[null,\"x\",false,true,false,null],[\"\\n\",\"enter\",false,false,false,null]]",
         "v-obj TypeError undefined",
         "v-none TypeError undefined",
         "v-pos function",
@@ -298,5 +299,324 @@ import { Readable } from "node:stream";
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
+    dir.close().unwrap();
+}
+
+#[test]
+fn readline_cursor_top_faces() {
+    // 顶层光标件（node internal/readline/callbacks.js 口径）：
+    // 正常：四件写序列 + 回 true；报错：非法回调 TypeError、NaN x/y 数错、
+    // x 非数而 y 是数即 ERR_INVALID_CURSOR_POS；边界：null 流即回 true。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        r#"
+import readline, { cursorTo, clearLine, clearScreenDown, moveCursor } from "node:readline";
+import { PassThrough } from "node:stream";
+const o = new PassThrough();
+let shown = "";
+o.on("data", (c) => (shown += c));
+// 正常
+console.log("cur", cursorTo(o, 1, 1), JSON.stringify(shown));
+shown = "";
+console.log("clr", clearLine(o, -1), clearLine(o, 1), clearLine(o, 0), JSON.stringify(shown));
+shown = "";
+console.log("csd", clearScreenDown(o), JSON.stringify(shown));
+shown = "";
+console.log("mv", moveCursor(o, 2, -1), JSON.stringify(shown));
+// 报错
+for (const fn of [
+  () => cursorTo(o, 1, 1, null),
+  () => clearLine(o, 0, null),
+  () => clearScreenDown(o, null),
+  () => moveCursor(o, 1, 1, null),
+]) {
+  try { fn(); console.log("cb FAIL"); }
+  catch (e) { console.log("cb", e.code); }
+}
+for (const [x, y] of [[NaN, undefined], [1, NaN], ["a", undefined]]) {
+  try { cursorTo(o, x, y); console.log("nan FAIL"); }
+  catch (e) { console.log("nan", e.code); }
+}
+try { cursorTo(o, "a", 1); console.log("pos FAIL"); }
+catch (e) { console.log("pos", e.code); }
+// 边界：null 流 / 零位移（均回 true、无写）
+console.log("null", cursorTo(null), clearLine(null, 0), clearScreenDown(null), moveCursor(null, 1, 1));
+shown = "";
+console.log("zero", moveCursor(o, 0, 0), JSON.stringify(shown));
+"#,
+    );
+    for line in [
+        "cur true \"\\u001b[2;2H\"",
+        "clr true true true \"\\u001b[1K\\u001b[0K\\u001b[2K\"",
+        "csd true \"\\u001b[0J\"",
+        "mv true \"\\u001b[2C\\u001b[1A\"",
+        "cb ERR_INVALID_ARG_TYPE",
+        "cb ERR_INVALID_ARG_TYPE",
+        "cb ERR_INVALID_ARG_TYPE",
+        "cb ERR_INVALID_ARG_TYPE",
+        "nan ERR_INVALID_ARG_VALUE",
+        "nan ERR_INVALID_ARG_VALUE",
+        "nan ERR_INVALID_ARG_VALUE",
+        "pos ERR_INVALID_CURSOR_POS",
+        "null true true true true",
+        "zero true \"\"",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
+fn readline_promises_readline_faces() {
+    // node:readline/promises Readline（链式游标写器）：
+    // 正常：链式 + commit 落盘 + rollback 弃置 + clearLine/moveCursor/cursorTo
+    // 序列；报错：非 Writable 构造 TypeError、cursorTo 非数 TypeError、
+    // clearLine 越界 RangeError、_write 同步抛即 commit 拒收；边界：autoCommit
+    // 异步落盘、moveCursor(0,0) 空写。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Readline } from "node:readline/promises";
+import { Writable } from "node:stream";
+class T extends Writable {
+  constructor() { super(); this.data = ""; }
+  _write(c, e, cb) { this.data += c.toString(); cb(); }
+}
+const w = new T();
+const r = new Readline(w);
+console.log("chain", r === r.moveCursor(0, 0) && r === r.rollback());
+await r.cursorTo(1).commit();
+console.log("cur", JSON.stringify(w.data));
+w.data = "";
+await r.clearScreenDown().rollback();
+console.log("rollback", JSON.stringify(w.data));
+await r.clearLine(-1).commit();
+console.log("clr", JSON.stringify(w.data));
+w.data = "";
+await r.moveCursor(1, 1).commit();
+await r.cursorTo(1, 2).commit();
+console.log("mv", JSON.stringify(w.data));
+// 报错
+for (const v of [undefined, null, 0, 1n, true, Symbol(), "", {}, () => {}]) {
+  try { new Readline(v); console.log("ctor FAIL"); }
+  catch (e) { if (e.code !== "ERR_INVALID_ARG_TYPE") console.log("ctor BAD " + e.code); }
+}
+console.log("ctor-ok");
+for (const v of [undefined, "a", NaN, 1.1]) {
+  try { r.cursorTo(v); console.log("ct FAIL"); }
+  catch (e) { console.log("ct", e.code); }
+}
+try { r.clearLine(2); console.log("cl FAIL"); }
+catch (e) { console.log("cl", e.code); }
+{
+  const bad = new (class extends Writable { _write() { throw new Error("boom"); } })();
+  const rb = new Readline(bad);
+  try { await rb.cursorTo(1).commit(); console.log("rej FAIL"); }
+  catch (e) { console.log("rej", e.message); }
+}
+// 边界
+{
+  const w2 = new T();
+  const ra = new Readline(w2, { autoCommit: true });
+  ra.moveCursor(0, 0);
+  ra.clearScreenDown();
+  await new Promise((r2) => setTimeout(r2, 50));
+  console.log("auto", JSON.stringify(w2.data));
+}
+"#,
+    );
+    for line in [
+        "chain true",
+        "cur \"\\u001b[2G\"",
+        "rollback \"\"",
+        "clr \"\\u001b[1K\"",
+        "mv \"\\u001b[1C\\u001b[1B\\u001b[3;2H\"",
+        "ctor-ok",
+        "ct ERR_INVALID_ARG_TYPE",
+        "ct ERR_INVALID_ARG_TYPE",
+        "ct ERR_OUT_OF_RANGE",
+        "ct ERR_OUT_OF_RANGE",
+        "cl ERR_OUT_OF_RANGE",
+        "rej boom",
+        "auto \"\\u001b[0J\"",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("FAIL") && !out.contains("BAD"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn readline_history_events_and_validation() {
+    // history 'history' 事件（live 数组，监听改动落盘不改当行）+ 构造校验：
+    // 正常：shift 后当行照旧、rli.history 已空；报错：completer/history/
+    // historySize/tabSize 非法码；边界：crlfDelay 箝制（0→100，Inf 透传）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "h.mjs",
+        r#"
+import readline, { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
+{
+  const i = new PassThrough(), o = new PassThrough();
+  const rli = createInterface({ input: i, output: o, terminal: true });
+  rli.on("history", (h) => {
+    console.log("hev", JSON.stringify(h), h === rli.history);
+    h.shift();
+  });
+  rli.on("line", (l) => console.log("line", JSON.stringify(l), rli.history.length));
+  i.write("foo\r");
+  rli.close();
+}
+// 报错
+const i0 = new PassThrough();
+for (const [label, fn, code] of [
+  ["comp", () => createInterface({ input: i0, completer: 1 }), "ERR_INVALID_ARG_VALUE"],
+  ["hist", () => createInterface({ input: i0, history: {} }), "ERR_INVALID_ARG_TYPE"],
+  ["size-neg", () => createInterface({ input: i0, historySize: -1 }), "ERR_OUT_OF_RANGE"],
+  ["size-str", () => createInterface({ input: i0, historySize: "x" }), "ERR_INVALID_ARG_TYPE"],
+  ["tab0", () => createInterface({ input: i0, tabSize: 0 }), "ERR_OUT_OF_RANGE"],
+  ["tabstr", () => createInterface({ input: i0, tabSize: "4" }), "ERR_INVALID_ARG_TYPE"],
+]) {
+  try { fn(); console.log(label, "FAIL"); }
+  catch (e) { console.log(label, e.code); }
+}
+// 边界
+for (const [v, want] of [[undefined, 100], [0, 100], [50, 100], [5000, 5000], [Infinity, Infinity]]) {
+  const r = createInterface({ input: new PassThrough(), crlfDelay: v });
+  console.log("crlf", String(v), r.crlfDelay === want);
+  r.close();
+}
+"#,
+    );
+    for line in [
+        "hev [\"foo\"] true",
+        "line \"foo\" 0",
+        "comp ERR_INVALID_ARG_VALUE",
+        "hist ERR_INVALID_ARG_TYPE",
+        "size-neg ERR_OUT_OF_RANGE",
+        "size-str ERR_INVALID_ARG_TYPE",
+        "tab0 ERR_OUT_OF_RANGE",
+        "tabstr ERR_INVALID_ARG_TYPE",
+        "crlf undefined true",
+        "crlf 0 true",
+        "crlf 50 true",
+        "crlf 5000 true",
+        "crlf Infinity true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("FAIL"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn readline_tab_and_abort_faces() {
+    // Tab 补全 + promises question 中止：
+    // 正常：同步回值补前缀、连按二次展表；报错：reject 形 completer 落
+    // "Tab completion error: Error: message"；边界：无 completer 时 Tab 作
+    // 普通字符；已决 signal 即 AbortError（cause 透传）、中途 abort 结算、
+    // C-c 结算 AbortError。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "q.mjs",
+        r#"
+import readline, { createInterface } from "node:readline";
+import { Interface as PInterface } from "node:readline/promises";
+import { PassThrough } from "node:stream";
+// 同步补全：前缀直插 + 二次展表
+{
+  const i = new PassThrough(), o = new PassThrough();
+  let shown = "";
+  o.on("data", (c) => (shown += c));
+  const rli = createInterface({
+    input: i, output: o, terminal: true, prompt: "> ",
+    completer: (line) => [["foobar", "foobaz"], line],
+  });
+  i.write("foo");
+  i.write("\t");
+  console.log("tab1", JSON.stringify(rli.line));
+  i.write("\t");
+  console.log("tab2-has-table", shown.includes("foobar") && shown.includes("foobaz"));
+  rli.close();
+}
+// 报错形 completer
+{
+  const i = new PassThrough(), o = new PassThrough();
+  let shown = "";
+  o.on("data", (c) => (shown += c));
+  const rli = createInterface({
+    input: i, output: o, terminal: true,
+    completer: () => Promise.reject(new Error("message")),
+  });
+  i.write("\t");
+  await new Promise((r) => setTimeout(r, 50));
+  console.log("taberr", shown.startsWith("Tab completion error: Error: message"));
+  rli.close();
+}
+// 边界：无 completer 即普通字符
+{
+  const i = new PassThrough(), o = new PassThrough();
+  const rli = createInterface({ input: i, output: o, terminal: true, prompt: "" });
+  let got = null;
+  rli.on("line", (l) => (got = l));
+  i.write("a\tb\r");
+  console.log("notab", JSON.stringify(got), JSON.stringify(rli.line));
+  rli.close();
+}
+// promises question 中止三件
+{
+  const i = new PassThrough(), o = new PassThrough();
+  const rli = new PInterface({ input: i, output: o, terminal: true });
+  const s = AbortSignal.abort("boom");
+  try { await rli.question("q?", { signal: s }); console.log("ab0 FAIL"); }
+  catch (e) { console.log("ab0", e.name, e.cause); }
+  rli.close();
+}
+{
+  const i = new PassThrough(), o = new PassThrough();
+  const rli = new PInterface({ input: i, output: o, terminal: true });
+  const ac = new AbortController();
+  let settled = "";
+  rli.question("q?", { signal: ac.signal }).then(
+    () => (settled = "resolved"),
+    (e) => (settled = e.name + ":" + (e.cause?.message ?? e.cause)));
+  ac.abort(new Error("stop"));
+  await new Promise((r) => setTimeout(r, 50));
+  console.log("ab1", settled);
+  rli.close();
+}
+{
+  const i = new PassThrough(), o = new PassThrough();
+  const rli = new PInterface({ input: i, output: o, terminal: true });
+  let settled = "";
+  rli.question("q?").then(
+    () => (settled = "resolved"),
+    (e) => (settled = e.name));
+  i.emit("keypress", "", { name: "c", ctrl: true });
+  await new Promise((r) => setTimeout(r, 50));
+  console.log("cc", settled, rli.closed);
+  rli.close();
+}
+"#,
+    );
+    for line in [
+        "tab1 \"fooba\"",
+        "tab2-has-table true",
+        "taberr true",
+        "notab \"a\\tb\" \"\"",
+        "ab0 AbortError boom",
+        "ab1 AbortError:stop",
+        "cc AbortError true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
+    }
+    assert!(!out.contains("FAIL"), "out: {out}");
     dir.close().unwrap();
 }

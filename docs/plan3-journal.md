@@ -2873,3 +2873,17 @@ G1/G2/G3/G9 已收官。）
 > - 修中（需动手 + 双向交叉钉向量）：dh-generate-keys（重生成语义）、dh-padding（值）、dh-classic/keygen-dh（classic DH）、ecdh-convert-key（缺 API）、eddsa-variants（向量+导入；先对 RFC8032 逐字节）、psychic-signatures（长度门，4.55 姊妹）、keygen-bit-length（DSA-1024，node 实测支持）、certificate（verifySpkac）、x509（internal/crypto/x509 类面；x509 底座已有）、keyobject-clone-transfer（clone 语义待查）、publicDecrypt（PBES2 密码名映射）、crypto-stream 等 4 件 pipe（Hash/Cipher 接 Stream）、domain（BAM 透传）、subtle-cross-realm（跨域 brand 按 isView + assert.partialDeepStrictEqual 补件）、argon2（binding 接线，crate 已有）、pqc 三件（ml-dsa/ml-kem crate 已有；仅 slh 除外）、keygen-raw（除 slh 部分）、worker-thread c-4（先查 c-4 缺口大小再定批）。
 > - 偏离（不动）：slh-dsa 两件（需新 crate，§0.5 先问）、key-objects:1154（非 NIST 曲线能力，4.135 坑七已记，需 p224/p192 轮子）。
 > - 备注：41 件全在 Bun 范围内；Bun 直跑仍被 common global-leak 守卫挡（沿用 readline 轮结论）。
+
+## C P1 收尾（lane/http2）：复探 + tls-face×3 + autoselect + goaway 留守
+
+- 复探（open-fix 合入后）：respond-file range/with-pipe/error-pipe-offset 三绿；
+  socket-close 绿；compat-aborted 绿。close-aborted-destroy 剩 rstCode 一处
+  （真机 hang，4.325 剃刀竞态定级，error+close 确定性绿）。
+- tls-face×3 全绿：secure_post_echo/secure_reject（错 CA 即 error+close，码面顺延
+  tls lane）/secure_big_body（256KB）；既有 secure 面同绿。
+- autoselect ✅：autoselect-protocol TIMEOUT→EXIT=0（net socket 读嗅探三件，
+  4.323）。multiple-client-error 推进到 http 层 clientError 缺口（http lane 事，
+  传输已通）。buffersize 系写背压问题（本轮外）。
+- goaway 留守：session-cleanup 3/4 转绿（sessionError 事件，4.324），仅剩 raw-close
+ （双 FIN 后无 close；gw8d 同构通而套件不通，时序敏感，另案）。
+- 黑盒：tunnel 外新添 goaway_frame_size_error + read_unshift_readable，全绿。

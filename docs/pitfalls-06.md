@@ -458,3 +458,27 @@
 - 修法：无（本轮不动；候选是客户端 CONNECT end 抑 EOS，改线语义，另案评估）。
 - 复现：px14（end('hello') 即挂）vs px11（只写不 end 即通）。
 - 推广铁律：**半关与升级互斥时先认半关**——隧道类流的 EOS 时序决定底座走哪条管线，探针必须覆盖"先关后应答"序。
+
+### 4.323 net socket 读嗅探三件（2026-10-21，http2 lane）
+
+- 症状：autoselect-protocol TIMEOUT；`socket.read(3)` 恒 null、`readable` 永不发。
+- 根因：net socket 读侧只有 data 事件投递，`read` 硬编码 null，无 readable 发射、无 unshift。
+- 修法：`read(n)` 按需消费缓冲（不足 n 即有多少取多少，无即 null，与真机对过）；`unshift` 回填队首；到包且无 data 监听即微任务发 `readable`。`read()===null` 旧断言（空缓冲）不受影响。
+- 复现：auto3（readable 不火）vs 真机（火）；multiple-client-error 同模式红。
+- 推广铁律：**嗅探面三件不可缺一**——read 取、unshift 还、readable 告，任缺其一 sniff 即挂。
+
+### 4.324 会话级协议错事件（2026-10-21，http2 lane）
+
+- 症状：goaway-cleanup（超大 HEADERS）会话 error 永不发（旧 DIFF 两处挂）。
+- 根因：serve_conn conn 收尾直接丢弃 hyper 错误（`let _ = r`），FRAME_SIZE 等协议错无会话事件。
+- 修法：conn-done Err 且 h2 原因码属协议类（1/3/6/9）即发 `sessionError`（ERR_HTTP2_ERROR/Protocol error），干净收尾与传输错保持静默；JS 侧转会话 `error`，收尾照旧。套件 3/4 转绿，仅剩 raw-close。
+- 复现：gw（真机 error+close，旧我方静默关）。
+- 推广铁律：**协议错与传输错分流上报**——前者会话 error（应用可断言），后者静默收尾；一刀切丢错即丢可观测性。
+
+### 4.325 CANCEL-RST 收尾剃刀竞态（2026-10-21，http2 lane）
+
+- 症状：close-aborted-destroy 仅 rstCode 不符（`undefined !== 8`），其余全绿；真机在此件 hang（无真值）。
+- 根因：服务端 RST 处理与客户端 FIN 在 loopback 上 µs 级竞速（Path A：RST 先到→error+close；Path B：FIN 先到→静默收尾）。RST/close 路径上任何新增工作（snoop 发事件、同步 native、defineProperty 懒取）都确定性翻转路径——已实证三版全翻。
+- 修法：无（本轮止损；候选是先给 Path B 补齐 error+close 使双路径皆满足套件，再设码，另案）。
+- 复现：A/B/A 对照（加码即翻、去码即回）；ab 系列复现（改 emit 监听即扰动）。
+- 推广铁律：**剃刀竞态先加边距再加料**——事件/调用开销会翻转 µs 级确定性竞速；先让双路径各自正确，再补观测。

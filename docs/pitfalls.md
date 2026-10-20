@@ -285,6 +285,9 @@
 - 4.320 link 连带落定的依赖也要结算闭包（2026-10-20，vm lane）
 - 4.321 upgrade 句柄丢弃即隧道拆除（2026-10-20，http2 lane）
 - 4.322 EOS-before-200 CONNECT hyper 不升级（2026-10-20，http2 lane）
+- 4.323 net socket 读嗅探三件（2026-10-21，http2 lane）
+- 4.324 会话级协议错事件（2026-10-21，http2 lane）
+- 4.325 CANCEL-RST 收尾剃刀竞态（2026-10-21，http2 lane）
 
 ## 条目
 

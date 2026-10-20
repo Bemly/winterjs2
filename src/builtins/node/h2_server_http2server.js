@@ -265,6 +265,13 @@ class Http2Server extends EventEmitter {
         this.__sessionFor(connId, peerObj);
         break;
       }
+      case "sessionError": {
+        // 连接级协议错（FRAME_SIZE 等）：会话 error（node 口径），收尾照旧。
+        const o = JSON.parse(payload);
+        const s = this.__sessions.get(Number(o.streamId));
+        if (s && !s.destroyed) s.emit("error", __h2Err("ERR_HTTP2_ERROR", "Protocol error"));
+        break;
+      }
       case "connClose": {
         // Rust 侧 payload = conn_id 裸串；包装层 streamId 恒 0，须读 .payload
         const connId = Number(JSON.parse(payload).payload);

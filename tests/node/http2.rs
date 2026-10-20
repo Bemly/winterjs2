@@ -168,6 +168,119 @@ setTimeout(() => console.log("end-ok"), 1500);
 }
 
 #[test]
+fn http2_secure_post_echo() {
+    // 正常：TLS 上 POST 回显（write_self_signed 双向）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "sp.mjs",
+        &format!(
+            r#"
+import {{ createSecureServer, connect }} from "node:http2";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = createSecureServer({{ key, cert }}, (req, res) => {{
+  let n = 0;
+  req.on("data", (d) => (n += d.length));
+  req.on("end", () => res.end("got:" + n));
+}});
+server.listen(0, "127.0.0.1", () => {{
+  const sess = connect(`https://127.0.0.1:${{server.address().port}}`, {{ ca: cert }});
+  sess.on("error", () => {{}});
+  sess.on("connect", () => {{
+    const st = sess.request({{ ":path": "/p", ":method": "POST" }});
+    let b = "";
+    st.on("data", (d) => (b += d));
+    st.on("end", () => {{ console.log("b", b); sess.close(); }});
+    st.on("error", () => {{}});
+    st.end("y".repeat(4096));
+  }});
+  sess.on("close", () => server.close());
+}});
+server.on("close", () => console.log("srv-close"));
+"#
+        ),
+    );
+    assert!(out.contains("b got:4096"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_secure_reject() {
+    // 报错：CA 不对即会话 error + close（码面 tls lane 顺延，此处只断行为；
+    // 用服务端 key PEM 充错 CA：合法 PEM 但非 CA，真机错码 DEPTH_ZERO_SELF_SIGNED）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "sr.mjs",
+        &format!(
+            r#"
+import {{ createSecureServer, connect }} from "node:http2";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = createSecureServer({{ key, cert }}, (req, res) => res.end("x"));
+server.listen(0, "127.0.0.1", () => {{
+  const sess = connect(`https://127.0.0.1:${{server.address().port}}`, {{ ca: key }});
+  sess.on("error", () => console.log("sess-error"));
+  sess.on("close", () => {{ console.log("sess-close"); server.close(); }});
+}});
+server.on("close", () => console.log("srv-close"));
+"#
+        ),
+    );
+    assert!(out.contains("sess-error"), "out: {out}");
+    assert!(out.contains("sess-close"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_secure_big_body() {
+    // 边界：TLS 上 256KB 体分片回显（记录分片+流控）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "sb.mjs",
+        &format!(
+            r#"
+import {{ createSecureServer, connect }} from "node:http2";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = createSecureServer({{ key, cert }}, (req, res) => {{
+  let n = 0;
+  req.on("data", (d) => (n += d.length));
+  req.on("end", () => res.end("got:" + n));
+}});
+server.listen(0, "127.0.0.1", () => {{
+  const sess = connect(`https://127.0.0.1:${{server.address().port}}`, {{ ca: cert }});
+  sess.on("error", () => {{}});
+  sess.on("connect", () => {{
+    const st = sess.request({{ ":path": "/", ":method": "POST" }});
+    let b = "";
+    st.on("data", (d) => (b += d));
+    st.on("end", () => {{ console.log("b", b); sess.close(); }});
+    st.on("error", () => {{}});
+    st.end("x".repeat(262144));
+  }});
+  sess.on("close", () => server.close());
+}});
+server.on("close", () => console.log("srv-close"));
+"#
+        ),
+    );
+    assert!(out.contains("b got:262144"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn http2_errors_boundary() {
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(

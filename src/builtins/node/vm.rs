@@ -956,4 +956,7 @@ pub unsafe extern "C" fn vm_mod_settled(
 /// 内嵌 ESM 源（`node:vm`）。
 
 /// 内嵌 ESM 源（`node:vm`；§0.9 按域分块：`vm.js` 全量，concat 字节恒等）。
-pub const SOURCE: &str = include_str!("vm.js");
+pub const SOURCE: &str = concat!(
+    include_str!("vm.js"),
+    include_str!("vm_modules.js"),
+);

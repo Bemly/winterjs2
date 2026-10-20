@@ -153,7 +153,9 @@ pub(crate) fn cjs_interop(url: &Url, is_module: bool, text: &str) -> bool {
         .map(|e| e.to_ascii_lowercase());
     match ext.as_deref() {
         Some("cjs") => true,
-        Some("js" | "jsx") => {
+        // 无扩展名视同 `.js`（node 口径：`type: module` 包外即经典；oxlint 等
+        // extensionless bin 场景；main-extension-lookup 套件点名）。
+        Some("js" | "jsx") | None => {
             if is_module || crate::builtins::node::require::nearest_pkg_type(&path).as_deref()
                 == Some("module")
             {
@@ -183,10 +185,9 @@ pub(crate) fn cjs_interop(url: &Url, is_module: bool, text: &str) -> bool {
 fn script_goal_probe(text: &str, path: &std::path::Path) -> (bool, bool) {
     use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
     let allocator = Allocator::default();
-    let Ok(source_type) = SourceType::from_path(path).map(|t| t.with_module(false)) else {
-        // 方言定不了 → 按"有模块信号"处理（走 ESM 兜底，不误吞 import/export）
-        return (false, true);
-    };
+    let source_type = SourceType::from_path(path)
+        .map(|t| t.with_module(false))
+        .unwrap_or_else(|_| SourceType::mjs());
     let ret = Parser::new(&allocator, text, source_type).parse();
     (
         !ret.fatal_error && !ret.diagnostics.has_errors(),
@@ -202,9 +203,9 @@ fn script_goal_probe(text: &str, path: &std::path::Path) -> (bool, bool) {
 fn cjs_goal_probe(text: &str, path: &std::path::Path) -> bool {
     use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
     let allocator = Allocator::default();
-    let Ok(source_type) = SourceType::from_path(path).map(|t| t.with_commonjs(true)) else {
-        return false;
-    };
+    let source_type = SourceType::from_path(path)
+        .map(|t| t.with_commonjs(true))
+        .unwrap_or_else(|_| SourceType::mjs().with_commonjs(true));
     let ret = Parser::new(&allocator, text, source_type).parse();
     !ret.fatal_error && !ret.diagnostics.has_errors() && !ret.module_record.has_module_syntax
 }

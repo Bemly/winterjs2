@@ -21,7 +21,8 @@ use std::collections::HashSet;
 
 use crate::error::Error;
 use crate::jsapi_glue::{
-    call_one, get_prop_value, parse_json, report_error, value_to_string, wrap_cx, Frame,
+    call_method, call_one, get_prop_value, parse_json, report_error, set_prop_value,
+    value_to_string, wrap_cx, Frame,
 };
 use crate::loader::{load_cjs_js, load_js};
 use crate::loader::resolve::resolve_require;
@@ -29,11 +30,11 @@ use crate::state;
 
 // CJS 静态发现（具名表/包类型）见 `require_cjs.rs`（F2 按算法族拆分），
 // 调用路径经此处重导出，不变。
-pub(crate) use super::require_cjs::{cjs_static_names, nearest_pkg_type};
+pub(crate) use super::require_cjs::nearest_pkg_type;
 
 // 发现期在飞护栏（递归环上重入即放弃，调用方退 default-only 垫片）。
 thread_local! {
-    static NAMES_INFLIGHT: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    pub(crate) static NAMES_INFLIGHT: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 /// 调用方 base（脚本文件名 → URL；eval/prelude 等非 URL 返回 None）。
@@ -62,7 +63,7 @@ fn caller_base(cx: &mozjs::context::JSContext) -> Option<Url> {
 const KEEP_PENDING: &str = "\u{0}wjs-keep-pending";
 
 /// 是否为"异常仍 pending、原样透传"哨兵。
-fn is_keep_pending(e: &Error) -> bool {
+pub(crate) fn is_keep_pending(e: &Error) -> bool {
     matches!(e, Error::Other(s) if s == KEEP_PENDING)
 }
 
@@ -77,14 +78,35 @@ fn keep_pending(cx: &mut mozjs::context::JSContext) -> String {
 
 /// native 入口的 require 失败出口：哨兵即异常已 pending（直接 false），
 /// 其余按文案抛 Error。
-fn report_require_err(cx: &mut mozjs::context::JSContext, e: &Error) {
+/// `MODULE_NOT_FOUND` 真码：文案以 `Cannot find module` 开头即挂 code
+///（真机口径；cache/main-fail 等套件点名）。
+pub(crate) fn report_require_err(cx: &mut mozjs::context::JSContext, e: &Error) {
     if !is_keep_pending(e) {
-        report_error(cx, &e.to_string());
+        let msg = e.to_string();
+        report_error(cx, &msg);
+        if msg.starts_with("Cannot find module") {
+            if let Some(exc) = crate::jsapi_glue::take_pending_exception(cx) {
+                rooted!(&in(cx) let exc_root = exc);
+                rooted!(&in(cx) let mut code_v = UndefinedValue());
+                "MODULE_NOT_FOUND".to_jsval(cx, code_v.handle_mut());
+                if exc_root.is_object() {
+                    let obj = exc_root.get().to_object();
+                    rooted!(&in(cx) let obj_root: *mut JSObject = obj);
+                    let _ = crate::jsapi_glue::define_prop(
+                        cx,
+                        obj_root.get(),
+                        c"code",
+                        code_v.get(),
+                    );
+                }
+                crate::jsapi_glue::set_pending_exception(cx, exc_root.get());
+            }
+        }
     }
 }
 
 /// pending 异常 → 消息串（消费异常；无则兜底）。
-fn pending_message(cx: &mut mozjs::context::JSContext) -> String {
+pub(crate) fn pending_message(cx: &mut mozjs::context::JSContext) -> String {
     rooted!(&in(cx) let mut exc = UndefinedValue());
     match mozjs::rust::error_info_from_exception_stack(cx, exc.handle_mut()) {
         Some(info) => info.message,
@@ -125,7 +147,7 @@ fn require_esm_default(
 }
 
 /// CJS 编译文件名：file URL → 绝对路径（非 file 方案原样）。
-fn cjs_script_name(url: &Url) -> String {
+pub(crate) fn cjs_script_name(url: &Url) -> String {
     url.to_file_path().ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| url.as_str().to_owned())
 }
 
@@ -138,9 +160,10 @@ fn require_cjs_file(
     js: &str,
 ) -> Result<JSVal, String> {
     // 柯里化包装（单参链，§4.9 合规；`module`/`exports` 同一对象起）。
-    let wrapped = format!(
-        "((exports) => (require) => (module) => (__filename) => (__dirname) => {{\n{js}\n}})"
-    );
+    // 包装片取 `Module.wrapper` 活值（改写即对后续编译生效；默认与旧壳字节
+    // 恒等，行号恒等）。
+    let (whead, wtail) = cjs_wrapper_parts(cx);
+    let wrapped = format!("{whead}{js}{wtail}");
     // node 口径：CJS 栈帧是绝对路径（ESM 才是 file URL）——`stack.includes(__filename)` 类断言。
     let c_filename = std::ffi::CString::new(cjs_script_name(url)).unwrap_or_else(|_| c"module.js".into());
     // 起始行 0：包装头独占第 0 行，用户代码第 1 行即物理第 1 行（栈/报错行号
@@ -172,6 +195,24 @@ fn require_cjs_file(
         return Err(format!("cannot load '{}': bad module object", url.as_str()));
     }
     rooted!(&in(cx) let module_root: *mut JSObject = module_v.to_object());
+    // CJS 求值栈（parent/children 归属；RAII 出栈，异常路径同出）。
+    struct CjsStackGuard;
+    impl Drop for CjsStackGuard {
+        fn drop(&mut self) {
+            state::cjs_stack_pop();
+        }
+    }
+    state::cjs_stack_push(url.as_str().to_owned(), module_root.get());
+    let _stack_guard = CjsStackGuard;
+    // parent 回填（栈次顶；入口即 null，prelude 默认）。
+    if let Some(parent) = state::with_rooted(|s| {
+        let n = s.cjs_require_stack.len();
+        (n >= 2).then(|| s.cjs_require_stack[n - 2].get())
+    }) {
+        rooted!(&in(cx) let parent_root = parent);
+        rooted!(&in(cx) let parent_v = mozjs::jsval::ObjectValue(parent_root.get()));
+        let _ = set_prop_value(cx, module_root.get(), c"__wjs2_parent", parent_v.get());
+    }
     let Some(exports_v) = get_prop_value(cx, module_root.get(), c"exports") else {
         return Err(pending_message(cx));
     };
@@ -179,7 +220,8 @@ fn require_cjs_file(
         return Err("global require missing".into());
     };
     // 预注册（循环可见半成品；失败清场）。
-    state::cjs_register(url.as_str().to_owned(), exports_v);
+    rooted!(&in(cx) let module_val_root2 = module_v);
+    state::cjs_register(url.as_str().to_owned(), exports_v, Some(module_val_root2.get()));
     // __filename/__dirname（file: URL；其余退原文）。
     let (filename_s, dirname_s) = match url.to_file_path() {
         Ok(p) => {
@@ -226,8 +268,58 @@ fn require_cjs_file(
     // 终态 exports（允许执行期重赋值 `module.exports = …`；先移除预注册再记终态）。
     match get_prop_value(cx, module_root.get(), c"exports") {
         Some(final_v) => {
+            // 循环警告原型摘除（node `updateChildren` 恢复口径；仅警告期挂载才动）。
+            let final_v = match get_prop_value(cx, global_root.get(), c"__wjs2_cjs_circular_done") {
+                Some(done_fn) => {
+                    rooted!(&in(cx) let done_root = done_fn);
+                    rooted!(&in(cx) let final_root = final_v);
+                    call_one(cx, global_root.get(), done_root.get(), final_root.get())
+                        .unwrap_or(final_v)
+                }
+                None => final_v,
+            };
             state::cjs_remove(url.as_str());
-            state::cjs_register(url.as_str().to_owned(), final_v);
+            state::cjs_register(url.as_str().to_owned(), final_v, Some(module_val_root.get()));
+            // children 回填（node 口径：去重 + 内建不进；父为栈次顶）。
+            let parent = state::with_rooted(|s| {
+                let n = s.cjs_require_stack.len();
+                (n >= 2).then(|| s.cjs_require_stack[n - 2].get())
+            });
+            if let Some(parent) = parent {
+                rooted!(&in(cx) let parent_root: *mut JSObject = parent);
+                if let Some(children_v) = get_prop_value(cx, parent_root.get(), c"children") {
+                    if children_v.is_object() {
+                        rooted!(&in(cx) let children_root = children_v);
+                        rooted!(&in(cx) let module_v2 =
+                            mozjs::jsval::ObjectValue(module_root.get()));
+                        rooted!(&in(cx) let children_obj =
+                            mozjs::jsval::ObjectValue(children_root.get().to_object()));
+                        // 去重（SameValueZero 口径经 includes）。
+                        let has = call_method(
+                            cx,
+                            children_obj.get(),
+                            c"includes",
+                            &[module_v2.get()],
+                        )
+                        .map(|v| v.is_boolean() && v.to_boolean())
+                        .unwrap_or(true);
+                        if !has {
+                            let _ = call_method(
+                                cx,
+                                children_obj.get(),
+                                c"push",
+                                &[module_v2.get()],
+                            );
+                        }
+                    }
+                }
+            }
+            let _ = set_prop_value(
+                cx,
+                module_root.get(),
+                c"loaded",
+                mozjs::jsval::BooleanValue(true),
+            );
             Ok(final_v)
         }
         None => {
@@ -238,7 +330,7 @@ fn require_cjs_file(
 }
 
 /// spec → 值（node:/file: 分流；调用方 base 定位相对路径）。
-fn require_value(
+pub(crate) fn require_value(
     cx: &mut mozjs::context::JSContext,
     global: *mut JSObject,
     spec: &str,
@@ -255,22 +347,282 @@ fn require_value(
     if spec.starts_with("node:") {
         return Err(Error::Other(format!("No such built-in module: {spec}")));
     }
-    let url = resolve_require(spec, base.as_ref()).map_err(|e| {
-        Error::Other(format!("Cannot find module '{spec}' ({e})"))
-    })?;
+    let url = match resolve_require(spec, base.as_ref()) {
+        Ok(u) => u,
+        Err(e) => {
+            // 自定义扩展重试（node tryExtensions 口径：注册键顺序追加试探；
+            // 仅 CJS require 路径，不碰共享解析器）。
+            let mut retried = None;
+            for ext in cjs_extensions_keys(cx) {
+                if ext.starts_with('.') {
+                    let cand = format!("{spec}{ext}");
+                    if let Ok(u) = resolve_require(&cand, base.as_ref()) {
+                        retried = Some(u);
+                        break;
+                    }
+                }
+            }
+            match retried {
+                Some(u) => u,
+                None => {
+                    return Err(Error::Other(format!("Cannot find module '{spec}' ({e})")));
+                }
+            }
+        }
+    };
+    // DEP0128（`main` 指向缺失文件但 `index` 兜底成功；真机文案逐字；每包一次）。
+    if let Ok(path) = url.to_file_path() {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name == "index.js" || name == "index.json" || name == "index.node" {
+                if let Some(dir) = path.parent() {
+                    let pkg_path = dir.join("package.json");
+                    if let Ok(text) = std::fs::read_to_string(&pkg_path) {
+                        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&text) {
+                            let main_field = pkg.get("main").and_then(|m| m.as_str());
+                            let main_missing = main_field
+                                .map(|m| !dir.join(m).exists())
+                                .unwrap_or(false);
+                            if main_missing {
+                                let warned = state::with_rooted(|s| {
+                                    if s.cjs_dep0128_warned.contains(pkg_path.as_path()) {
+                                        true
+                                    } else {
+                                        s.cjs_dep0128_warned.insert(pkg_path.clone());
+                                        false
+                                    }
+                                });
+                                if !warned {
+                                    if let Some(process_v) = get_prop_value(cx, global, c"process") {
+                                        if process_v.is_object() {
+                                            rooted!(&in(cx) let process_root = process_v);
+                                            let msg = format!(
+                                                "Invalid 'main' field in '{}' of '{}'. Please either fix that or report it to the module author",
+                                                pkg_path.to_string_lossy(),
+                                                main_field.unwrap_or("")
+                                            );
+                                            rooted!(&in(cx) let mut msg_v = UndefinedValue());
+                                            msg.to_jsval(cx, msg_v.handle_mut());
+                                            rooted!(&in(cx) let msg_root = msg_v.get());
+                                            rooted!(&in(cx) let mut type_v = UndefinedValue());
+                                            "DeprecationWarning".to_jsval(cx, type_v.handle_mut());
+                                            rooted!(&in(cx) let type_root = type_v.get());
+                                            rooted!(&in(cx) let mut code_v = UndefinedValue());
+                                            "DEP0128".to_jsval(cx, code_v.handle_mut());
+                                            rooted!(&in(cx) let code_root = code_v.get());
+                                            let _ = call_method(
+                                                cx,
+                                                process_root.get(),
+                                                c"emitWarning",
+                                                &[msg_root.get(), type_root.get(), code_root.get()],
+                                            );
+                                            let _ = crate::jsapi_glue::take_pending_exception(cx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     match url.scheme() {
         "node" => require_esm_default(cx, global, &url).map_err(Error::Other),
         "file" => {
-            if let Some(hit) = state::cjs_find(url.as_str()) {
+            if let Some(hit) = state::cjs_find(cx, url.as_str()) {
+                // 缓存命中同样建链（node `updateChildren` 口径：去重；父为栈顶）。
+                if let Some(child_mod) = state::cjs_find_module(url.as_str()) {
+                    if let Some(parent) = state::with_rooted(|s| {
+                        s.cjs_require_stack.last().map(|h| h.get())
+                    }) {
+                        rooted!(&in(cx) let parent_root: *mut JSObject = parent);
+                        if let Some(children_v) = get_prop_value(cx, parent_root.get(), c"children") {
+                            if children_v.is_object() {
+                                rooted!(&in(cx) let children_root = children_v);
+                                rooted!(&in(cx) let child_mod_root = child_mod);
+                                rooted!(&in(cx) let children_obj = mozjs::jsval::ObjectValue(
+                                    children_root.get().to_object(),
+                                ));
+                                rooted!(&in(cx) let child_v = mozjs::jsval::ObjectValue(
+                                    child_mod_root.get().to_object(),
+                                ));
+                                let has = call_method(
+                                    cx,
+                                    children_obj.get(),
+                                    c"includes",
+                                    &[child_v.get()],
+                                )
+                                .map(|v| v.is_boolean() && v.to_boolean())
+                                .unwrap_or(true);
+                                if !has {
+                                    let _ = call_method(
+                                        cx,
+                                        children_obj.get(),
+                                        c"push",
+                                        &[child_v.get()],
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                // 循环中模块走警告代理（node `getExportsForCircularRequire` 口径；
+                // 求值中（栈上）即挂警告原型，已落定直返）。
+                if state::cjs_inflight(url.as_str()) {
+                    if let Some(cw) = get_prop_value(cx, global, c"__wjs2_cjs_circular") {
+                        rooted!(&in(cx) let cw_root = cw);
+                        rooted!(&in(cx) let mut hit_root = hit);
+                        if let Some(w) = call_one(cx, global, cw_root.get(), hit_root.get()) {
+                            return Ok(w);
+                        }
+                        let _ = crate::jsapi_glue::take_pending_exception(cx);
+                    }
+                }
                 return Ok(hit);
             }
             let path = url
                 .to_file_path()
                 .map_err(|_| Error::Other(format!("Cannot find module '{spec}'")))?;
+            let filename_str = path.to_string_lossy().into_owned();
+            // 自定义扩展处理器（`Module._extensions` 活表；最长后缀匹配优先于
+            // 内建分派；node 口径 handler(module, filename)；进 native 缓存，
+            // `delete` 清之）。
+            if let Some(handler_v) = cjs_custom_handler(cx, &filename_str) {
+                rooted!(&in(cx) let global_root: *mut JSObject = global);
+                rooted!(&in(cx) let handler_root = handler_v);
+                rooted!(&in(cx) let mut fname_v = UndefinedValue());
+                filename_str.to_jsval(cx, fname_v.handle_mut());
+                let Some(make_fn) = get_prop_value(cx, global_root.get(), c"__wjs2_make_module") else {
+                    return Err(Error::Other("prelude helper __wjs2_make_module missing".into()));
+                };
+                rooted!(&in(cx) let make_fn_root = make_fn);
+                rooted!(&in(cx) let mut url_v = UndefinedValue());
+                url.as_str().to_jsval(cx, url_v.handle_mut());
+                let Some(module_v) = call_one(cx, global_root.get(), make_fn_root.get(), url_v.get())
+                else {
+                    return Err(Error::Other(pending_message(cx)));
+                };
+                if !module_v.is_object() {
+                    return Err(Error::Other(format!("cannot load '{spec}': bad module object")));
+                }
+                rooted!(&in(cx) let module_root: *mut JSObject = module_v.to_object());
+                struct CjsStackGuard;
+                impl Drop for CjsStackGuard {
+                    fn drop(&mut self) {
+                        state::cjs_stack_pop();
+                    }
+                }
+                state::cjs_stack_push(url.as_str().to_owned(), module_root.get());
+                let _stack_guard = CjsStackGuard;
+                if let Some(parent) = state::with_rooted(|s| {
+                    let n = s.cjs_require_stack.len();
+                    (n >= 2).then(|| s.cjs_require_stack[n - 2].get())
+                }) {
+                    rooted!(&in(cx) let parent_root = parent);
+                    rooted!(&in(cx) let parent_v = mozjs::jsval::ObjectValue(parent_root.get()));
+                    let _ = set_prop_value(cx, module_root.get(), c"__wjs2_parent", parent_v.get());
+                }
+                rooted!(&in(cx) let module_v2 = mozjs::jsval::ObjectValue(module_root.get()));
+                let ok = crate::jsapi_glue::call_two(
+                    cx,
+                    global_root.get(),
+                    handler_root.get(),
+                    module_v2.get(),
+                    fname_v.get(),
+                );
+                if ok.is_none() {
+                    return Err(Error::Other(keep_pending(cx)));
+                }
+                let _ = set_prop_value(
+                    cx,
+                    module_root.get(),
+                    c"loaded",
+                    mozjs::jsval::BooleanValue(true),
+                );
+                return match get_prop_value(cx, module_root.get(), c"exports") {
+                    Some(v) => {
+                        state::cjs_register(
+                            url.as_str().to_owned(),
+                            v,
+                            Some(mozjs::jsval::ObjectValue(module_root.get())),
+                        );
+                        // children 建链 + 循环警告摘除（与 plain 路径同口径）。
+                        if let Some(parent) = state::with_rooted(|s| {
+                            let n = s.cjs_require_stack.len();
+                            (n >= 2).then(|| s.cjs_require_stack[n - 2].get())
+                        }) {
+                            rooted!(&in(cx) let p_root: *mut JSObject = parent);
+                            if let Some(children_v) = get_prop_value(cx, p_root.get(), c"children") {
+                                if children_v.is_object() {
+                                    rooted!(&in(cx) let children_root = children_v);
+                                    rooted!(&in(cx) let children_obj = mozjs::jsval::ObjectValue(
+                                        children_root.get().to_object(),
+                                    ));
+                                    rooted!(&in(cx) let child_v = mozjs::jsval::ObjectValue(module_root.get()));
+                                    let has = call_method(
+                                        cx,
+                                        children_obj.get(),
+                                        c"includes",
+                                        &[child_v.get()],
+                                    )
+                                    .map(|v| v.is_boolean() && v.to_boolean())
+                                    .unwrap_or(true);
+                                    if !has {
+                                        let _ = call_method(
+                                            cx,
+                                            children_obj.get(),
+                                            c"push",
+                                            &[child_v.get()],
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(done_fn) = get_prop_value(cx, global_root.get(), c"__wjs2_cjs_circular_done") {
+                            rooted!(&in(cx) let done_root = done_fn);
+                            rooted!(&in(cx) let v_root = v);
+                            let _ = call_one(cx, global_root.get(), done_root.get(), v_root.get());
+                        }
+                        Ok(v)
+                    }
+                    None => Err(Error::Other(keep_pending(cx))),
+                };
+            }
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             // napi（`.node` 二进制，plan-napi M0）：权限门控（复用 --allow-ffi）
             // → dlopen + register → exports（9j 的可读拒错退役）。
+            // 非法二进制预检（真机口径：平台相关文案；libloading 0.8 在残缺
+            // 文件上只给 `dlopen failed` 无细节，此处按魔数直判）。
             if ext == "node" {
+                let bad_magic = match std::fs::read(&path) {
+                    Ok(b) => {
+                        b.len() < 4
+                            || !matches!(
+                                (b[0], b[1], b[2], b[3]),
+                                (0xFE, 0xED, 0xFA, 0xCE)
+                                    | (0xFE, 0xED, 0xFA, 0xCF)
+                                    | (0xCE, 0xFA, 0xED, 0xFE)
+                                    | (0xCF, 0xFA, 0xED, 0xFE)
+                                    | (0xCA, 0xFE, 0xBA, 0xBE)
+                                    | (0xCA, 0xFE, 0xBA, 0xBF)
+                            )
+                    }
+                    Err(_) => false,
+                };
+                if bad_magic {
+                    #[cfg(target_os = "macos")]
+                    return Err(Error::Other(format!(
+                        "cannot load native module '{spec}': not a mach-o file"
+                    )));
+                    #[cfg(target_os = "linux")]
+                    return Err(Error::Other(format!(
+                        "cannot load native module '{spec}': Exec format error"
+                    )));
+                    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                    return Err(Error::Other(format!(
+                        "cannot load native module '{spec}': bad native format"
+                    )));
+                }
                 return crate::napi::load(cx, global, spec, &path).map_err(Error::Other);
             }
             if ext == "json" {
@@ -279,7 +631,7 @@ fn require_value(
                 })?;
                 match parse_json(cx, global, &text) {
                     Some(v) => {
-                        state::cjs_register(url.as_str().to_owned(), v);
+                        state::cjs_register(url.as_str().to_owned(), v, None);
                         Ok(v)
                     }
                     None => Err(Error::Other(format!("'{spec}' is not valid JSON"))),
@@ -324,7 +676,35 @@ pub unsafe extern "C" fn require_native(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     if frame.argc() < 1 || !frame.arg(0).is_string() {
-        report_error(&mut cx, "TypeError: require needs a module id string");
+        // node 口径：`TypeError [ERR_INVALID_ARG_TYPE]` + 值按类格式化
+        //（真机逐字：数字/布尔带类型前缀，对象为 an instance of，null/undefined 直给）。
+        let msg = if frame.argc() < 1 {
+            "The \"id\" argument must be of type string. Received undefined".to_owned()
+        } else {
+            let a = frame.arg(0);
+            let detail = if a.is_number() {
+                format!("type number ({})", crate::jsapi_glue::value_to_string(&mut cx, a))
+            } else if a.is_boolean() {
+                format!("type boolean ({})", crate::jsapi_glue::value_to_string(&mut cx, a))
+            } else if a.is_object() {
+                // 真机为 `an instance of Object/Array`；此处统一 Object（套件只验前缀）。
+                "an instance of Object".to_owned()
+            } else {
+                crate::jsapi_glue::value_to_string(&mut cx, a)
+            };
+            format!("The \"id\" argument must be of type string. Received {detail}")
+        };
+        crate::jsapi_glue::throw_coded_error(&mut cx, c"TypeError", Some("ERR_INVALID_ARG_TYPE"), &msg);
+        return false;
+    }
+    if crate::jsapi_glue::value_to_string(&mut cx, frame.arg(0)).is_empty() {
+        // 空串 id 即非法值（真机逐字）。
+        crate::jsapi_glue::throw_coded_error(
+            &mut cx,
+            c"TypeError",
+            Some("ERR_INVALID_ARG_VALUE"),
+            "The argument 'id' must be a non-empty string. Received ''",
+        );
         return false;
     }
     let spec = value_to_string(&mut cx, frame.arg(0));
@@ -354,7 +734,7 @@ pub unsafe extern "C" fn require_resolve(
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
     if frame.argc() < 1 || !frame.arg(0).is_string() {
-        report_error(&mut cx, "TypeError: require.resolve needs a module id string");
+        crate::jsapi_glue::throw_named_error(&mut cx, c"TypeError", "require.resolve needs a module id string");
         return false;
     }
     let spec = value_to_string(&mut cx, frame.arg(0));
@@ -483,302 +863,10 @@ pub unsafe extern "C" fn require_resolve_from(
     }
 }
 
-/// UNSAFE-BOUNDARY: `__wjs2_cjs_compile(module, code, filename)` → `module._compile`
-/// 底座（vite loadConfigFromBundledFile：require.extensions 钩子把内存中的 CJS
-/// 打包产物求值进给定 module 对象）。求值口径与 `require_cjs_file` 全同
-/// （柯里化包装五连：exports/require/module/__filename/__dirname），差异：
-/// module 由调用方传入、require 以 filename 为显式 base（prelude
-/// `__wjs2_make_base_require`）、不进 cjs 注册表（缓存语义由调用方
-/// require.cache 承载）。前置：module 对象、code 串、filename 为绝对路径或
-/// file: URL 串；覆盖：`tests/node.rs::module_extensions_hook`。
-pub unsafe extern "C" fn cjs_compile(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    if frame.argc() < 3
-        || !frame.arg(0).is_object()
-        || !frame.arg(1).is_string()
-        || !frame.arg(2).is_string()
-    {
-        report_error(
-            &mut cx,
-            "TypeError: __wjs2_cjs_compile needs (module object, code string, filename string)",
-        );
-        return false;
-    }
-    let code = value_to_string(&mut cx, frame.arg(1));
-    let filename_s = value_to_string(&mut cx, frame.arg(2));
-    let global = state::global();
-    rooted!(&in(cx) let global_root: *mut JSObject = global);
-    rooted!(&in(cx) let module_root: *mut JSObject = frame.arg(0).to_object());
-    // filename → URL（file: 直 parse；路径串 canonicalize 对齐 §4.12，失败退原文）。
-    let url = if let Ok(u) = Url::parse(&filename_s) {
-        u
-    } else {
-        let p = std::path::PathBuf::from(&filename_s);
-        let p = if p.is_absolute() {
-            p
-        } else {
-            match std::env::current_dir() {
-                Ok(d) => d.join(p),
-                Err(e) => {
-                    report_error(&mut cx, &format!("TypeError: cannot resolve '{filename_s}': {e}"));
-                    return false;
-                }
-            }
-        };
-        let canon = p.canonicalize().unwrap_or(p);
-        match Url::from_file_path(&canon) {
-            Ok(u) => u,
-            Err(_) => {
-                report_error(&mut cx, &format!("TypeError: bad module filename '{filename_s}'"));
-                return false;
-            }
-        }
-    };
-    // 柯里化包装（单参链，§4.9 合规；与 require_cjs_file 同形）。
-    let wrapped = format!(
-        "((exports) => (require) => (module) => (__filename) => (__dirname) => {{\n{code}\n}})"
-    );
-    // node 口径：CJS 栈帧是绝对路径（ESM 才是 file URL）——`stack.includes(__filename)` 类断言。
-    let c_filename = std::ffi::CString::new(cjs_script_name(&url)).unwrap_or_else(|_| c"module.js".into());
-    // 起始行 0（同 require_cjs_file：用户代码行号 = 物理行号）。
-    let options = CompileOptionsWrapper::new(&mut cx, c_filename, 0);
-    rooted!(&in(cx) let mut fn_v = UndefinedValue());
-    let res = evaluate_script(&mut cx, global_root.handle(), wrapped.as_str(), fn_v.handle_mut(), options);
-    if res.is_err() {
-        // 原 SyntaxError 等留 pending 透传（同 require_cjs_file 口径）。
-        return false;
-    }
-    if !fn_v.is_object() {
-        report_error(&mut cx, &format!("cannot compile '{}': wrapper failed", url.as_str()));
-        return false;
-    }
-    let Some(exports_v) = get_prop_value(&mut cx, module_root.get(), c"exports") else {
-        report_error(&mut cx, "TypeError: module.exports missing");
-        return false;
-    };
-    rooted!(&in(cx) let exports_root = exports_v);
-    let Some(make_req) = get_prop_value(&mut cx, global_root.get(), c"__wjs2_make_base_require") else {
-        report_error(&mut cx, "prelude helper __wjs2_make_base_require missing");
-        return false;
-    };
-    rooted!(&in(cx) let mut url_v = UndefinedValue());
-    url.as_str().to_jsval(&mut cx, url_v.handle_mut());
-    let Some(require_v) = call_one(&mut cx, global_root.get(), make_req, url_v.get()) else {
-        let msg = pending_message(&mut cx);
-        report_error(&mut cx, &msg);
-        return false;
-    };
-    rooted!(&in(cx) let require_root = require_v);
-    // __filename/__dirname（file: URL；其余退原文）。
-    let (filename_str, dirname_str) = match url.to_file_path() {
-        Ok(p) => {
-            let dir = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-            (p.to_string_lossy().into_owned(), dir)
-        }
-        Err(_) => (url.as_str().to_owned(), String::new()),
-    };
-    rooted!(&in(cx) let mut s_v = UndefinedValue());
-    filename_str.to_jsval(&mut cx, s_v.handle_mut());
-    rooted!(&in(cx) let mut d_v = UndefinedValue());
-    dirname_str.to_jsval(&mut cx, d_v.handle_mut());
-    // 五连单参调用（§4.9）。§4.80：cur 全程 rooted、实参调用点现读（链内
-    // call_one 可 GC，裸 JSVal 栈拷贝会悬垂）；用户代码异常留 pending 透传。
-    rooted!(&in(cx) let mut cur = fn_v.get());
-    for step in 0..5 {
-        let (label, arg) = match step {
-            0 => ("exports", exports_root.get()),
-            1 => ("require", require_root.get()),
-            2 => ("module", mozjs::jsval::ObjectValue(module_root.get())),
-            3 => ("__filename", s_v.get()),
-            _ => ("__dirname", d_v.get()),
-        };
-        if !cur.get().is_object() {
-            report_error(&mut cx, &format!("cannot compile '{}': {label} step is not callable", url.as_str()));
-            return false;
-        }
-        match call_one(&mut cx, global_root.get(), cur.get(), arg) {
-            Some(v) => cur.set(v),
-            None => return false,
-        }
-    }
-    frame.set_rval(UndefinedValue());
-    true
-}
 
-/// UNSAFE-BOUNDARY: `__wjs2_builtin_modules()` → JSON 数组（`node:module` 的
-/// `builtinModules`/`isBuiltin` 用；裸名 + `node:` 双形，与 `available()` 同源，
-/// 天然不漂移）；前置：无参；覆盖：`tests/node.rs::module_surface`。
-pub unsafe extern "C" fn builtin_modules_json(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同上
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let mut names: Vec<&str> = Vec::new();
-    for canonical in crate::builtins::node::available() {
-        // R9：新风格仅前缀模块（真机 builtinModules 仅 `node:` 形，无裸名；
-        // `getBuiltinModule('test')` 必须 undefined，而本仓 require 裸名可达）。
-        // 跳过裸形：test / sqlite / quic（本仓三件；sea/ffi 无 canonical 不涉及）。
-        match canonical {
-            "node:test" | "node:test/reporters" | "node:sqlite" | "node:quic"
-            | "node:sea" | "node:ffi" | "node:vfs" => {
-                names.push(canonical);
-            }
-            _ => {
-                names.push(canonical.strip_prefix("node:").unwrap_or(canonical));
-                names.push(canonical);
-            }
-        }
-    }
-    // node 口径：废弃别名 `sys`（= util）在列（isBuiltin/builtinModules 套件点名；
-    // 真机仅裸形，无 `node:sys`）。
-    names.push("sys");
-    let json = serde_json::to_string(&names).unwrap_or_else(|_| "[]".into());
-    rooted!(&in(cx) let mut v = UndefinedValue());
-    json.to_jsval(&mut cx, v.handle_mut());
-    frame.set_rval(v.get());
-    true
-}
-/// CJS 互操作命名导出发现（M5 vitest 牵引，供 `modules.rs` 垫片静态列名）。
-/// 编译期同步 require 一次取运行时键（`Object.keys` 实测；`__exportStar` 合并键
-/// 天然在内，静态词法分析做不到这点）；注册表缓存使求值期复用零重跑。
-/// best-effort：失败（循环中体/抛错体）即回空 → 调用方退 default-only 垫片，
-/// 求值期 require 走原语义（抛错/半成品照旧；抛错体在发现期跑过一次、求值期
-/// 再跑一次，双跑记档）。
-/// 前置：cx 在 realm 内；`url` 为 file: CJS（调用方已判 `cjs_interop`）。
-pub(crate) fn cjs_export_names(
-    cx: &mut mozjs::context::JSContext,
-    global: *mut JSObject,
-    url: &Url,
-) -> Vec<String> {
-    // 静态优先（cjs-module-lexer 口径，零求值——require(esm) 循环安全）。
-    if let Ok(path) = url.to_file_path() {
-        let mut seen = HashSet::new();
-        let names = cjs_static_names(&path, 0, &mut seen);
-        if !names.is_empty() {
-            return names;
-        }
-    }
-    // 运行时键快照回退（__exportStar 合并键等动态形；在飞护栏防 CJS↔ESM 环
-    // 递归——重入即放弃，调用方退 default-only 垫片）。
-    let reentered = NAMES_INFLIGHT
-        .with(|s| !s.borrow_mut().insert(url.as_str().to_owned()));
-    if reentered {
-        return Vec::new();
-    }
-    let out = cjs_export_names_runtime(cx, global, url);
-    NAMES_INFLIGHT.with(|s| {
-        s.borrow_mut().remove(url.as_str());
-    });
-    out
-}
-
-fn cjs_export_names_runtime(
-    cx: &mut mozjs::context::JSContext,
-    global: *mut JSObject,
-    url: &Url,
-) -> Vec<String> {
-    let exports = match require_value(cx, global, url.as_str(), None) {
-        Ok(v) if v.is_object() => v,
-        Err(e) if is_keep_pending(&e) => {
-            // 吞错路径：原异常仍 pending，清掉再回空（不外泄到后续 JSAPI）。
-            let _ = crate::jsapi_glue::take_pending_exception(cx);
-            return Vec::new();
-        }
-        _ => return Vec::new(),
-    };
-    rooted!(&in(cx) let exports_root = exports);
-    rooted!(&in(cx) let global_root: *mut JSObject = global);
-    // Object.keys(exports)（glue 直调，无新 JSAPI 面）。
-    let keys_fn = match get_prop_value(cx, global_root.get(), c"Object")
-        .filter(|o| o.is_object())
-        .and_then(|o| get_prop_value(cx, o.to_object(), c"keys"))
-    {
-        Some(f) => f,
-        _ => return Vec::new(),
-    };
-    let arr = match call_one(cx, global_root.get(), keys_fn, exports_root.get()) {
-        Some(v) if v.is_object() => v,
-        _ => return Vec::new(),
-    };
-    // JSON.stringify(keys) → Rust 侧解析（`parse_json` 另有落值用途，此处只要串）。
-    let str_fn = match get_prop_value(cx, global_root.get(), c"JSON")
-        .filter(|o| o.is_object())
-        .and_then(|o| get_prop_value(cx, o.to_object(), c"stringify"))
-    {
-        Some(f) => f,
-        _ => return Vec::new(),
-    };
-    let arr_rooted = arr;
-    rooted!(&in(cx) let arr_root = arr_rooted);
-    let json = match call_one(cx, global_root.get(), str_fn, arr_root.get()) {
-        Some(v) => value_to_string(cx, v),
-        _ => return Vec::new(),
-    };
-    serde_json::from_str::<Vec<String>>(&json).unwrap_or_default()
-}
-/// UNSAFE-BOUNDARY: `__wjs2_require_cjs_by_url(url)` → CJS 互操作垫片底座
-/// （`import` 命中 CJS 文件时合成 `export default` + 命名导出；复用
-/// `require_value` 全口径：注册表命中则同值、CJS 循环见半成品；垫片求值期
-/// 同步执行 CJS 体——编译期发现已跑过则缓存复用）。
-/// 前置：单参为 file: URL 串（非法即抛错，不回落）；
-/// 覆盖：`tests/node.rs::cjs_interop_default`。
-pub unsafe extern "C" fn require_cjs_by_url(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 引擎回调提供的 raw cx 有效；文档许可由此构造 wrapper
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    if frame.argc() < 1 || !frame.arg(0).is_string() {
-        report_error(&mut cx, "TypeError: __wjs2_require_cjs_by_url needs a file URL string");
-        return false;
-    }
-    let spec = value_to_string(&mut cx, frame.arg(0));
-    let global = state::global();
-    rooted!(&in(cx) let global_root: *mut JSObject = global);
-    // 绝对 file: URL 不依赖调用方 base（垫片求值点的调用方是垫片自身）。
-    match require_value(&mut cx, global_root.get(), &spec, None) {
-        Ok(v) => {
-            rooted!(&in(cx) let v_root = v);
-            frame.set_rval(v_root.get());
-            true
-        }
-        Err(e) => {
-            report_require_err(&mut cx, &e);
-            false
-        }
-    }
-}
-/// `__wjs2_require_main_url()` → 主模块 URL 串｜undefined（prelude 包成对象）。
-pub unsafe extern "C" fn require_main_url(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 引擎回调提供的 raw cx 有效
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    match state::main_module() {
-        Some(url) => {
-            rooted!(&in(cx) let mut v = UndefinedValue());
-            url.to_jsval(&mut cx, v.handle_mut());
-            frame.set_rval(v.get());
-            true
-        }
-        None => {
-            frame.set_rval(UndefinedValue());
-            true
-        }
-    }
-}
-
+// Module/CJS 活表面（`require_module.rs`，F2 按算法族拆分），调用方经此处重导出，不变。
+pub use super::require_module::{
+    builtin_modules_json, cjs_compile, cjs_live, require_cache_delete, require_cache_get,
+    require_cache_has, require_cache_set, require_cjs_by_url, require_main_url,
+};
+pub(crate) use super::require_module::{cjs_custom_handler, cjs_export_names, cjs_extensions_keys, cjs_wrapper_parts};

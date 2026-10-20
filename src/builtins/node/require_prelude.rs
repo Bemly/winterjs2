@@ -3,12 +3,45 @@
 
 /// `require` 附属 prelude（`NODE_PRELUDE` 尾部拼装；`require` 本体为裸 native）。
 pub const REQUIRE_PRELUDE: &str = r#"
-globalThis.__wjs2_make_module = (filename) => ({
-  exports: {},
-  id: String(filename),
-  filename: String(filename),
-  paths: [],
-});
+globalThis.__wjs2_make_module = (filename) => {
+  const m = {
+    exports: {},
+    id: String(filename),
+    filename: String(filename),
+    paths: [],
+    loaded: false,
+    children: [],
+    _compile: function (code, filenameArg) {
+      __wjs2_cjs_compile(this, String(code), filenameArg != null ? String(filenameArg) : String(this.filename));
+    },
+  };
+  // `parent` 访问器（node 口径：真值存 `__wjs2_parent` 背书字段；读写经 DEP0144
+  // 门控，仅 --pending-deprecation 下警告；native 建链写背书字段不触发）。
+  Object.defineProperty(m, 'parent', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      __wjs2_dep_warn0144();
+      return this.__wjs2_parent ?? null;
+    },
+    set(v) {
+      __wjs2_dep_warn0144();
+      this.__wjs2_parent = v;
+    },
+  });
+  return m;
+};
+function __wjs2_dep_warn0144() {
+  try {
+    const argv = globalThis.process && globalThis.process.execArgv;
+    if (Array.isArray(argv) && argv.includes('--pending-deprecation')) {
+      globalThis.process.emitWarning(
+        'module.parent is deprecated due to accuracy issues. Please use require.main to find program entry point instead.',
+        { type: 'DeprecationWarning', code: 'DEP0144' },
+      );
+    }
+  } catch { /* 警告通道失败不掩盖主流程 */ }
+}
 globalThis.__wjs2_make_base_require = (base) => (id) => __wjs2_require_from(base, String(id));
 globalThis.__wjs2_require_main = (url) => globalThis.require(String(url));
 // 全局 console 格式化（node 口径：`util.format`——%s/%d/%i/%f/%j/%o/%O/%c/%%、对象 inspect）。
@@ -278,5 +311,17 @@ Object.defineProperty(globalThis.require, "main", {
     if (u === undefined) return undefined;
     return { filename: u, id: u, paths: [] };
   },
+});
+// require.cache/extensions 共享视图（node:module 活对象；未加载前 undefined，
+// 与现行一致；getter 不改调用帧，caller 定位无损）。
+Object.defineProperty(globalThis.require, "cache", {
+  configurable: true,
+  enumerable: true,
+  get() { return globalThis.__wjs2_cjs_cache; },
+});
+Object.defineProperty(globalThis.require, "extensions", {
+  configurable: true,
+  enumerable: true,
+  get() { return globalThis.__wjs2_module_extensions; },
 });
 "#;

@@ -86,12 +86,14 @@ unsafe impl Traceable for ModuleEntry {
 pub struct CjsEntry {
     pub url: String,
     pub exports: Box<Heap<JSVal>>,
+    pub module: Option<Box<Heap<JSVal>>>,
 }
 
-// SAFETY: 只追踪 exports（URL 无 GC 指针）。
+// SAFETY: 只追踪 exports/module（URL 无 GC 指针）。
 unsafe impl Traceable for CjsEntry {
     unsafe fn trace(&self, trc: *mut JSTracer) { unsafe {
         self.exports.trace(trc);
+        self.module.trace(trc);
     }}
 }
 
@@ -353,6 +355,11 @@ pub struct RootedState {
     pub entry_rejected: Heap<JSVal>,
     pub modules: Vec<ModuleEntry>, // URL → 已编译模块记录（循环/去重，spec 同结果）
     pub cjs_modules: Vec<CjsEntry>, // URL → CJS `module.exports`（执行前预注册，循环可见半成品）
+    pub cjs_wrapper: Option<Box<Heap<*mut JSObject>>>, // `Module.wrapper` 活数组（native 编译期现读 [0]/[1]）
+    pub cjs_extensions: Option<Box<Heap<*mut JSObject>>>, // `Module._extensions` 活对象（native 解析期现读）
+    pub cjs_require_stack: Vec<Box<Heap<*mut JSObject>>>, // CJS 求值栈（parent/children 归属；RAII 进出）
+    pub cjs_require_urls: Vec<String>, // CJS 求值中 URL（循环警告判定用）
+    pub cjs_dep0128_warned: HashSet<std::path::PathBuf>, // DEP0128 已告警包（每包一次）
     pub watch_listeners: Vec<WatchCallback>, // fs.watch 监听（close 前保留，多次分发）
     pub child_targets: Vec<ChildTarget>, // 异步子进程目标（exit/close 后摘除）
     pub net_targets: Vec<NetTarget>, // node:net 目标（Close 后摘除）
@@ -395,6 +402,9 @@ unsafe impl Traceable for RootedState {
         self.next_ticks.trace(trc);
         self.modules.trace(trc);
         self.cjs_modules.trace(trc);
+        self.cjs_wrapper.trace(trc);
+        self.cjs_extensions.trace(trc);
+        self.cjs_require_stack.trace(trc);
         self.watch_listeners.trace(trc);
         self.child_targets.trace(trc);
         self.net_targets.trace(trc);
@@ -785,16 +795,43 @@ pub fn set_exit_code(code: Option<i32>) {
 }
 
 // ── CJS 缓存 / ESM 求值集 / 主模块（`require` 用，见 plan Phase 4d）─────────
-/// CJS 导出命中（clone 出值；调用方 rooted 化）。
-pub fn cjs_find(url: &str) -> Option<JSVal> {
-    with_rooted(|s| s.cjs_modules.iter().find(|m| m.url == url).map(|m| m.exports.get()))
+/// CJS 导出命中（有模块对象即活读 `.exports`——执行中重赋值可见，
+/// 循环依赖读半成品；无模块（JSON）即快照；调用方 rooted 化）。
+/// 需要 cx（活读经 JSAPI）；调用方保证入 realm（require 路径恒成立）。
+pub fn cjs_find(cx: &mut mozjs::context::JSContext, url: &str) -> Option<JSVal> {
+    let (mod_obj, snap) = with_rooted(|s| {
+        s.cjs_modules.iter().find(|m| m.url == url).map(|m| {
+            (m.module.as_ref().map(|h| h.get()), m.exports.get())
+        })
+    })?;
+    if let Some(m) = mod_obj {
+        if m.is_object() {
+            rooted!(&in(cx) let mod_root: *mut JSObject = m.to_object());
+            if let Some(v) = crate::jsapi_glue::get_prop_value(cx, mod_root.get(), c"exports") {
+                return Some(v);
+            }
+        }
+    }
+    Some(snap)
+}
+
+/// CJS 模块命中（children 建链用；调用方 rooted 化）。
+pub fn cjs_find_module(url: &str) -> Option<JSVal> {
+    with_rooted(|s| {
+        s.cjs_modules.iter().find(|m| m.url == url).and_then(|m| m.module.as_ref().map(|h| h.get()))
+    })
 }
 
 /// CJS 预注册（执行前占位，循环可见半成品；重复注册保留首个）。
-pub fn cjs_register(url: String, exports: JSVal) {
+/// module 为空即仅记 exports（JSON 路径等无模块对象场景）。
+pub fn cjs_register(url: String, exports: JSVal, module: Option<JSVal>) {
     with_rooted(|s| {
         if !s.cjs_modules.iter().any(|m| m.url == url) {
-            s.cjs_modules.push(CjsEntry { url, exports: Heap::boxed(exports) });
+            s.cjs_modules.push(CjsEntry {
+                url,
+                exports: Heap::boxed(exports),
+                module: module.map(Heap::boxed),
+            });
         }
     });
 }
@@ -805,6 +842,37 @@ pub fn cjs_remove(url: &str) {
         s.cjs_modules.retain(|m| m.url != url);
     });
 }
+
+/// CJS 活对象同步（`Module.wrapper`/`._extensions` 数组/对象；setter + 初始化
+/// 调用；native 编译/解析期现读，改写即对后续生效）。
+pub fn cjs_live_set(wrapper: *mut JSObject, extensions: *mut JSObject) {
+    with_rooted(|s| {
+        s.cjs_wrapper = if wrapper.is_null() { None } else { Some(Heap::boxed(wrapper)) };
+        s.cjs_extensions = if extensions.is_null() { None } else { Some(Heap::boxed(extensions)) };
+    });
+}
+
+/// CJS 求值栈进（require_cjs_file 入口；调用方保证出栈配对）。
+pub fn cjs_stack_push(url: String, module: *mut JSObject) {
+    with_rooted(|s| {
+        s.cjs_require_stack.push(Heap::boxed(module));
+        s.cjs_require_urls.push(url);
+    });
+}
+
+/// CJS 求值栈出（所有返回路径含失败）。
+pub fn cjs_stack_pop() {
+    with_rooted(|s| {
+        s.cjs_require_stack.pop();
+        s.cjs_require_urls.pop();
+    });
+}
+
+/// CJS 求值中判定（循环依赖警告用；栈上有同 URL 即求值中）。
+pub fn cjs_inflight(url: &str) -> bool {
+    with_rooted(|s| s.cjs_require_urls.iter().any(|u| u == url))
+}
+
 
 /// ESM 已求值查询/标记（`require(node:)` 跳过二次求值用）。
 pub fn module_evaluated(url: &str) -> bool {

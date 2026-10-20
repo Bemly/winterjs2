@@ -3013,3 +3013,12 @@ G1/G2/G3/G9 已收官。）
   natives/接线；输出与 node 逐字节一致；套件余量皆旧断言漂移（真机同红）。
 - 判明：X448 轮子直用（x448 已钉版）；wrap-unwrap 余 KMAC 旧断言 + X448；
   sign-verify-kmac/keygen-kmac 真机同红（长度口径漂移）；encap ML-KEM 另案。
+
+## 2026-10-21 webcrypto 落地批 7（39 件 20→21 绿）
+
+- 转绿 1：derivebits-cfrg（派生长度语义全对齐 + X448 向量一致）。
+- 实现：`__wjs2_deriveLen`（空即全长/越界 WebIDL TypeError/超长
+  OperationError）+ `__wjs2_maskTail`（非整字节掩低位）；X/ECDH public
+  缺失/错型码 + 错算法 mismatch。
+- 排障：cfrg 末字节差系掩码非算法错（0x9a&0xf8=0x98），隔离复现先行；
+  教训：值差先定字节位再动算法。

@@ -98,6 +98,25 @@ function __wjs2_splitUsages(usages) {
   if (privU.length === 0) throw new DOMException("Usages cannot be empty when creating a key.", "SyntaxError");
   return { pubU, privU };
 }
+// X/ECDH 派生长度（真机逐项：空即全长；越界/非整数即 WebIDL TypeError；
+// 超长即 OperationError；非 8 倍数向上取整）。
+function __wjs2_deriveLen(length, maxBits) {
+  if (length === undefined || length === null) return maxBits;
+  const bits = Number(length);
+  if (!Number.isInteger(bits) || bits < 0 || bits > 4294967295) {
+    throw new TypeError("Failed to execute 'deriveBits' on 'SubtleCrypto': 3rd argument is outside the expected range of 0 to 4294967295.");
+  }
+  if (bits > maxBits) throw __wjs2_domErr("OperationError", "derived bit length is too small");
+  return bits;
+}
+// 非整字节即掩低位（cfrg 真机逐项：多余低位置 0）。
+function __wjs2_maskTail(secret, bits) {
+  if (bits === secret.length * 8) return secret.buffer;
+  const out = secret.slice(0, Math.ceil(bits / 8));
+  const rem = bits % 8;
+  if (rem !== 0) out[out.length - 1] &= 0xff << (8 - rem);
+  return out.buffer;
+}
 function __wjs2_x_bits(algorithm, st, length) {
   const pubKey = algorithm?.public;
   if (pubKey === undefined) {
@@ -115,12 +134,8 @@ function __wjs2_x_bits(algorithm, st, length) {
     throw __wjs2_domErr("InvalidAccessError", "key algorithm mismatch");
   }
   const secret = __wjs2_x_derive(st.material, pst.material);
-  if (length === undefined || length === null) return secret.buffer;
-  const bits = Number(length);
-  if (!Number.isInteger(bits) || bits < 0 || bits > secret.length * 8 || bits % 8 !== 0) {
-    throw __wjs2_domErr("OperationError", "bad X25519 deriveBits length");
-  }
-  return secret.slice(0, bits / 8).buffer;
+  const bits = __wjs2_deriveLen(length, secret.length * 8);
+  return __wjs2_maskTail(secret, bits);
 }
 function __wjs2_x448_bits(algorithm, st, length) {
   const pubKey = algorithm?.public;
@@ -139,12 +154,8 @@ function __wjs2_x448_bits(algorithm, st, length) {
     throw __wjs2_domErr("InvalidAccessError", "key algorithm mismatch");
   }
   const secret = __wjs2_x448_derive(st.material, pst.material);
-  if (length === undefined || length === null) return secret.buffer;
-  const bits = Number(length);
-  if (!Number.isInteger(bits) || bits < 0 || bits > secret.length * 8 || bits % 8 !== 0) {
-    throw __wjs2_domErr("OperationError", "bad X448 deriveBits length");
-  }
-  return secret.slice(0, bits / 8).buffer;
+  const bits = __wjs2_deriveLen(length, secret.length * 8);
+  return __wjs2_maskTail(secret, bits);
 }
 function __wjs2_ecdh_bits(algorithm, st, length) {
   const pubKey = algorithm?.public;

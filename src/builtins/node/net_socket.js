@@ -48,6 +48,16 @@ function __netErr(code, msg) {
   e.code = code;
   return e;
 }
+// node lib/_http_agent.js writeAfterFIN 逐字口径（原 agent 挂载，现 socket 自门）：
+// 对端 FIN 后写 → EPIPE（'This socket has been ended by the other party'）+ 销毁。
+function __writeAfterFIN(chunk, encoding, cb) {
+  if (typeof encoding === "function") { cb = encoding; encoding = null; }
+  const er = new Error("This socket has been ended by the other party");
+  er.code = "EPIPE";
+  try { this.destroy(er); } catch { /* gone */ }
+  if (typeof cb === "function") cb(er);
+  return false;
+}
 
 class Socket extends EventEmitter {
   constructor(options) {
@@ -152,12 +162,15 @@ class Socket extends EventEmitter {
     this.__connected = false;   // 完成连接（connect/attach 后 true）
     this.__pendW = [];          // 连接完成前的缓冲写（node write 语义）
     // Node 默认 allowHalfOpen=false：收到远端 FIN（'end'）后自动 end 本端。
-    // no-halfopen-enforcer 套件：内部 end 门常驻（listenerCount恒1，构造期首挂，
-    // 用户监听之后触发——node 真机序）。自动收尾走完整 end() 语义
-    // （allow-half-open 套件：无显式 end 亦发 finish；标志递延一拍，
-    // 'end' 处理器内 writable 仍真，写仍放行）。
+    // node 口径 onReadableStreamEnd（socket 自门，非 agent 挂载——parse-error/
+    // agent-keepalive 计数：新鲜/池态 end=1，请求在途 end=2；agent 另挂即超数）。
+    // 自动收尾走完整 end() 语义（allow-half-open 套件：无显式 end 亦发 finish；
+    // 标志递延一拍，'end' 处理器内 writable 仍真，写仍放行）+ FIN 后写 EPIPE 置换。
     this.allowHalfOpen = !!(options && options.allowHalfOpen);
-    this.on("end", () => {
+    this.on("end", function onReadableStreamEnd() {
+      if (!this.allowHalfOpen) {
+        this.write = __writeAfterFIN;
+      }
       if (!this.allowHalfOpen && this.__id && !this.destroyed && !this.__ended) {
         try { this.__nativeEnd(); } catch {}
         // 注：必须经 setImmediate 递延——本仓 I/O 回调内 queueMicrotask 晚于

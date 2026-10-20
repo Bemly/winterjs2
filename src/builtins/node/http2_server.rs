@@ -518,6 +518,27 @@ impl<T> SharedIo<T> {
         let mut guard = self.inner.lock().await;
         guard.write_all(&frame).await.is_ok() && guard.flush().await.is_ok()
     }
+
+    /// GOAWAY(code) 注入（propagate-session-destroy-code：session.destroy(code)
+    /// 先 GOAWAY 后逐流 RST；hyper graceful_shutdown 只发 GOAWAY(0)）。
+    /// last_id 取已见最大 wire sid（在途全拒；node 同形近似）。
+    pub(crate) async fn inject_goaway(&self, code: u32) -> bool
+    where
+        T: tokio::io::AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncWriteExt as _;
+        let last: u32 = match self.wire_streams.lock() {
+            Ok(g) => g.iter().cloned().max().unwrap_or(0),
+            Err(e) => e.into_inner().iter().cloned().max().unwrap_or(0),
+        };
+        let mut frame = [0u8; 17];
+        frame[2] = 8;
+        frame[3] = 0x7;
+        frame[9..13].copy_from_slice(&(last & 0x7fff_ffff).to_be_bytes());
+        frame[13..17].copy_from_slice(&code.to_be_bytes());
+        let mut guard = self.inner.lock().await;
+        guard.write_all(&frame).await.is_ok() && guard.flush().await.is_ok()
+    }
 }
 
 /// poll 期取锁（毒化注入只在循环退出后发生，轮询期永不竞争；万一失手则

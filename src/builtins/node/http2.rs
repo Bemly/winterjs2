@@ -542,7 +542,13 @@ pub(crate) async fn serve_conn<S>(
                         feed_body(stream_id, BodyMsg::End(Some(trailers)), &bodies, &pendings).await;
                     }
                     Some(NetCmd::H2RespondReset { stream_id, code }) => {
-                        if stream_id == 0 {
+                        if stream_id == 0xffffffff {
+                            // GOAWAY(code) 注入（propagate-session-destroy-code：
+                            // session.destroy(code) 先 GOAWAY 后逐流 RST；
+                            // 魔数流号复用 H2RespondReset 通道，新 native 需
+                            // mod.rs 注册，另案）。
+                            let _ = injector.inject_goaway(code).await;
+                        } else if stream_id == 0 {
                             // 连接级协议错误（cant-turn-off：session.settings 关 ECP）——
                             // 坏帧 {8:0} 必须排在握手 {8:1} 之后（客户端先见 1
                             // 再见 0 才报协议错误；顺序反了即被当普通

@@ -124,20 +124,7 @@ class ClientHttp2Stream extends Duplex {
     }
   }
   __onAborted(rstCode) {
-    if (this.aborted) return;
-    // node：会话销毁只发 aborted 不带 error（destroy 探针：aborted + close）；
-    // aborted 属性仅对端 RST 中断置 true（client-destroy 套件）；带码按码错误。
-    const n = Number(rstCode);
-    const hasCode = Number.isInteger(n) && (rstCode !== undefined && rstCode !== null && rstCode !== "");
-    const err = hasCode ? __h2RstError(n) : undefined;
-    if (hasCode && n !== 0) {
-      this.aborted = true;
-      this.rstCode = n;
-    }
-    this.emit("aborted");
-    this.push(null);
-    if (err !== undefined) this.destroy(err);
-    else this.destroy();
+    __clientOnAborted(this, rstCode);
   }
   priority(options) {
     __h2PriorityDeprecate();
@@ -167,9 +154,8 @@ class ClientHttp2Stream extends Duplex {
       this.__ended = true;
       const rstErr = __h2RstError(code);
       if (rstErr !== undefined) {
-        // 非零非 CANCEL 的 close 码即本地流错误（error 先于 close）。
         this.rstCode = code;
-        this.emit("error", rstErr);
+        this.emit("error", rstErr); // 非零非 CANCEL 即本地流错误，先于 close。
       } else if ((code ?? 0) !== 0) {
         this.rstCode = code;
       }
@@ -230,8 +216,7 @@ class ClientHttp2Session extends EventEmitter {
     this.__id = 0;
     this.__seq = 1;
     this.__streams = new Map();
-    // 已终结流 tombstone：迟到重复终点静默丢弃，禁回落会话 error
-    //（server-socket-destroy：conn 收尾与任务错误乱序致会话级 fatal）。
+    // 已终结流 tombstone：迟到重复终点静默丢弃，禁回落会话 error。
     this.__goneStreams = new Set();
     this.__authority = authority;
     this.__options = options ?? {};
@@ -489,9 +474,16 @@ class ClientHttp2Session extends EventEmitter {
         break;
       }
       case "goawayError": {
-        // 服务端 GOAWAY 非零码（too-large-headers 面，见 h2_head.js）。
+        // 服务端 GOAWAY 非零码。11 = header 超限（too-large-headers）；
+        // 其余 = 会话级销毁（propagate-session-destroy-code，见 h2_head.js）。
         const o = JSON.parse(payload);
-        __goawayStreamErrors(this, o.payload === undefined ? o : JSON.parse(o.payload));
+        const inner = o.payload === undefined ? o : JSON.parse(o.payload);
+        const code = Number(inner.code);
+        if (code === 11) {
+          __goawayStreamErrors(this, inner);
+          break;
+        }
+        __goawaySessionDestroy(this, code);
         break;
       }
       case "response": {
@@ -551,7 +543,7 @@ class ClientHttp2Session extends EventEmitter {
           // 否则 close 永不到，fd-invalid 类套件挂死）。无监听器回落会话
           //（旧口径保留，error-order 系套件依赖）。
           if (inner.rst !== undefined && inner.rst !== null) st.rstCode = Number(inner.rst);
-          // 传输层死亡先 'aborted' 后 error（server-socket-destroy 探针序）。
+          // 传输层死亡先 aborted 后 error（探针序）；流 RST 错误不发 aborted。
           if (inner.code === "ECONNRESET" && !st.aborted) {
             st.aborted = true;
             st.emit("aborted");
@@ -561,8 +553,7 @@ class ClientHttp2Session extends EventEmitter {
           st.destroy();
           this.__goneStreams.add(sid);
         } else if (sid !== undefined && this.__goneStreams.has(sid)) {
-          // 迟到重复终点：静默丢弃（见 aborted 注）。
-          break;
+          break; // 迟到重复终点：静默丢弃。
         } else {
           this.emit("error", err);
         }

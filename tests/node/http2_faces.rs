@@ -270,3 +270,51 @@ server.listen(0, () => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_propagate_session_destroy_code_faces() {
+    // propagate-session-destroy-code：session.destroy(7) → GOAWAY(7) 先行
+    // + 逐流 RST(7)；双侧流 SESSION_ERROR + rstCode 7，会话 error 同文，
+    // destroyed 置位而 closed 保持 false 直到 close。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "g.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer();
+server.on("session", (session) => {
+  session.on("error", (e) => console.log("srv-sess-err", e.code, e.message));
+  session.on("close", () => console.log("srv-sess-close"));
+  session.on("stream", (stream) => {
+    stream.on("error", (e) => console.log("srv-stream-err", e.code, e.message, stream.rstCode));
+    session.destroy(7);
+  });
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  client.on("error", (e) => console.log("cli-err", e.code, e.message));
+  client.on("close", () => console.log("cli-close"));
+  const req = client.request({ ":path": "/" });
+  req.on("error", (e) => console.log("cli-stream-err", e.code, e.message, req.rstCode));
+  req.on("close", () => {
+    console.log("cli-stream-close", client.destroyed === true || client.closed === true);
+    server.close();
+  });
+  req.resume();
+  req.end();
+});
+"#,
+    );
+    for line in [
+        "srv-stream-err ERR_HTTP2_SESSION_ERROR Session closed with error code 7 7",
+        "srv-sess-err ERR_HTTP2_SESSION_ERROR Session closed with error code 7",
+        "srv-sess-close",
+        "cli-stream-err ERR_HTTP2_SESSION_ERROR Session closed with error code 7 7",
+        "cli-err ERR_HTTP2_SESSION_ERROR Session closed with error code 7",
+        "cli-close",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

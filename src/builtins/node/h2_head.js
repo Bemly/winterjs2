@@ -479,6 +479,48 @@ function __maybeProtoPoison(session, upd) {
   session.destroy();
   return true;
 }
+// 客户端流 aborted（h2_client.js __onAborted 委托；放此处守 1000 行门）。
+// 干净收尾只发 aborted（destroy 探针）；对端 RST 置 aborted 并按码错误。
+function __clientOnAborted(st, rstCode) {
+  if (st.aborted) return;
+  const n = Number(rstCode);
+  const hasCode = Number.isInteger(n) && (rstCode !== undefined && rstCode !== null && rstCode !== "");
+  const err = hasCode ? __h2RstError(n) : undefined;
+  if (hasCode && n !== 0) {
+    st.aborted = true;
+    st.rstCode = n;
+  }
+  st.emit("aborted");
+  st.push(null);
+  if (err !== undefined) st.destroy(err);
+  else st.destroy();
+}
+// GOAWAY 非零码的会话级销毁（propagate-session-destroy-code）：
+// 全流 SESSION_ERROR + 会话 error + 销毁（closed 保持 false，connClose 后才 close）。
+function __goawaySessionDestroy(session, code) {
+  if (session.destroyed) return;
+  const serr = __h2Err("ERR_HTTP2_SESSION_ERROR", `Session closed with error code ${code}`);
+  for (const [, st] of session.__streams) {
+    if (!st.destroyed) {
+      st.rstCode = code;
+      st.emit("error", serr);
+      st.destroy();
+      session.__goneStreams.add(st.id);
+    }
+  }
+  session.__streams.clear();
+  for (const pst of session.__pendingOpens.splice(0)) {
+    pst.emit("error", serr);
+    pst.destroy();
+  }
+  session.destroyed = true;
+  session.emit("error", serr);
+  // 连接拆除走正常 teardown（Close 臂 abort 在途任务收尾）。
+  if (session.__id) {
+    __wjs2_net_destroy(session.__id);
+    session.__id = 0;
+  }
+}
 // GOAWAY 非零码的流级翻 mapping（too-large-headers：h2 线上 GOAWAY(11)，
 // node 线上 RST_STREAM(11)——未收应答的在途流翻成对应流错误）。
 function __goawayStreamErrors(session, inner) {
@@ -796,9 +838,27 @@ class Http2Session extends EventEmitter {
     if (typeof cb === "function") this.once("close", cb);
     if (this.destroyed) return this;
     this.destroyed = true;
-    // 不经 close() 委派——close 在 destroyed 置位后直接返回，
-    // 连接永不拆除（server-socket-destroy 套件：destroy 即无声）。
-    this.closed = true;
+    // node session.destroy(code) 口径（propagate-session-destroy-code）：
+    // 非零非 CANCEL 码 → 开流逐个 RST(code) + 流错误（SESSION_ERROR）+
+    // 会话 error（同错）；closed 保持 false 直到 connClose（测试点名）。
+    // 干净码走旧路（优雅关，不断流语义不变）。
+    const c = Number(code) || 0;
+    if (c !== 0 && c !== 8) {
+      const serr = __code("ERR_HTTP2_SESSION_ERROR", c);
+      // GOAWAY(code) 先行（客户端凭此判会话级销毁，逐流 RST 随后）；
+      // 魔数流号经 H2RespondReset 复用通道（新 native 需 mod.rs，另案）。
+      if (this.__conn) __wjs2_h2_reset(this.__conn, 0xffffffff, c);
+      for (const [, st] of this.__streams) {
+        try { __wjs2_h2_reset(this.__conn, st.id, c); } catch {}
+        st.rstCode = c;
+        st.emit("error", serr);
+        st.destroy();
+      }
+      this.__streams.clear();
+      this.emit("error", serr);
+    }
+    // closed 不置位（connClose → __finish 置位并发 close；测试断言 destroy 后 closed=false）。
+    // 不经 close() 委派（destroyed 置位后 close 直接返回，连接永不拆除——旧坑）。
     if (this.__conn) {
       __wjs2_net_destroy(this.__conn);
     } else {

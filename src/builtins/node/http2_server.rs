@@ -3,11 +3,12 @@
 use mozjs::jsval::JSVal;
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
-use super::http2::{ensure_provider, opt_num, serve_conn, set_rval_str};
+use super::http2::{b64, ensure_provider, opt_num, serve_conn, set_rval_str};
 use super::net::{NetEvent, NetKind};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::collections::HashMap;
 
 /// 监听选项 JSON：`{tls?: {cert, key}, settings?: {enableConnectProtocol?, maxHeaderListSize?, maxHeaderSize?}}`（h2c 缺省）。
 #[derive(Debug, Default, serde::Deserialize)]
@@ -657,13 +658,24 @@ fn adopt_inbox() -> &'static std::sync::Mutex<
 }
 
 /// 通道桥 IO：读←inbox channel（sender 丢弃即 EOF）；写→H2Stream adoptData
-/// 事件（payload = base64，JS 侧落注入 socket）。
-struct AdoptIo {
+/// 事件（payload = "id b64"，JS 侧落传输）。服务端注入（socket/流）与
+/// 客户端 createConnection 共用（后者见 http2_client.rs）。
+pub(crate) struct AdoptIo {
     inbox: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     pending: std::collections::VecDeque<u8>,
     eof: bool,
     ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
     conn_id: u64,
+}
+
+impl AdoptIo {
+    pub(crate) fn new(
+        inbox: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+        conn_id: u64,
+    ) -> Self {
+        AdoptIo { inbox, pending: std::collections::VecDeque::new(), eof: false, ev_tx, conn_id }
+    }
 }
 
 impl tokio::io::AsyncRead for AdoptIo {
@@ -791,13 +803,7 @@ pub unsafe extern "C" fn h2_adopt(
         .unwrap_or_else(|_| "127.0.0.1:0".parse().expect("literal addr"));
     let ev2 = ev_tx.clone();
     handle.spawn(async move {
-        let io = AdoptIo {
-            inbox: in_rx,
-            pending: std::collections::VecDeque::new(),
-            eof: false,
-            ev_tx: ev2.clone(),
-            conn_id,
-        };
+        let io = AdoptIo::new(in_rx, ev2.clone(), conn_id);
         if let Some(acc) = tls_cfg.map(tokio_rustls::TlsAcceptor::from) {
             match acc.accept(io).await {
                 Err(_) => {
@@ -857,3 +863,104 @@ pub unsafe extern "C" fn h2_adopt_close(
     adopt_inbox().lock().expect("adopt inbox").remove(&(cid as u64));
     true
 }
+
+/// CONNECT 隧道态（proxy-over-h2；per-conn）：待取 upgrade 句柄 /
+/// 隧道写出通道（None 消息即关写半部）/ 已升级旗。
+pub(crate) type TunnelFuts = Arc<tokio::sync::Mutex<HashMap<u64, hyper::upgrade::OnUpgrade>>>;
+pub(crate) type TunnelOuts =
+    Arc<tokio::sync::Mutex<HashMap<u64, tokio::sync::mpsc::UnboundedSender<Option<Vec<u8>>>>>>;
+
+/// CONNECT 隧道泵（proxy-over-h2）：hyper 在 2xx 应答后将流升级为隧道，
+/// 后续 DATA 只进 upgrade 句柄（常规 Incoming 恒空）；且句柄必须持有——
+/// 随 req 析构丢弃即触发隧道拆除（空 DATA-EOS + RST(0)，外层枉死）。
+/// 本泵持有句柄（禁拆）并转隧道字节为体事件；非 2xx（405 等）时 future
+/// 直接 Err → 空收尾（与常规空体流事件同形）。
+pub(crate) async fn pump_upgrade_body(
+    fut: hyper::upgrade::OnUpgrade,
+    outbox: tokio::sync::mpsc::UnboundedReceiver<Option<Vec<u8>>>,
+    ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
+    server_id: u64,
+    stream_id: u64,
+) {
+    use hyper::rt::{Read as _, Write as _};
+    let send = |what: &str, payload: String| {
+        let _ = ev_tx.send(NetEvent {
+            id: server_id,
+            kind: NetKind::H2Stream { stream_id, what: what.into(), payload },
+        });
+    };
+    let mut upgraded = match fut.await {
+        Err(_) => {
+            send("reqEnd", "[]".into());
+            return;
+        }
+        Ok(u) => u,
+    };
+    // hyper::rt 经 poll_fn 双向驱动（Upgraded 无 tokio AsyncRead）。
+    // 读→体事件；写←outbox（None 关写半部）；读侧 EOF 后仍服务写侧。
+    let mut buf = vec![0u8; 32768];
+    let mut outbox = outbox;
+    let mut read_done = false;
+    loop {
+        enum Ev {
+            Readed(Result<usize, std::io::Error>),
+            Out(Option<Option<Vec<u8>>>),
+        }
+        let ev = if read_done {
+            match outbox.recv().await {
+                Some(m) => Ev::Out(Some(m)),
+                None => break,
+            }
+        } else {
+            tokio::select! {
+                r = async {
+                    let mut readbuf = hyper::rt::ReadBuf::new(&mut buf);
+                    std::future::poll_fn(|cx| {
+                        let r = std::pin::Pin::new(&mut upgraded)
+                            .poll_read(cx, readbuf.unfilled());
+                        match r {
+                            std::task::Poll::Ready(Ok(())) => {
+                                std::task::Poll::Ready(Ok(readbuf.filled().len()))
+                            }
+                            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+                            std::task::Poll::Pending => std::task::Poll::Pending,
+                        }
+                    })
+                    .await
+                } => Ev::Readed(r),
+                m = outbox.recv() => Ev::Out(m),
+            }
+        };
+        match ev {
+            Ev::Readed(Ok(0)) | Ev::Readed(Err(_)) => {
+                read_done = true;
+                send("reqEnd", "[]".into());
+            }
+            Ev::Readed(Ok(n)) => {
+                send("body", b64(&buf[..n]));
+            }
+            Ev::Out(None) => break,
+            Ev::Out(Some(None)) => {
+                let _ = std::future::poll_fn(|cx| {
+                    std::pin::Pin::new(&mut upgraded).poll_shutdown(cx)
+                })
+                .await;
+            }
+            Ev::Out(Some(Some(bytes))) => {
+                let mut off = 0;
+                while off < bytes.len() {
+                    let w = std::future::poll_fn(|cx| {
+                        std::pin::Pin::new(&mut upgraded)
+                            .poll_write(cx, &bytes[off..])
+                    })
+                    .await;
+                    match w {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => off += n,
+                    }
+                }
+            }
+        }
+    }
+}
+

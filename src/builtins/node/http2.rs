@@ -27,7 +27,7 @@ use mozjs::rooted;
 use crate::builtins::node::net::{NetCmd, NetEvent, NetKind};
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
-use super::http2_server::SharedIo;
+use super::http2_server::{SharedIo, TunnelFuts, TunnelOuts, pump_upgrade_body};
 
 // ── hyper 胶水（零新 crate；Executor/Body/IO 手写小件）───────────────────────
 
@@ -157,7 +157,6 @@ type Pendings = Arc<tokio::sync::Mutex<HashMap<u64, Vec<BodyMsg>>>>;
 type DeadStreams = Arc<std::sync::Mutex<HashSet<u64>>>;
 /// 已收尾（end 发出）的流——连接退出时不再报 aborted。
 type EndedStreams = Arc<std::sync::Mutex<HashSet<u64>>>;
-
 /// mpsc 供体 body（hyper `http_body::Body` 手写 30 行）。
 /// 单任务 select 轮询：body Pending 不需 waker（cmd 臂推进后 conn 臂重轮询）。
 pub(crate) struct ChanBody {
@@ -368,6 +367,13 @@ pub(crate) async fn serve_conn<S>(
     let dead: DeadStreams = Arc::new(std::sync::Mutex::new(HashSet::new()));
     let dead_clean: DeadStreams = Arc::new(std::sync::Mutex::new(HashSet::new()));
     let ended: EndedStreams = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    // CONNECT 隧道态（proxy-over-h2）：已升级流的待取 upgrade 句柄 /
+    // 写出通道 / 已升级旗（写改道用；见 pump_upgrade_body 与 H2Respond 系）。
+    // per-conn 生命周期，随 task 结束释放。
+    let tunnel_fut: TunnelFuts = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let tunnel_out: TunnelOuts = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let tunnel_fut_drv = tunnel_fut.clone();
+    let tunnel_out_drv = tunnel_out.clone();
     let seq = Arc::new(std::sync::atomic::AtomicU64::new(1));
     // 连接死亡广播：service 的应答等待在 conn 亡后即退出（否则 hyper 等待
     // 未完成响应 → conn 永不结束 → 客户端死连接泄漏，服务端流 'close' 不到）
@@ -390,6 +396,7 @@ pub(crate) async fn serve_conn<S>(
             let seq = seq.clone();
             let ev_tx = ev_tx.clone();
             let mut conn_dead = conn_dead_base.clone();
+            let tunnel_fut = tunnel_fut.clone();
             async move {
                 let stream_id = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let method = req.method().to_string();
@@ -418,8 +425,18 @@ pub(crate) async fn serve_conn<S>(
                 // 以 `body`/`reqEnd` 流事件跟进（修前整收：读完整个请求体才派发，客户端
                 // 等服务端应答/wantTrailers 再收尾的交互形全挂死）。头带 END_STREAM 的
                 // 空体请求照旧一次派发（flags/endAfterHeaders 口径不变）。
+                // CONNECT 隧道预取 upgrade 句柄（proxy-over-h2）：2xx 后 hyper
+                // 将流升级，后续 DATA 只进 upgrade（常规 Incoming 恒空）；且句柄
+                // 必须持有——随 req 析构丢弃即触发隧道拆除（空 DATA-EOS + RST）。
+                // CONNECT 恒报 streaming（隧道字节后到，派发即终结即丢隧道）。
+                let mut req = req;
+                let is_tunnel = method == "CONNECT";
+                let upgrade_fut = is_tunnel.then(|| hyper::upgrade::on(&mut req));
+                if let Some(up) = upgrade_fut {
+                    tunnel_fut.lock().await.insert(stream_id, up);
+                }
                 let body_in = req.into_body();
-                let streaming = !http_body::Body::is_end_stream(&body_in);
+                let streaming = !http_body::Body::is_end_stream(&body_in) || is_tunnel;
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 responders.lock().await.insert(stream_id, tx);
                 let _ = ev_tx.send(NetEvent {
@@ -438,8 +455,12 @@ pub(crate) async fn serve_conn<S>(
                     },
                 });
                 if streaming {
-                    let ev_body = ev_tx.clone();
-                    tokio::spawn(pump_request_body(body_in, ev_body, server_id, stream_id));
+                    // CONNECT 不跑常规泵（常规 Incoming 恒空，跑即送虚假空 reqEnd
+                    // 提前终结隧道）；隧道泵在 H2Respond-2xx 时起（见应答臂）。
+                    if !is_tunnel {
+                        let ev_body = ev_tx.clone();
+                        tokio::spawn(pump_request_body(body_in, ev_body, server_id, stream_id));
+                    }
                 }
                 // JS 不应答即挂起（记档）；reset/干净关均回 Err（hyper RST）——
                 // 未应答即无头可发，回 200 空体是错的（write-head-after-close
@@ -524,6 +545,29 @@ pub(crate) async fn serve_conn<S>(
                         if let Some(tx) = sender {
                             let _ = tx.send(H2Resp { status, headers: parse_headers(&headers), end_stream });
                         }
+                        // CONNECT 隧道建链（proxy-over-h2）：2xx 即起 upgrade 泵
+                        // （读→体事件；写←outbox），并标升级改写后续投递；
+                        // 非 2xx 即空收尾（常规空体同形），句柄丢弃。
+                        if let Some(up) = tunnel_fut_drv.lock().await.remove(&stream_id) {
+                            if (200..300).contains(&status) {
+                                let (otx, orx) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
+                                tunnel_out_drv.lock().await.insert(stream_id, otx);
+                                let ev_body = ev_tx.clone();
+                                tokio::spawn(pump_upgrade_body(
+                                    up, orx, ev_body, server_id, stream_id,
+                                ));
+                            } else {
+                                drop(up);
+                                let _ = ev_tx.send(NetEvent {
+                                    id: server_id,
+                                    kind: NetKind::H2Stream {
+                                        stream_id,
+                                        what: "reqEnd".into(),
+                                        payload: "[]".into(),
+                                    },
+                                });
+                            }
+                        }
                         if end_stream {
                             // END_STREAM 随头：后到的 data/end 系 JS 账面收尾，直接丢弃不上线
                             //（compat HEAD end(chunk) / native _final 尾包同形）。
@@ -535,11 +579,24 @@ pub(crate) async fn serve_conn<S>(
                         if ended.lock().unwrap().contains(&stream_id) {
                             continue;
                         }
+                        // 已升级隧道：改走 outbox（hyper body 通道已死，见 4.302）。
+                        if let Some(tx) = tunnel_out_drv.lock().await.get(&stream_id) {
+                            if let Ok(data) = b64dec(&data_b64) {
+                                let _ = tx.send(Some(data));
+                            }
+                            continue;
+                        }
                         let data = b64dec(&data_b64).unwrap_or_default();
                         feed_body(stream_id, BodyMsg::Data(bytes::Bytes::from(data)), &bodies, &pendings).await;
                     }
                     Some(NetCmd::H2RespondEnd { stream_id, trailers_json }) => {
                         if ended.lock().unwrap().contains(&stream_id) {
+                            continue;
+                        }
+                        // 已升级隧道：关写半部（trailers 隧道无载，丢弃）。
+                        if let Some(tx) = tunnel_out_drv.lock().await.remove(&stream_id) {
+                            ended.lock().unwrap().insert(stream_id);
+                            let _ = tx.send(None);
                             continue;
                         }
                         let trailers: Vec<(String, String)> =
@@ -703,7 +760,7 @@ pub(crate) async fn serve_conn<S>(
     // net_target 一起删——先删则排队的 connClose/aborted 事件全部丢路由）
 }
 
-pub use super::http2_client::h2_connect;
+pub use super::http2_client::{h2_client_adopt, h2_client_adopt_close, h2_client_adopt_data, h2_connect};
 pub use super::http2_server::{h2_adopt, h2_adopt_close, h2_adopt_data, h2_listen};
 
 
@@ -858,6 +915,7 @@ pub const SOURCE: &str = concat!(
     include_str!("h2_sendfile.js"),
     include_str!("h2_server_http2server.js"),
     include_str!("h2_client.js"),
+    include_str!("h2_client_constants.js"),
 );
 
 #[cfg(test)]

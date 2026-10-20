@@ -2913,3 +2913,35 @@ G1/G2/G3/G9 已收官。）
   冒烟 5/5；双守门绿。abortcontroller HANG/messageport-hasref  extra 字段/
   cloneable 缺 transferable API 皆为既有缺口（未碰其代码面，另案）。
 
+## 2026-10-21 child P0 落地（small 已推 3d8b07e + medium 本轮，29→17绿）
+
+- small（3d8b07e，已推 origin lane/child）：校验 7（serialization/timeout/
+  stdio-stringvalidate + fork-timeout-kill 功能）+ `-e`/`--eval` 拆分
+  （Mode::EvalQuiet，kill 套件字节精确；smoke 保 `--eval` 打印）+
+  stringify 单次 + openStdin（ipc 套件）+ fork-close 排序递延 +
+  signal-duck + abort-dispose；黑盒 validation 2 + cli quiet 4 全绿，冒烟 5/5。
+- medium（本轮）：internal 真路径 6 件全绿（`node:internal/child_process`
+  注册表 + getValidStdio 逐字 + ChildProcess 同对象 + spawnSync
+  call-time 分发；bad-stdio/exec-kill/validate/windows-hide/kill-signal/
+  shell 逐个啃下——killSignal 原值保留、shell 预包装 argv0 位 + 无参形
+  直行、DEP0190 同步面、windowsHide 缺省 false、shell 路径/comspec/
+  android 平台、-pe 翻译）；disconnect 双向信封后 ref2/url 绿 +
+  DISCONNECTED/CHANNEL_CLOSED 双码；detached（unref/ref natives +
+  state 摘除计数）；silent 管道（fork 子输出 base64 信封进父端管）；
+  fork-close 经 CJS 分流加载（扩展名判定，require 单次）。
+- 29 件终表：17 绿 / 12 红 = 另案 10（spawn-ipc 2 + 序列化往返 3 +
+  handle 2 + next-tick + cluster-process + execPath）+ fork-ref
+  （worker-flush 另案，见下）+ send-keep-open（node 抖）。
+  spawn-typeerror/stdio-string 本轮绿（抖动收敛）。
+- 转 worker lane（根治另案）：worker 线程退出丢弃未分发 parentPort
+  消息（unlisten 端口；c18/c19 探针：dummy 监听 3/3 通、无监听 0/3 通、
+  同线程双求值排除、plain worker 正常）。需求：退出前排空 inbound +
+  flush outbound（node IPC 语义）。本 lane 用常 listened 试过——idle 子
+  永不退（续命判定与监听时机耦合），已回退。
+- 踩坑：clap 新字段必须配 en+zh 翻译（pitfalls 4.326，本分支已记；
+  mut_arg remove+push 打乱相对顺序致全表错位，血泪 3 小时）；构建期改
+  源码必等编完（base64 信封曾漏编半轮）；sweep 产物禁落 /tmp（磁盘满
+  作废一次，改道 ~/wjs-data/tmp）。
+- 三件套：模块级 internal_spec_table（alias+len 84）+ 黑盒 validation 2 /
+  medium 4 / cli quiet 4 + 冒烟 5/5；UNSAFE-BOUNDARY 2 natives
+  （child_unref/ref，detached-faces 覆盖）。

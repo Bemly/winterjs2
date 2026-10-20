@@ -54,6 +54,9 @@ pub enum Mode {
     Script,
     /// eval：先按普通脚本求值；仅当因顶层 await 语法失败时，用 async IIFE 重包
     Eval,
+    /// 静默 eval（`-e` 短旗，node 同形）：求值与事件循环同 Eval，完成值恒不回显
+    /// （spawn `-e` 子进程字节精确面，kill 套件）。
+    EvalQuiet,
 }
 
 /// 内层（引擎生命周期；`end_session` 在各返回点收尾，见 §4.8/§4.24）。

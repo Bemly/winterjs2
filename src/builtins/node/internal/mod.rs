@@ -18,6 +18,7 @@ pub mod binding;
 pub mod blob;
 pub mod abort_controller;
 pub mod buffer;
+pub mod child_process;
 pub mod debuglog;
 pub mod encoding;
 pub mod http2_util;
@@ -87,6 +88,9 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/readline/emitKeypressEvents", readline_emit_keypress::SOURCE),
     ("node:internal/encoding", encoding::SOURCE),
     ("node:internal/buffer", buffer::SOURCE),
+    // child_process 真路径（套件 `--expose-internals` 直引形；live 面由
+    // `node:child_process` 加载时填入 default 注册表，mock 可见）。
+    ("node:internal/child_process", child_process::SOURCE),
     ("node:internal/webstream_adapters", webstream_adapters::SOURCE),
     ("node:internal/zip/constants", zip::constants::SOURCE),
     ("node:internal/zip/binary", zip::binary::SOURCE),
@@ -209,13 +213,18 @@ mod tests {
             normalize_internal("internal/streams/end-of-stream"),
             Some("node:internal/streams/end_of_stream")
         );
-        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；console 轮 + node:internal/util/debuglog 别名 +1；readline 轮 + node:internal/readline/utils +1 + callbacks +1 + emitKeypressEvents +1；增删同步改此数）。
-        // 注：console 轮落 83、utils 轮落 84、callbacks 轮落 85——本轮按实测 86 落数。
-        assert_eq!(INTERNALS.len(), 86);
+        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；console 轮 + node:internal/util/debuglog 别名 +1；readline 轮 + node:internal/readline/utils +1 + callbacks +1 + emitKeypressEvents +1；child 轮 + node:internal/child_process +1；增删同步改此数）。
+        // 注：console 轮落 83、utils 轮落 84、callbacks 轮落 85、child 轮落 87——本轮按实测 87 落数。
+        assert_eq!(INTERNALS.len(), 87);
         // console-formatTime 轮：node 真路径 internal/util/debuglog 可解（套件直引形）。
         assert_eq!(
             normalize_internal("internal/util/debuglog"),
             Some("node:internal/util/debuglog")
+        );
+        // child 轮：node 真路径 internal/child_process 可解（套件直引形）。
+        assert_eq!(
+            normalize_internal("internal/child_process"),
+            Some("node:internal/child_process")
         );
         assert_eq!(
             source("node:internal/util/debuglog"),

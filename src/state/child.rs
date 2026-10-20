@@ -3,6 +3,40 @@
 use super::*;
 use mozjs::jsval::JSVal;
 
+/// unref 摘除集（detached 套件：事件照发，循环不候；独立于 TLS 会话，
+/// 进程级单例即可——存 id，无 JS 值；mod.rs 行数守门，状态落此卷）。
+static UNREFED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u64>>> =
+    std::sync::OnceLock::new();
+
+fn unrefed() -> &'static std::sync::Mutex<std::collections::HashSet<u64>> {
+    UNREFED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// unref 摘除续命（幂等；事件目标保留，退出事件照发）。
+pub fn child_unref(id: u64) {
+    let mut set = unrefed().lock().unwrap_or_else(|e| e.into_inner());
+    if set.insert(id) {
+        with_plain(|p| {
+            p.child_open = p.child_open.saturating_sub(1);
+        });
+    }
+}
+
+/// ref 重新续命（与 unref 配对；重复 ref 不累加）。
+pub fn child_ref(id: u64) {
+    let removed = unrefed()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id);
+    if removed {
+        with_plain(|p| {
+            if p.child_procs.contains_key(&id) {
+                p.child_open = p.child_open.saturating_add(1);
+            }
+        });
+    }
+}
+
 
 /// 分配子进程 id（调用方随后 spawn + 登记；失败路径无需配套调用）。
 pub fn child_alloc() -> Option<(
@@ -68,14 +102,21 @@ pub fn child_target(id: u64) -> Option<JSVal> {
     with_rooted(|s| s.child_targets.iter().find(|c| c.id == id).map(|c| c.target.get()))
 }
 
-/// 终态记账（target + 本体移除 + 存活减一；kill 后残留事件落空）。
+/// 终态记账（target + 本体移除 + 存活减一；kill 后残留事件落空；
+/// 已 unref 的不重复减）。
 pub fn child_remove(id: u64) {
     with_rooted(|s| {
         s.child_targets.retain(|c| c.id != id);
     });
+    let was_unrefed = unrefed()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&id);
     with_plain(|p| {
         p.child_procs.remove(&id);
-        p.child_open = p.child_open.saturating_sub(1);
+        if !was_unrefed {
+            p.child_open = p.child_open.saturating_sub(1);
+        }
     });
 }
 

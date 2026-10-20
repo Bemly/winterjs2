@@ -300,6 +300,10 @@ async fn dispatch_inner(cli: Cli, matches: &clap::ArgMatches, settings: &setting
         install_permissions(&cli.perms);
         return runtime::run(&code, "eval.js", runtime::Mode::Eval, &[]).await;
     }
+    if let Some(code) = cli.eval_quiet {
+        install_permissions(&cli.perms);
+        return runtime::run(&code, "eval.js", runtime::Mode::EvalQuiet, &[]).await;
+    }
     if cli.config {
         if cli.schema {
             let schema = schemars::schema_for!(settings::Settings);

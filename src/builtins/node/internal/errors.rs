@@ -471,6 +471,9 @@ E('ERR_INVALID_STATE', 'Invalid state: %s', Error, TypeError, RangeError, HideSt
 // child_process 单 IPC 通道门（node 原文；stdio 套件双 ipc 形）。
 E('ERR_IPC_ONE_PIPE', 'Child process can have only one IPC pipe', Error);
 E('ERR_INVALID_HANDLE_TYPE', 'This handle type cannot be sent', TypeError);
+// child_process fork stdio 面（validate-stdio 套件逐字）。
+E('ERR_IPC_SYNC_FORK', 'IPC cannot be used with synchronous forks', Error);
+E('ERR_INVALID_SYNC_FORK_INPUT', 'Asynchronous forks do not support Buffer, TypedArray, DataView or string input: %s', TypeError);
 // 10f http2 compat 面（node lib/internal/errors.js 文案逐字）
 E('ERR_HTTP2_HEADERS_SENT', 'Response has already been initiated.', Error);
 E('ERR_HTTP2_INVALID_STREAM', 'The stream has been destroyed', Error);

@@ -2,7 +2,7 @@ import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import * as fs from "node:fs";
 import __osDefault from "node:os";
-import { getSystemErrorName as __uvName } from "node:util";
+import { getSystemErrorName as __uvName, inspect as __inspect } from "node:util";
 import errors from 'node:internal/errors';
 import { addAbortListener } from 'node:internal/events/abort_listener';
 const {
@@ -60,10 +60,10 @@ function __normExecOpts(opts) {
     }
     o.killSignal = hit.name; o.killSigno = hit.signo;
   }
-  // signal：undefined 过；余下必须 AbortSignal 实例（真机 validateAbortSignal 口径，
-  // null 也抛——abortcontroller 系套件 {}/函数形 ARG_TYPE）。
+  // signal：undefined 过；余下 duck-type（'aborted' 在即过，真机
+  // validateAbortSignal 逐字；null/{}/函数形照旧抛）。
   if (opts.signal !== undefined) {
-    if (!(opts.signal instanceof AbortSignal)) {
+    if (opts.signal === null || typeof opts.signal !== "object" || !("aborted" in opts.signal)) {
       throw new ERR_INVALID_ARG_TYPE("options.signal", "AbortSignal", opts.signal);
     }
     o.signal = opts.signal;
@@ -84,7 +84,8 @@ function __normExecOpts(opts) {
 }
 function __normSpawnOpts(opts) {
   // 缺省 encoding "buffer"（真机口径；exec 系另为 utf8，不串）。
-  const o = { encoding: "buffer", timeoutMs: 0, shell: false, shellPath: null, maxBuffer: 1024 * 1024, inputB64: null, killSigno: 15, killSigname: "SIGTERM", argv0: null, cwd: null, detached: false, stdioInherit: [false, false, false] };
+  // windowsHide/Verbatim 缺省 false（mock 可见；unix 忽略）。
+  const o = { encoding: "buffer", timeoutMs: 0, shell: false, shellPath: null, maxBuffer: 1024 * 1024, inputB64: null, killSigno: 15, killSigname: "SIGTERM", argv0: null, cwd: null, detached: false, windowsHide: false, windowsVerbatimArguments: false, stdioInherit: [false, false, false] };
   if (opts === undefined || opts === null) { o.env = __childEnv(o); return o; }
   if (opts.encoding !== undefined) o.encoding = opts.encoding;
   // 字符串选项（cwd/argv0）：undefined/null 过，余下非串即 ARG_TYPE + \0 校验。
@@ -98,14 +99,14 @@ function __normSpawnOpts(opts) {
     o[k === "cwd" ? "cwd" : "argv0"] = v;
   }
   // 布尔选项（detached/windowsHide/windowsVerbatimArguments）：undefined/null/布尔过。
-  // detached 真传 native；windows 系 unix 忽略（记档）。
+  // detached 真传 native；windows 系忽略但保留（mock 可见）。
   for (const k of ["detached", "windowsHide", "windowsVerbatimArguments"]) {
     const v = opts[k];
     if (v === undefined || v === null) continue;
     if (typeof v !== "boolean") {
       throw new ERR_INVALID_ARG_TYPE(`options.${k}`, "boolean", v);
     }
-    if (k === "detached") o.detached = v;
+    o[k] = v;
   }
   // shell：undefined/null/布尔/字符串过（字符串即 shell 路径）+ \0 校验；
   // 余下 ARG_TYPE。
@@ -150,7 +151,7 @@ function __normSpawnOpts(opts) {
   }
   // killSignal：undefined/null/合法信号（名大小写不敏感/表中数字）过；
   // 类型先行（布尔/数组/对象/函数即 ARG_TYPE，真机口径），
-  // 再查表落空即 ERR_UNKNOWN_SIGNAL。
+  // 查表落空即 UNKNOWN_SIGNAL；原值保留（mock 可见：缺席 undefined）。
   if (opts.killSignal !== undefined && opts.killSignal !== null) {
     const ks = opts.killSignal;
     if (typeof ks !== "string" && typeof ks !== "number") {
@@ -162,6 +163,7 @@ function __normSpawnOpts(opts) {
       e.code = "ERR_UNKNOWN_SIGNAL"; throw e;
     }
     o.killSigno = hit.signo; o.killSigname = hit.name;
+    o.killSignal = typeof ks === "number" ? ks : hit.signo;
   }
   if (opts.env !== undefined) o.env = { ...opts.env };
   // stdio：字符串整体形（inherit/ignore/pipe）或三元数组（逐流；超界忽略）；
@@ -225,8 +227,8 @@ function __selfArgv(file, args) {
   }
   const a = [...args];
   // 前导 node 运行时旗（`--pending-deprecation file`/`--experimental-x -e …`）原样
-  // 透传，CLI 起点剥除 + 补 --run/-e→--eval（cli::strip_node_compat_args）。
-  if (a[0] === "-e" || a[0] === "-p") return [file, ["--eval", ...a.slice(1)]];
+  // 透传；`-p`/`-pe` 译 `--eval`，`-e` 直通（静默面）。
+  if (a[0] === "-p" || a[0] === "-pe") return [file, ["--eval", ...a.slice(1)]];
   if (a[0] !== undefined && !String(a[0]).startsWith("-")) return [file, ["--run", ...a]];
   return [file, a];
 }
@@ -401,10 +403,51 @@ export function spawnSync(file, args, opts) {
   if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);
   __nullCheck(String(file), "file");
-  for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
-  const f = String(file);
+  // 参数一次 stringify（spawnsync-non-string-args 套件 toString 恰调一次；
+  // \0 判走串后值，真机同 outcome）。
   const origArgs = [...(args || [])].map(String);
+  for (let i = 0; i < origArgs.length; i++) __nullCheck(origArgs[i], `args[${i}]`);
+  const f = String(file);
+  // shell 预包装（file→shell 本体、args=[sh,-c,拼串]，mock 可见；无参形
+  // 拼串即 file 本体；不转义；真执行走 __orig 原串）。
+  let io = { ...o, file: f, args: origArgs };
+  if (opts.shell !== undefined && opts.shell !== null) io.shell = opts.shell;
+  if (o.shell) {
+    // 缺省 shell 平台相关（读调用时 platform/env，mock 生效）。
+    const sh = (typeof o.shellPath === "string" && o.shellPath !== "") ? o.shellPath
+      : (process.platform === "win32" ? (process.env.comspec || "cmd.exe")
+        : (process.platform === "android" ? "/system/bin/sh" : "/bin/sh"));
+    const isCmd = /^(?:.*\\)?cmd(?:\.exe)?$/i.test(sh);
+    const line = origArgs.length > 0 ? [f, ...origArgs].join(" ") : f;
+    io = {
+      ...io, file: sh, args: [sh, ...(isCmd ? ["/d", "/s", "/c"] : ["-c"]), isCmd ? `"${line}"` : line],
+      windowsVerbatimArguments: isCmd ? true : o.windowsVerbatimArguments,
+      __origFile: f, __origArgs: origArgs,
+    };
+    if (origArgs.length > 0 && !__dep0190Emitted) {
+      __dep0190Emitted = true;
+      try {
+        process.emitWarning("Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.", "DeprecationWarning", "DEP0190");
+      } catch {}
+    }
+  }
+  // mock 可见分发（注册表当前值；未注册直落本体）。
+  const fn = (__childInternal !== null && typeof __childInternal.spawnSync === "function")
+    ? __childInternal.spawnSync : __spawnSyncInternal;
+  return fn(io);
+}
+function __spawnSyncInternal(io) {
+  const f = io.__origFile !== undefined ? io.__origFile : io.file;
+  const origArgs = io.__origArgs !== undefined ? io.__origArgs : io.args;
+  const o = io;
+  if (io.__origFile !== undefined && o.shell) {
+    // 预包装形直接执行（免二次引号；args[0] 为 file 本体，native 只要其后）。
+    return __spawnSyncRun(io.file, io.args.slice(1), { ...o, shell: false }, f, origArgs);
+  }
   const [f2, a2] = __selfArgv(f, origArgs);
+  return __spawnSyncRun(f2, a2, o, f, origArgs);
+}
+function __spawnSyncRun(f2, a2, o, f, origArgs) {
   const r = JSON.parse(__wjs2_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,
     shell: o.shell, shell_path: o.shellPath, kill_signo: o.killSigno,
@@ -809,9 +852,13 @@ export class ChildProcess {
       args = options.args;
     }
     // 落地：与模块级 spawn 同一道 __spawnInto（proc=this，事件接线直挂 this）。
+    // 全量透传（serialization/timeout/signal 等校验键随行；模块级 spawn 经此
+    // 进入，mock 可见）。
     __spawnInto(this, options.file, args, __normSpawnAsyncOpts({
-      cwd: options.cwd, detached: options.detached, stdio: stdioOpt,
+      cwd: options.cwd, env: options.env, detached: options.detached, stdio: stdioOpt,
       shell: options.shell, uid: options.uid, gid: options.gid,
+      timeout: options.timeout, signal: options.signal, killSignal: options.killSignal,
+      argv0: options.argv0, serialization: options.serialization,
       windowsHide: options.windowsHide,
       windowsVerbatimArguments: options.windowsVerbatimArguments,
     }));

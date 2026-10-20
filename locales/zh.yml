@@ -15,6 +15,9 @@ arg:
   eval:
     help: "求值内联 JS 代码并打印其完成值"
     value: "代码"
+  eval_quiet:
+    help: "求值内联 JS 代码且不打印（node -e 同形）"
+    value: "代码"
   config:
     help: "显示解析后的配置（加 --schema 显示其 JSON Schema）"
   completions:

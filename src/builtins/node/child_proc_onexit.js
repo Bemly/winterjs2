@@ -30,9 +30,13 @@
     }
     if (options !== undefined) __validateSendOptions(options);
     if (!this.__connected) {
-      // Node 口径：关通道后 send 回 false，并异步报 ERR_IPC_CHANNEL_CLOSED。
-      const err = new Error("Channel closed");
-      err.code = "ERR_IPC_CHANNEL_CLOSED";
+      // Node 口径：显式 disconnect 后 send 回 false，异步报
+      // ERR_IPC_DISCONNECTED；自然 close 后则 ERR_IPC_CHANNEL_CLOSED
+      //（send-after-close 套件）。
+      const explicit = !!this.__explicitDisc;
+      const err = explicit
+        ? Object.assign(new Error("IPC channel is already disconnected"), { code: "ERR_IPC_DISCONNECTED" })
+        : Object.assign(new Error("Channel closed"), { code: "ERR_IPC_CHANNEL_CLOSED" });
       if (cb) queueMicrotask(() => cb(err));
       else queueMicrotask(() => this.__emitForkError(err));
       return false;
@@ -63,6 +67,7 @@
       return;
     }
     this.__connected = false;
+    this.__explicitDisc = true;
     // 控制信封（单键载荷，子端 shim 解释为 disconnect，不投递给用户）。
     try { this.__worker.postMessage({ __wjs2_fork_ctl: "disconnect" }); } catch {}
     if (typeof this.#ondisconnect === "function") {
@@ -74,6 +79,19 @@
     else throw err;
   }
   __onForkMessage(m) {
+    // 子→父 disconnect 信封（子端 process.disconnect 投递；不断即父永等，
+    // ref2/fork-url 套件）。单键载荷不投递给用户。
+    if (m !== null && typeof m === "object" && !Array.isArray(m) &&
+        Object.keys(m).length === 1 && m.__wjs2_fork_ctl === "disconnect") {
+      if (this.__connected) {
+        this.__connected = false;
+        this.__explicitDisc = true;
+        if (typeof this.#ondisconnect === "function") {
+          try { this.#ondisconnect(); } catch {}
+        }
+      }
+      return;
+    }
     // NODE_ 前缀分流（internal 套件）：cmd 首段 NODE_ 即内部消息，
     // 余下一律普通 message（真机 cluster 协议口径）。
     if (m !== null && typeof m === "object" && !Array.isArray(m) &&
@@ -89,17 +107,33 @@
     this.__exitCode = code;
     if (this.__connected) this.__connected = false;
     // node 口径：exit/close 双参 (code, signal)（fork 旧单对象形一并翻转，
-    // 与 spawn 派发同形）。
-    if (typeof this.onexit === "function") this.onexit(code, null);
-    if (typeof this.onclose === "function") this.onclose(code, null);
+    // 与 spawn 派发同形）。递延到宏任务尾派发——线程退出与 IPC 消息竞速时，
+    // 先到的消息须先达（fork-close 套件 message→exit→close 序；微任务会
+    // 插队已排队的消息分发，fork-ref 套件现形）。
+    setTimeout(() => {
+      if (typeof this.onexit === "function") this.onexit(code, null);
+      if (typeof this.onclose === "function") this.onclose(code, null);
+    }, 0);
   }
   get connected() { return !!this.__connected; }
   unref() {
     if (this.__worker) { try { this.__worker.unref(); } catch {} }
+    // spawn 子进程：Rust 侧摘除续命（detached 套件；事件照发，循环不候）。
+    // id 0（fork/死句柄）无表项，跳过。
+    try {
+      if (typeof this.__idOf === "function" && this.__idOf() !== 0) {
+        __wjs2_child_unref(this.__idOf());
+      }
+    } catch {}
     return this;
   }
   ref() {
     if (this.__worker) { try { this.__worker.ref(); } catch {} }
+    try {
+      if (typeof this.__idOf === "function" && this.__idOf() !== 0) {
+        __wjs2_child_ref(this.__idOf());
+      }
+    } catch {}
     return this;
   }
 }

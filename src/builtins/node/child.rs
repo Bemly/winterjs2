@@ -650,6 +650,45 @@ pub unsafe extern "C" fn child_stdin_close(
     true
 }
 
+/// `__wjs2_child_unref(id)`（幂等；事件目标保留，退出事件照发）。
+/// UNSAFE-BOUNDARY：与 child_kill 同形（wrap_cx + Frame::from_raw 入口块；
+/// 纯状态记账，无 JSAPI 分配；覆盖 tests/node/child/detached-faces）。
+pub unsafe extern "C" fn child_unref(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: unref needs a numeric id");
+        return false;
+    }
+    state::child_unref(frame.arg(0).to_number() as u64);
+    frame.set_rval(UndefinedValue());
+    true
+}
+
+/// `__wjs2_child_ref(id)`（与 unref 配对；重复 ref 不累加）。
+/// UNSAFE-BOUNDARY：同上（覆盖同测试）。
+pub unsafe extern "C" fn child_ref(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 1 || !frame.arg(0).is_number() {
+        report_error(&mut cx, "TypeError: ref needs a numeric id");
+        return false;
+    }
+    state::child_ref(frame.arg(0).to_number() as u64);
+    frame.set_rval(UndefinedValue());
+    true
+}
+
 /// `__wjs2_child_pid(id)` → pid｜-1。
 pub unsafe extern "C" fn child_pid(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -870,11 +909,14 @@ pub unsafe extern "C" fn cp_spawn(
 }
 
 /// 内嵌 ESM 源（`node:child_process`；同步子集，见头注；§0.9 按域分块：
-/// `child_proc.js` ChildProcess 类 + `child_spawn.js` spawn/exec 族，concat 字节恒等）。
+/// `child_proc.js` ChildProcess 类 + `child_fork.js` fork silent 管道 +
+/// `child_spawn.js` spawn/exec 族，concat 字节恒等）。
 pub const SOURCE: &str = concat!(
     include_str!("child_proc.js"),
     include_str!("child_proc_onexit.js"),
+    include_str!("child_fork.js"),
     include_str!("child_spawn.js"),
+    include_str!("child_spawn_fork.js"),
 );
 
 #[cfg(test)]

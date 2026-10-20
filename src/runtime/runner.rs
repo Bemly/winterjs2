@@ -143,7 +143,7 @@ pub async fn run(source: &str, filename: &str, mode: Mode, extra_args: &[String]
             .chain(std::iter::once(filename.to_owned()))
             .chain(extra_args.iter().cloned())
             .collect(),
-        Mode::Eval => std::iter::once(argv0).chain(extra_args.iter().cloned()).collect(),
+        Mode::Eval | Mode::EvalQuiet => std::iter::once(argv0).chain(extra_args.iter().cloned()).collect(),
     };
     run_with_argv(source, filename, mode, argv).await
 }

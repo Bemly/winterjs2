@@ -238,6 +238,72 @@ try { getEventListeners(42, "a"); } catch (e) { console.log(e.code); }
 }
 
 #[test]
+fn event_target_null_passive_signal_lazy_handle() {
+    // 正常：函数监听 this 绑定；报错：非法 signal 挂 ERR_INVALID_ARG_TYPE；
+    // 边界：null 监听不抛（扁平化先行读 passive）、passive 下 preventDefault
+    // 无效、后加 handleEvent 仍调用、函数自带 handleEvent 不干扰。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let file = dir.child("et.mjs");
+    file.write_str(
+        r#"const t = (f) => { try { f(); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.code; } };
+const doc = new EventTarget();
+let seen = false;
+const q = { get passive() { seen = true; return false; }, get dummy() { throw new Error('dummy'); } };
+doc.addEventListener('e', null, q);
+console.log('null-ok', seen);
+const d2 = new EventTarget();
+let dp;
+d2.addEventListener('t', function (e) { e.preventDefault(); dp = e.defaultPrevented; }, { passive: true });
+console.log('passive-uncanceled', d2.dispatchEvent(new Event('t', { cancelable: true })), dp);
+const d3 = new EventTarget();
+console.log('sig-bad', t(() => d3.addEventListener('x', () => {}, { signal: {} })));
+console.log('sig-null', t(() => d3.addEventListener('x', () => {}, { signal: null })));
+{
+  const ac = new AbortController();
+  let n = 0;
+  d3.addEventListener('y', () => { n++; }, { signal: ac.signal });
+  d3.dispatchEvent(new Event('y'));
+  ac.abort();
+  d3.dispatchEvent(new Event('y'));
+  console.log('sig-abort', n);
+}
+{
+  const n = new EventTarget();
+  const h = {};
+  let who = null;
+  n.addEventListener('e', h);
+  h.handleEvent = function () { who = (this === h); };
+  n.dispatchEvent(new Event('e'));
+  let fnThis = null, handleHit = false;
+  function g() { fnThis = true; }
+  g.handleEvent = () => { handleHit = true; };
+  n.addEventListener('e2', g);
+  n.dispatchEvent(new Event('e2'));
+  console.log('lazy', who, fnThis, !handleHit);
+}
+"#,
+    )
+    .unwrap();
+    let out = winterjs2()
+        .args(["--run", file.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    assert!(out.contains("null-ok true"), "out: {out}");
+    assert!(out.contains("passive-uncanceled true false"), "out: {out}");
+    assert!(out.contains("sig-bad TypeError:ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("sig-null TypeError:ERR_INVALID_ARG_TYPE"), "out: {out}");
+    assert!(out.contains("sig-abort 1"), "out: {out}");
+    assert!(out.contains("lazy true true true"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn events_signal_listenercount() {
     // 10f：once() 的 abort 接线对 listenerCount 可见（原生侧表；test-events-once 点名）。
     let dir = assert_fs::TempDir::new().unwrap();

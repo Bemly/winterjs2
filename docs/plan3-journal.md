@@ -1727,3 +1727,144 @@ G1/G2/G3/G9 已收官。）
 - [ ] B：一票推翻其中某件（请点名件名，被点名件回 C 队列按 time-box 另轮）。
 - [ ] C：全不 bound，B 件回 C 队列（需另批约 1 周 + h2 直驱预算，A 分支 journal:1199-1206）。
 
+## 2026-10-20 B-bound对齐定义复核（用户定义：行为按 Bun/Node 逻辑对齐，逐件重核）
+
+> 方法：Node 原文一律读 `~/node-test/lib/`（稀疏检出，主仓；行号为该检出实测）。
+> Bun 证据只用三处：`docs/bun-compat.md` §1 总表（Bun 列）、`docs/bun-parity.md` 相关节、
+> `docs/bun-scope.txt` 件数（`^test-<域>-` 行数；与 plan3 §0.3 域表差 1–2 系域归属口径，照实注记）。
+> 每件三列：Node 原文行为一句话 + Bun 行为（有/无/同缺，附行号）+ winterjs 对齐定义
+> （bound 偏离的精确语义 vs 续啃修到什么形态算对齐）。vm 因 Bun 🟢 不可随手 bound，单列强证据。
+> 口径锚点：bun-scope `^test-http2-` 256 行（§0.3 http2 256 一致）/ `^test-tls-` 186 行
+> （§0.3 tls 185，差 1 系归属口径）/ `^test-diagnostics-` 35 行（一致，内 http2-diagnostics 18 行）/
+> `^test-vm-` 97 行（§0.3 vm 95，差 2 系归属口径）。
+
+### B1 push 17（8 http2 + 9 diagnostics 连带）
+
+- Node 原文行为一句话：`Http2Stream.pushStream(headers,options,cb)` 先判 `pushAllowed`
+  （对端 `remoteSettings.enablePush`，`~/node-test/lib/internal/http2/core.js:3144-3157`），禁推即同步抛
+  `ERR_HTTP2_PUSH_DISABLED`；compat `Http2ServerResponse.createPushResponse` 经
+  `kStream.pushStream` 同门（`~/node-test/lib/internal/http2/compat.js:920-930`）。
+- Bun 行为：有（`docs/bun-compat.md:70` http2 Bun 🟢；移植注记“无 push（Web 已死）”是 winterjs 列注记，
+  非 Bun 缺口；`docs/bun-parity.md:1575-1591` http2 节 P1 聚类 push 8 未记 Bun 同缺）。
+  即本件 bound = 承认欠 Bun 一截，需用户一票背书，非对等偏离。
+- winterjs 对齐定义：bound 偏离形态 = 禁推路全 exact 即算对齐偏离——`pushStream` 无条件抛
+  `ERR_HTTP2_PUSH_DISABLED`（含 `pushAllowed=false` 恒值）、`createPushResponse` 错误双路径 exact
+  （PUSH_DISABLED + INVALID_STREAM，journal:1527 C2 已落地）；成功路（真建推送流）永不实现。
+  续啃验收形态（仅用户推翻时）= hyper 换 h2 直驱后 `pushPromise` 真建流 + `pushStream` 回调三参 exact，
+  按 A 分支预算约 1 周（journal:1199-1206），本次不选。
+
+### B2 ALTSVC / ORIGIN 2（altsvc/origin，均 TIMEOUT）
+
+- Node 原文行为一句话：`session.altsvc(alt,originOrStream)` 经 `kHandle.altsvc` 发 ALTSVC 帧、
+  `session.origin(...origins)` 经 `kHandle.origin` 发 ORIGIN 帧（`core.js:1802-1877`），对端到帧分别
+  走 `onAltSvc`  emit `session 'altsvc'`（`core.js:751-758`）与 `onOrigin` 重建 originSet
+  （`core.js:785-799`），另有 ALTSVC/ORIGIN 长度与源数四码（`core.js:72-73,78,87,106`）。
+- Bun 行为：推定有（http2 🟢 `bun-compat.md:70` 未单列 ALTSVC 缺口；`bun-scope.txt` 含
+  `test-http2-altsvc/origin` 2 行即 Bun 清单在列；待 Bun 真机复核，不阻塞 bound）。
+- winterjs 对齐定义：bound 偏离形态 = `altsvc()/origin()` 调即抛底座缺口错（或 no-op 记档）+
+  `'altsvc'/'origin'` 事件永不触发，即算对齐偏离（h2 直驱亦无此帧，journal:1199-1206 “仍偏离”）。
+  续啃验收形态 = hyper/h2 暴露帧级发收钩子后逐字移植 `onAltSvc/onOrigin` + 四码校验，再谈转绿；
+  在此之前任何 JS 壳修法都不算对齐。
+
+### B3 帧错映射 6（goaway / 窗口溢出 / SETTINGS 内省）
+
+- Node 原文行为一句话：收 GOAWAY 走 `onGoawayData` 记 `goawayCode/goawayLastStreamID` 并 emit
+  `'goaway'`（`core.js:804-830`），发 GOAWAY 走 `submitGoaway(code,lastStreamID,opaqueData)`
+  （`core.js:982-991`）；收 SETTINGS 走 `onSettings` 刷新缓存并 emit `'remoteSettings'`
+  （`core.js:698-707`），发 SETTINGS 走 `submitSettings` + `settingsCallback`（`core.js:954-981`），
+  另 `setLocalWindowSize` 归一校验（`core.js:1518-1523`）与 `validateSettings` 全项门
+  （`core.js:1083-1106`，含 initialWindowSize/maxFrameSize 等）。
+- Bun 行为：推定有（http2 🟢 未单列帧错缺口；6 件名全在 `bun-scope.txt` http2 256 内；待 Bun 真机复核）。
+- winterjs 对齐定义：bound 偏离形态 = GOAWAY 仅保留 C 轮已落地的 drain 语义
+  （idle 递延杀 + stream 序 + finish→close，journal:1535 L-C），`goaway-opaquedata` 的 opaque 回传、
+  `window-size/update-overflow` 的精确计数、`session-settings/too-many-settings` 的远端表内省三面记偏离，
+  不再逐码对齐。续啃验收形态 = 换 h2 直驱拿到 `goaway opaqueData`/`remoteSettings` 真表/窗口计数器后，
+  `wjs_err` 与真机逐字一致（含 `ERR_HTTP2_GOAWAY_SESSION/INVALID_SETTING_VALUE` 文案），否则不算对齐。
+
+### B4 diagnostics-channel http2 系 9（真插桩缺口；另 9 push 污染计 B1）
+
+- Node 原文行为一句话：`core.js:199-211` 定义 12 通道
+  （`http2.client/server.stream.{created,start,error,finish,close}` + bodyChunkSent/bodySent），在流创建/
+  起发/错/体块/体完/终结各点 `publish({stream[,headers]})`（如 `core.js:404,410,428,434,487,907,2012,
+  2180-2183,2511,2556,2722-2728,3234-3308`）；`diagnostics_channel.js` 本体
+  （BoundedChannel `~/node-test/lib/diagnostics_channel.js:388-444`、TracingChannel 447-698）只是通道容器。
+- Bun 行为：同缺/同薄（`docs/bun-compat.md:48` diagnostics Bun 🟡“缺 bounded/多数组内置通道”；
+  `docs/bun-parity.md:306-354` 本仓 18 件逐件“需 http2 插桩”🟡偏离，即 Bun 亦无此插桩可抄）。
+- winterjs 对齐定义：bound 偏离形态 = 通道名存在（`dc.channel('http2.…')` 可订阅不炸）但 http2 路径永不
+  publish，即算对齐偏离（与 Bun 同档）。续啃验收形态 = 在 C 轮头体分离的每个 publish 点逐点补
+  `publish`（client/server 各 6 点 + body 2 点），18 件 MUSTCALL/Abort 全转绿，另立 infra 专项号，
+  不随 http2 壳轮附带做。
+
+### B5 tls 7（http2-over-tls）+ 同族（psk/DHE/renegotiation/OCSP/pfx/resume/ALPNCallback）
+
+- Node 原文行为一句话：`tls.js:83-85` 设 reneg 上限、`internal/tls/wrap.js:799-800`
+  `disableRenegotiation()` 置旗 + `225` 握手期检查；psk 双回调 `onPskServerCallback/onPskClientCallback`
+  （`wrap.js:480-546`，经 `kPskCallback/kPskIdentityHint:111-112`）；OCSP 服务端 `requestOCSP/requestOCSPDone`
+  + 客户端 `onocspresponse`（`wrap.js:366-419,558-560`）；pfx 经 `SecureContext.loadPKCS12`
+  （`internal/tls/secure-context.js:316-330`）、ticketKeys 48 字节门（同文件 346-354）；
+  ALPN 服务端回调 `callALPNCallback`（`wrap.js:322-343`，经 `kALPNCallback:109`）。
+- Bun 行为：同缺（`docs/bun-compat.md:75` tls Bun 🟡“无 psk/OCSP/resume”原文即证据；
+  `docs/bun-compat.md:53` https 🟡“无 SNI 回调等”覆盖 ALPNCallback 面；
+  `docs/bun-parity.md:1795-1817` tls 节 wrap 簇已定性 ca 链/收尾另案，未记 Bun 有）。
+- winterjs 对齐定义：bound 偏离形态 = `pskCallback`/`ALPNCallback` 选项透传后走“不支持”错（或静默忽略记档）、
+  `loadPKCS12` 抛 `ERR_METHOD_NOT_IMPLEMENTED`（base18 已是此形）、renegotiation 缺省禁（与真机
+  `ERR_TLS_RENEGOTIATION_DISABLED` 同形记档）、OCSP 永不发 `OCSPRequest/OCSPResponse`，
+  即算对齐偏离（随 P2-tls，不单开轮）。续啃验收形态 = rustls 暴露对应钩子（psk 回调/select-callback/
+  OCSP  stapling/PKCS12 解析/resume 票据）后逐字移植 `wrap.js` 上列函数，套件逐件转绿，否则不算对齐。
+
+### B6 SNI raw（含 https-verify sni-N；B5 中 SNI 回调面除外）
+
+- Node 原文行为一句话：`Server.addContext(servername,context)` 把通配符转正则入 `_contexts`
+  （`wrap.js:1697-1713`），握手期 `SNICallback` 倒序匹配选 context（同文件续段），SNI 原始名经
+  `getSessionServerIdentity` 字节编解（`wrap.js:121-162`，`servername+len+bytes` 拼会话票据）。
+- Bun 行为：同缺（`docs/bun-compat.md:53` https Bun 🟡“无 SNI 回调等”原文即证据；
+  wave-1 `sni.N` 系 webpki 拒全数字尾标签即 rustls 类型墙，journal:1526）。
+- winterjs 对齐定义：bound 偏离形态 = 校验型 SNI（合法 DNS 名）全 exact（含 `servername=false` 无 SNI 路、
+  CSI 族 B-3 已转绿 2，journal:1542），非校验 raw-SNI（全数字尾标签/`sni.2` 类）记偏离——
+  rustls-pki-types `DnsName` 无非校验构造（journal:1555），`addContext` 未下沉 Rust resolver
+  （journal:1542 SNI 双件）两墙未除前不算欠账。续啃验收形态 = Rust 侧换 raw-SNI 类型（或自实现
+  SNI 字节直通 + JS 正则匹配 `addContext` 全移植）后 `test-tls-sni-*/empty-sni/error-servername/
+  https-agent-sni` 全转绿，否则不算对齐。
+
+### B7 lane 件（R18/R19；vm 单列强证据，其余沿 B1–B6 口径）
+
+- interim ×4 + early-hints ×2：Node 原文 `compat.js:956-1012`
+  （`writeInformation` 100–199 门 + 101 拒 + `additionalHeaders` 下发，`writeEarlyHints` link 校验拼
+  `Link` 头走 103）；Bun 推定有（http2 🟢）；对齐定义 bound = hyper 单 HEADERS 无 interim 1xx API
+  （journal:1527/1535）+ `__ev` 抛错到 uncaughtException 的 runtime 投递墙未除前记偏离，
+  码形 exact 已是证据（journal:1535/1544），成功下发 1xx 永不实现。
+- worker SAB 真共享 + WASM Module 跨线程 + `Atomics.wait`：Node 原文跨线程真共享内存；
+  Bun 🟡（worker 🟡，`bun-compat.md:80`）；对齐定义 bound = 副本语义 + `waiting is not allowed
+  on this thread` 透传即偏离（journal:1476-1479/1514/1556 引擎墙 SM 限制）。
+- whatwg 9 + console/util triage：Node 原文各域原文；Bun whatwg 多 🟢；对齐定义按
+  journal:1537 行（7 internal-tree/infra + canparse V8 内禀 + custom-inspect 双动）逐行 bound/续啃，
+  不整域 bound。
+- vm（Bun 🟢，`docs/bun-compat.md:78`“全，连 ESM classes”，不可随手 bound——强证据如下）：
+  Node 原文 `lib/vm.js:321 compileFunction` / `:383 measureMemory`（实验特性）/
+  `:418-419` Module 三类仅 `--experimental-vm-modules` 下 patched 可见；
+  `internal/vm/module.js:199-208 link(linker)` + `:335-370 kLink` BFS 按序调 linker 对齐
+  `moduleRequests`（`:416-417` 真属性）+ `:461-500 SyntheticModule`（无依赖，`link()` no-op）+
+  `:379 linkRequests` / `:450 createCachedData`。
+  Bun 有（🟢全文）。winterjs 现状：wave-3 L-D 已转绿 7
+  （link/link-shared/linking-requests×3/modulerequests/instantiate，journal:1545），不欠 Bun 主干。
+  仅三窄面记 bound：① synthetic 命名依赖（缺 `CreateNamedSyntheticModule/
+  SetSyntheticModuleExport` SM 原生钩，journal:1545 engine 墙）；② measure-memory 契约
+  （本仓 reject vs 真机 resolve，`bun-parity.md:544-545` 两行，需 SM 堆快照钩，无钩即偏离）；
+  ③ copy 模型固有 9 + 微任务模式 2 + 解析器 token 1（`bun-parity.md:487-500` ①–③类，V8/SM 跨引擎不可比，
+  另案 jsdom 级工程）。`basic/errors` 各剩一件（importModuleDynamically/initializeImportMeta，
+  journal:1545）明确续啃（需 modules/loader 配合，非 vm 单域可闭）。整域 vm 永不 bound。
+
+### 复核结论（三列表用户拍板用）
+
+- bound（偏离即对齐）：B1 成功路 / B2 全件 / B3 帧错三面 / B4 publish 面（通道名在即可）/
+  B5 psk-DHE-reneg-OCSP-pfx-resume-ALPNCallback / B6 raw-SNI + addContext 未下沉 /
+  B7 interim-early-hints + worker 真共享三件 + whatwg 按行 + vm 三窄面。
+- 续啃（修到某形态才算对齐）：compat-shell 12 + other-core 壳可达约 40（C2/C3 已证路径，
+  逐批至 `wjs_err` 逐字一致）/ vm basic-errors 各 1（等 loader 配合）/ B1–B3 被一票推翻件
+  （回 C 队列，h2 直驱预算另批）。
+- 另轮 time-box（逐件复判，不在 bound 内）：TIMEOUT 50 全表（L-C 定级 7 已绿/1 runtime/
+  3 node 自红/24 hyper-bound/15 actionable-shell，journal:1535；wave-3 后 socket-close 未解、
+  respond-file×3 另起，journal:1544/1562），以 `~/wjs-data/sweep/base18/results.log`
+  `TIMEOUT wjs=142 test-http2-*` 50 行为准销账。
+
+

@@ -33,6 +33,8 @@ mod fs;
 mod http;
 #[path = "node/http2.rs"]
 mod http2;
+#[path = "node/http2_faces.rs"]
+mod http2_faces;
 #[path = "node/https.rs"]
 mod https;
 #[path = "node/inspector.rs"]

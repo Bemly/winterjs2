@@ -101,8 +101,13 @@ class Http2ServerStream extends Duplex {
   }
   // node onStreamClose：close 事件由 destroy 机制单发（§事件单发）
   __abort() {
-    if (this.__closed || this.__destroyed) return;
-    this.__abortDownstream();
+    if (this.__closed || this.__destroyed || this.__aborted) return;
+    this.__aborted = true;
+    // 先自发 'aborted'（server-socket-destroy 套件点名），再级联下游
+    //（顺序：stream aborted → req aborted → close；旧路径漏发自事件）。
+    this.emit("aborted");
+    if (this.__req && !this.__cleanClose) this.__req.__onAborted();
+    if (this.__res && !this.__res.destroyed) this.__res.__destroySilent();
     this.destroy();
   }
   __abortDownstream() {
@@ -359,6 +364,8 @@ class Http2ServerStream extends Duplex {
     __validateStreamClose(code, cb);
     if (typeof cb === "function") this.once("close", cb);
     if (this.__closed || this.__destroyed) return this;
+    // node：非零非 CANCEL 的 close 码记账，_destroy 合成流错误（client 同口径）。
+    if ((code ?? 0) !== 0) this.__closeCode = code;
     if (!this.__trailersSent) {
       __wjs2_h2_reset(this.__conn, this.id, code);
       this.__trailersSent = true;
@@ -443,7 +450,11 @@ class Http2ServerStream extends Duplex {
     this.__destroyed = true;
     this.__session?.__unregisterStream(this);
     this.__abortDownstream();
-    cb(err ?? this.__destroyErr);
+    // node _destroy 合成口径：显式 err 优先；否则非零非 CANCEL 的 close/abort
+    // 码合成流错误（stream-destroy-event-order；干净路无错，回归照旧）。
+    const rstErr = err ?? this.__destroyErr ??
+      __h2RstError(this.__closeCode) ?? __h2RstError(this.__abortCode);
+    cb(rstErr);
   }
   setTimeout(msecs, callback) {
     if (typeof msecs !== "number") throw __code("ERR_INVALID_ARG_TYPE", "msecs", "number", msecs);
@@ -491,15 +502,22 @@ class Http2ServerRequest extends Readable {
     }
     const authority = __noAuth ? "" : String(info.authority ?? "");
     let phoHint = null;
+    let protocol = "";
     const reg = [];
     for (const [k, v] of __hpairs) {
       if (k === "x-wjs-pho") { phoHint = String(v).split(","); continue; }
       if (k === "x-wjs-no-authority") continue;
+      // 扩展 CONNECT（RFC 8441）：`:protocol` 只活在线上伪头区，hyper 经
+      // extensions 暴露，Rust 侧已拼入头表尾——此处摘出合成伪头。
+      if (k === ":protocol") { protocol = String(v); continue; }
       reg.push([k, v]);
     }
     const pseudo = [];
     pseudo.push([":method", method]);
-    if (method !== "CONNECT") pseudo.push([":path", String(info.path)]);
+    // 扩展 CONNECT 带 :protocol + :path（常规 CONNECT 两键皆禁；
+    // connect-method/connect-method-extended 双套件点名）。
+    if (protocol) pseudo.push([":protocol", protocol]);
+    if (method !== "CONNECT" || protocol) pseudo.push([":path", String(info.path)]);
     if (authority) pseudo.push([":authority", authority]);
     pseudo.push([":scheme", scheme]);
     let all;

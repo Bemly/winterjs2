@@ -27,6 +27,7 @@ use mozjs::rooted;
 use crate::builtins::node::net::{NetCmd, NetEvent, NetKind};
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
+use super::http2_server::SharedIo;
 
 // ── hyper 胶水（零新 crate；Executor/Body/IO 手写小件）───────────────────────
 
@@ -65,57 +66,17 @@ impl http_body::Body for OneBody {
     }
 }
 
-/// tokio 流 → hyper IO（hyper-util 同款 recipe，本仓手写）。
-#[derive(Debug)]
-pub(crate) struct TokioIo<T>(T);
 
-impl<T> TokioIo<T> {
-    pub(crate) fn new(inner: T) -> Self {
-        Self(inner)
-    }
+
+
+/// 服务端连接选项（h2_listen optsJson.settings 直传；hyper Builder 消费）。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ServerConnSettings {
+    pub(crate) enable_connect_protocol: bool,
+    pub(crate) max_header_list_size: Option<u32>,
 }
 
-impl<T> hyper::rt::Read for TokioIo<T>
-where
-    T: tokio::io::AsyncRead + Unpin,
-{
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        mut buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        // SAFETY: ReadBufCursor 的未填区即合法写区（hyper-util 同款 unsafe 用法）
-        let uninit = unsafe { buf.as_mut() };
-        let mut tbuf = tokio::io::ReadBuf::uninit(uninit);
-        futures::ready!(tokio::io::AsyncRead::poll_read(
-            Pin::new(&mut self.get_mut().0),
-            cx,
-            &mut tbuf
-        ))?;
-        let n = tbuf.filled().len();
-        unsafe { buf.advance(n) };
-        Poll::Ready(Ok(()))
-    }
-}
 
-impl<T> hyper::rt::Write for TokioIo<T>
-where
-    T: tokio::io::AsyncWrite + Unpin,
-{
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        tokio::io::AsyncWrite::poll_write(Pin::new(&mut self.get_mut().0), cx, buf)
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        tokio::io::AsyncWrite::poll_flush(Pin::new(&mut self.get_mut().0), cx)
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        tokio::io::AsyncWrite::poll_shutdown(Pin::new(&mut self.get_mut().0), cx)
-    }
-}
 
 // ── 小件 ────────────────────────────────────────────────────────────────────
 
@@ -138,6 +99,24 @@ pub(crate) fn headers_json(headers: &http::HeaderMap) -> String {
         .map(|(k, v)| (k.as_str().to_owned(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
         .collect();
     serde_json::to_string(&pairs).unwrap_or_else(|_| "[]".into())
+}
+
+/// HeaderMap → JSON，末尾附 `:protocol` 伪头（扩展 CONNECT；hyper 只经
+/// extensions 暴露该伪头，不进 HeaderMap——cant-turn-off/Connect 套件用）。
+pub(crate) fn headers_json_proto(headers: &http::HeaderMap, protocol: &str) -> String {
+    let mut base = headers_json(headers);
+    if protocol.is_empty() || !base.ends_with(']') {
+        return base;
+    }
+    if let Ok(pair) = serde_json::to_string(&[":protocol", protocol]) {
+        base.pop();
+        if base.len() > 1 {
+            base.push(',');
+        }
+        base.push_str(&pair);
+        base.push(']');
+    }
+    base
 }
 
 /// JSON `[[k, v], …]` → 头表（名/值非法即跳过，调用方记档）。
@@ -353,15 +332,20 @@ async fn feed_body(
 /// 单连接驱动（`select!` 兼收应答命令；结束即静默 purge entry）。
 /// 10f 流式化：H2Respond 发头（oneshot），体经 data/end 命令增量喂 ChanBody；
 /// 连接退出时对未收尾流补发 aborted 事件（§4.52：先静默子域再终结）。
-pub(crate) async fn serve_conn<IO>(
-    io: IO,
+/// srv：createServer settings 直传（enableConnectProtocol/maxHeaderListSize；
+/// hyper Builder 消费，hyper 无 mid-connection SETTINGS API）。
+/// 连接级 RST（stream_id==0 的 H2RespondReset）：ECP 1→0 毒化——线写坏
+/// SETTINGS 后断连（cant-turn-off；wire-faithful，见 inject_proto_error）。
+pub(crate) async fn serve_conn<S>(
+    raw: S,
+    srv: ServerConnSettings,
     server_id: u64,
     conn_id: u64,
     peer: std::net::SocketAddr,
     ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<NetCmd>,
 ) where
-    IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     // node 口径：会话随连接建立即生（server 'session' 先于任何流）——修前首个请求到才
     // 懒建会话，只发原始帧/只 ping/settings 的连接永无 'session'（约 9 件套件挂死）。
@@ -373,6 +357,11 @@ pub(crate) async fn serve_conn<IO>(
             payload: format!("{conn_id} {peer}"),
         },
     });
+    // 共享 IO：serve_connection 持有主份，毒化/RST 注入留一 arc。
+    // 事件上报装配 server 级（对端 RST 翻 aborted；SETTINGS/GOAWAY 无 server 消费，忽略）。
+    let mut io = SharedIo::new(raw);
+    io.set_ev(ev_tx.clone(), server_id, true);
+    let injector = io.clone();
     let responders: Responders = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let bodies: BodyFeeds = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let pendings: Pendings = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -417,7 +406,14 @@ pub(crate) async fn serve_conn<IO>(
                     .authority()
                     .map(|a| a.as_str().to_owned())
                     .unwrap_or_default();
-                let headers = headers_json(req.headers());
+                // 扩展 CONNECT（RFC 8441）：`:protocol` 只活在 extensions，
+                // 不进 HeaderMap——此处取出随头表 JSON 下发，JS 侧合成伪头。
+                let protocol = req
+                    .extensions()
+                    .get::<hyper::ext::Protocol>()
+                    .map(|p| p.as_str().to_owned())
+                    .unwrap_or_default();
+                let headers = headers_json_proto(req.headers(), &protocol);
                 // P1（2026-09-25）：请求体流式——头到即派发 'stream'/'request'，体帧逐块
                 // 以 `body`/`reqEnd` 流事件跟进（修前整收：读完整个请求体才派发，客户端
                 // 等服务端应答/wantTrailers 再收尾的交互形全挂死）。头带 END_STREAM 的
@@ -499,12 +495,20 @@ pub(crate) async fn serve_conn<IO>(
     // date 头全权归 JS（sendDate 口径；hyper 缺省 auto_date 会无视 sendDate=false）。
     let mut h2b = hyper::server::conn::http2::Builder::new(Exec);
     h2b.auto_date_header(false);
+    if srv.enable_connect_protocol {
+        h2b.enable_connect_protocol();
+    }
+    if let Some(m) = srv.max_header_list_size {
+        h2b.max_header_list_size(m);
+    }
     let conn = h2b.serve_connection(io, svc);
     tokio::pin!(conn);
+    // 连接级协议错误旗（stream_id==0 的 H2RespondReset 置位；坏帧注入见下）。
+    let mut proto_err = false;
     loop {
         tokio::select! {
-            r = &mut conn => {
-                let _ = r;
+                r = &mut conn => {
+                    let _ = r;
                 break;
             }
             cmd = cmd_rx.recv() => {
@@ -538,34 +542,73 @@ pub(crate) async fn serve_conn<IO>(
                         feed_body(stream_id, BodyMsg::End(Some(trailers)), &bodies, &pendings).await;
                     }
                     Some(NetCmd::H2RespondReset { stream_id, code }) => {
-                        ended.lock().unwrap().insert(stream_id);
-                        // 通知 server 侧流被 RST（rstCode 语义；JS 侧据此置 rstCode）
-                        let _ = ev_tx.send(NetEvent {
-                            id: server_id,
-                            kind: NetKind::H2Stream {
-                                stream_id,
-                                what: "aborted".into(),
-                                payload: code.to_string(),
-                            },
-                        });
-                        if code == 0 {
-                            dead_clean.lock().unwrap().insert(stream_id);
+                        if stream_id == 0xffffffff {
+                            // GOAWAY(code) 注入（propagate-session-destroy-code：
+                            // session.destroy(code) 先 GOAWAY 后逐流 RST；
+                            // 魔数流号复用 H2RespondReset 通道，新 native 需
+                            // mod.rs 注册，另案）。
+                            let _ = injector.inject_goaway(code).await;
+                        } else if stream_id == 0 {
+                            // 连接级协议错误（cant-turn-off：session.settings 关 ECP）——
+                            // 坏帧 {8:0} 必须排在握手 {8:1} 之后（客户端先见 1
+                            // 再见 0 才报协议错误；顺序反了即被当普通
+                            // remoteSettings 合并）。握手与毒化命令竞速：此处
+                            // 不 break（不断连——node 同形），主循环继续驱动握手；
+                            // waiter 待 hs_sent 落线再注坏帧；收尾由客户端
+                            // teardown 的 Close 走正常分支；循环后注帧为兜底。
+                            proto_err = true;
+                            let inj = injector.clone();
+                            tokio::spawn(async move {
+                                for _ in 0..5000 {
+                                    if inj.hs_sent() {
+                                        break;
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                                }
+                                inj.inject_proto_error().await;
+                            });
                         } else {
-                            dead.lock().unwrap().insert(stream_id);
-                        }
-                        // 头未应答：摘 oneshot 触发 service 分支；已应答：体通道注错/RST。
-                        let sender = responders.lock().await.remove(&stream_id);
-                        drop(sender);
-                        if code == 0 {
-                            feed_body(stream_id, BodyMsg::End(None), &bodies, &pendings).await;
-                        } else {
-                            feed_body(
-                                stream_id,
-                                BodyMsg::Fail("h2 stream reset".into()),
-                                &bodies,
-                                &pendings,
-                            )
-                            .await;
+                            ended.lock().unwrap().insert(stream_id);
+                            // 精确 RST 码线注（hyper service-Err 只给 INTERNAL_ERROR；
+                            // close(code)/destroy(code) 语义要原码，9 号传播面亦赖此）。
+                            // 只在未应答时注：已应答流的体/END 由 hyper 正常发出，
+                            // 此时注 RST 会杀死在途响应体（write-after-destroy）。
+                            // 映射未知即跳过（hyper 自带 RST 兜底，不断连）。
+                            // 头未应答：摘 oneshot 触发 service 分支（hyper 随后 RST）。
+                            let sender = {
+                                let mut responders = responders.lock().await;
+                                responders.remove(&stream_id)
+                            };
+                            if sender.is_some() {
+                                let _ = injector.inject_rst(stream_id, code).await;
+                            }
+                            drop(sender);
+                            // 通知 server 侧流被 RST（rstCode 语义；JS 侧据此置 rstCode）
+                            let _ = ev_tx.send(NetEvent {
+                                id: server_id,
+                                kind: NetKind::H2Stream {
+                                    stream_id,
+                                    what: "aborted".into(),
+                                    payload: code.to_string(),
+                                },
+                            });
+                            if code == 0 {
+                                dead_clean.lock().unwrap().insert(stream_id);
+                            } else {
+                                dead.lock().unwrap().insert(stream_id);
+                            }
+                            // 已应答：体通道注错/RST；未应答上已摘 oneshot（ hyper 随后 RST）。
+                            if code == 0 {
+                                feed_body(stream_id, BodyMsg::End(None), &bodies, &pendings).await;
+                            } else {
+                                feed_body(
+                                    stream_id,
+                                    BodyMsg::Fail("h2 stream reset".into()),
+                                    &bodies,
+                                    &pendings,
+                                )
+                                .await;
+                            }
                         }
                     }
                     Some(NetCmd::Close) | None => {
@@ -586,6 +629,10 @@ pub(crate) async fn serve_conn<IO>(
                 }
             }
         }
+    }
+    if proto_err {
+        // 兜底：循环已退出（对端先关）而 waiter 未注帧时补注；写失败即静默。
+        injector.inject_proto_error().await;
     }
     // 连接退出：未收尾的流对 server 补发 aborted（target 在 server close 前仍在，
     // 时序竞态由 JS 侧 server close 处理器兜底）。
@@ -803,6 +850,29 @@ mod tests {
         assert!(back.contains(&("x-n".into(), "v".into())));
         // 非法头名跳过
         assert!(parse_headers(r#"[["bad name", "v"], ["ok", "1"]]"#) == vec![("ok".into(), "1".into())]);
+    }
+
+    #[test]
+    fn h2_headers_proto_roundtrip() {
+        // 扩展 CONNECT 伪头拼装（connect-method-extended）：空协议即原样，
+        // 有协议即尾部追加 [":protocol", v]（JSON 尾插，空表/非空表双形）。
+        let mut map = http::HeaderMap::new();
+        map.insert("content-type", "text/plain".parse().unwrap());
+        assert_eq!(
+            headers_json_proto(&map, ""),
+            r#"[["content-type","text/plain"]]"#
+        );
+        assert_eq!(
+            headers_json_proto(&map, "foo"),
+            r#"[["content-type","text/plain"],[":protocol","foo"]]"#
+        );
+        let empty = http::HeaderMap::new();
+        assert_eq!(headers_json_proto(&empty, "foo"), r#"[[":protocol","foo"]]"#);
+        assert_eq!(headers_json_proto(&empty, ""), "[]");
+        // 伪头不进 parse_headers（冒号非法，常规头专用）——服务端 Http2ServerRequest
+        // 直接从头表 JSON 摘 `:protocol`（见 h2_server.js），此处只断 JSON 形。
+        let wire = headers_json_proto(&map, "foo");
+        assert!(wire.contains(r#"[":protocol","foo"]"#));
     }
 
     #[test]

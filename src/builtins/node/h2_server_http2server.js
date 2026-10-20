@@ -14,6 +14,13 @@ class Http2Server extends EventEmitter {
     this.__sockBag = {};
     this.__opts = options;
     this[kPendingOptions] = this.__opts;
+    // node setupCompat 口径：compat 路由（'connect'/405、'request'）只在
+    // 'request' 监听器出现过后才接线（connect-method[-extended] 套件：
+    // 纯 'stream' 监听的 CONNECT 不走 'connect'、不 405）。
+    this.__compatAttached = false;
+    this.on("newListener", (ev) => {
+      if (ev === "request") this.__compatAttached = true;
+    });
     if (options.settings !== undefined) __validateSettings(options.settings, "options.settings");
     // node validateUint32（maxSessionInvalidFrames/maxSessionRejectedStreams）：非 uint32 即 OUT_OF_RANGE。
     for (const k of ["maxSessionInvalidFrames", "maxSessionRejectedStreams"]) {
@@ -135,6 +142,10 @@ class Http2Server extends EventEmitter {
       case "request": {
         const o = JSON.parse(payload);
         const id = Number(o.streamId);
+        // 毒化连接（cant-turn-off）：ECP 关后对端残留 HEADERS 到达即丢，
+        // 不建流不发事件（node：会话已死，HEADERS 到即无声丢弃）。
+        const preSess = this.__sessions.get(Number(o.connId));
+        if (preSess && preSess.__poisoned) break;
         const peer = String(o.peer ?? "");
         const peerObj = {
           addr: peer.includes(":") ? peer.slice(0, peer.lastIndexOf(":")) : peer,
@@ -153,15 +164,17 @@ class Http2Server extends EventEmitter {
         const res = new Http2ServerResponse(req, stream);
         this.__streams.set(id, { stream, req, res });
         stream.once("close", () => this.__streams.delete(id));
-        const method = req.headers[":method"];
-        if (method === "HEAD") {
-          // HEAD 应答自动 END_STREAM（respond 内处理）
-          stream.__headRequest = true;
-        }
-        if (method === "CONNECT") {
-          // node onServerStream 逐字：无 'connect' 监听即 405 + end（旧 501 系误植）。
-          if (!this.emit("connect", req, res)) { res.statusCode = 405; res.end(); }
-        } else if (req.headers.expect !== undefined) {
+            const method = req.headers[":method"];
+            if (method === "HEAD") {
+              // HEAD 应答自动 END_STREAM（respond 内处理）
+              stream.__headRequest = true;
+            }
+            // node setupCompat 口径：'connect'/405 只在 compat 接线后；
+            // 纯 'stream' 监听的 CONNECT（含扩展）走通用 'stream' 路径。
+            if (method === "CONNECT" && this.__compatAttached) {
+              // node onServerStream 逐字：无 'connect' 监听即 405 + end（旧 501 系误植）。
+              if (!this.emit("connect", req, res)) { res.statusCode = 405; res.end(); }
+            } else if (req.headers.expect !== undefined) {
           // node onServerStream 逐字（expect-handling/checkContinue 套件）：
           // 100-continue + checkContinue 监听 → 只发 checkContinue（写 100 由
           // writeContinue/native interim 承接，hyper 底座 bound 另案）；
@@ -225,8 +238,11 @@ class Http2Server extends EventEmitter {
       case "aborted": {
         const o = JSON.parse(payload);
         const entry = this.__streams.get(Number(o.streamId));
+        // 对端 RST（wire 窥探，payload 为码）：记 abort 码，_destroy 按码合成
+        // 流错误（stream-destroy-event-order）；空 payload 系会话收尾，无错。
         if (entry && o.payload !== undefined && o.payload !== "") {
           entry.stream.rstCode = Number(o.payload);
+          entry.stream.__abortCode = Number(o.payload);
         }
         this.__abortEntry(entry);
         break;
@@ -273,7 +289,11 @@ class Http2Server extends EventEmitter {
   address() { return this.__listening; }
   listen(...args) {
     let port, host = null, cb = null;
-    if (typeof args[0] === "object" && args[0] !== null) {
+    if (typeof args[0] === "function") {
+      // node：listen(cb) 即随机端口 + 回调（client-request-listeners-warning）。
+      cb = args[0];
+      port = 0;
+    } else if (typeof args[0] === "object" && args[0] !== null) {
       port = args[0].port;
       host = args[0].host ?? null;
       cb = typeof args[1] === "function" ? args[1] : null;
@@ -289,8 +309,14 @@ class Http2Server extends EventEmitter {
     this.__closing = false;
     // 同步 bind 口径：native 回 "id:picked"，当 tick 即置 __listening
     //（error-order 套件 listen(0) 后同步读 address().port）。
+    // settings 直传 native（enableConnectProtocol/maxHeaderListSize 走 hyper
+    // Builder；connect-method-extended/too-large-headers 套件）。
+    const __listenOpts = { ...(this.__tlsOpts ?? {}) };
+    if (this.__opts.settings !== undefined) {
+      __listenOpts.settings = __validateSettings(this.__opts.settings, "options.settings");
+    }
     const __ret = String(__wjs2_h2_listen(Number(port), host === null ? "0.0.0.0" : host,
-      JSON.stringify(this.__tlsOpts ?? {}), this)).split(":");
+      JSON.stringify(__listenOpts), this)).split(":");
     this.__id = Number(__ret[0]);
     const __picked = Number(__ret[1] ?? 0);
     if (__picked !== 0) {

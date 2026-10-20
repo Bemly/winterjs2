@@ -327,7 +327,10 @@ const __DEFAULT_SETTINGS = {
   initialWindowSize: 65535,
   maxFrameSize: 16384,
   maxConcurrentStreams: 4294967295,
-  maxHeaderListSize: 65535,
+  // node 真机：两键皆 u32max（真机 remoteSettings/localSettings 实测；
+  // 旧 65535 系误植，too-large-headers 套件点名）。
+  maxHeaderListSize: 4294967295,
+  maxHeaderSize: 4294967295,
   enableConnectProtocol: false,
 };
 
@@ -340,6 +343,24 @@ function __mkSocketProxy(stream, server, peerObj) {
   const base = Object.create(net.Socket.prototype);
   Object.defineProperty(base, "connecting", { value: false, writable: true, configurable: true });
   const handler = {
+    // node proxySocketHandler.has 逐字：stream 或其会话 socket 含即 true
+    //（socket-proxy-handler-for-has 套件点名 'encrypted' in socket）。
+    has(t, prop) {
+      try {
+        if (prop in t) return true;
+      } catch {}
+      const s = stream;
+      try {
+        if (s !== undefined && s !== null && prop in Object(s)) return true;
+      } catch {}
+      const sess = s?.__session;
+      if (sess) {
+        try {
+          if (prop in sess.socket) return true;
+        } catch {}
+      }
+      return (server.__sockBag !== undefined && prop in server.__sockBag) || false;
+    },
     get(t, prop) {
       if (prop === "readable" || prop === "writable") return stream[prop];
       if (prop === "destroyed") return stream.__destroyed;
@@ -404,6 +425,9 @@ function __mkSessionSocket(session, peerObj, localObj) {
   sock.localAddress = localObj?.address;
   sock.localPort = localObj?.port;
   sock.remoteFamily = peerObj.addr?.includes(":") ? "IPv6" : "IPv4";
+  // node 会话 socket 自带 encrypted（socket-proxy-handler-for-has 套件点名
+  // request.socket.encrypted + 'encrypted' in request.socket）。
+  sock.encrypted = !!session.encrypted;
   sock.connecting = false;
   sock.destroyed = false;
   sock.readable = true;
@@ -413,11 +437,190 @@ function __mkSessionSocket(session, peerObj, localObj) {
     sock.destroyed = true;
     if (err) sock.emit("error", err);
     session.destroy();
+    // node：会话销毁后 socket 发 'close'（server-socket-destroy 套件点名）。
+    queueMicrotask(() => sock.emit("close"));
   };
   sock.end = () => { session.close(); return sock; };
   sock.write = () => true;
   setTimeout(() => { if (!session.destroyed) sock.emit("connect"); }, 0);
   return sock;
+}
+
+// ── 客户端事件面（SETTINGS 解码 + RST 码面；h2_client.js __ev 委托，守 1000 行门）──
+// RST 码 → node 流错误（stream-destroy-event-order 真机逐项）：
+// 0/8（NO_ERROR/CANCEL）干净无错；已知码 NGHTTP2_名；未知码用裸数字。
+const __NGHTTP2_NAMES = {
+  1: "NGHTTP2_PROTOCOL_ERROR", 2: "NGHTTP2_INTERNAL_ERROR",
+  3: "NGHTTP2_FLOW_CONTROL_ERROR", 4: "NGHTTP2_SETTINGS_TIMEOUT",
+  5: "NGHTTP2_STREAM_CLOSED", 6: "NGHTTP2_FRAME_SIZE_ERROR",
+  7: "NGHTTP2_REFUSED_STREAM", 8: "NGHTTP2_CANCEL",
+  9: "NGHTTP2_COMPRESSION_ERROR", 10: "NGHTTP2_CONNECT_ERROR",
+  11: "NGHTTP2_ENHANCE_YOUR_CALM", 12: "NGHTTP2_INADEQUATE_SECURITY",
+  13: "NGHTTP2_HTTP_1_1_REQUIRED",
+};
+function __h2RstError(code) {
+  const n = Number(code);
+  if (!Number.isInteger(n) || n === 0 || n === 8) return undefined;
+  return __h2Err("ERR_HTTP2_STREAM_ERROR",
+    `Stream closed with error code ${__NGHTTP2_NAMES[n] ?? n}`);
+}
+// 服务端 SETTINGS id→名（getUnpackedSettings 同表；未知 id 忽略）。
+function __decodeRemotePairs(pairs) {
+  const upd = {};
+  for (const [sid, val] of pairs) {
+    switch (Number(sid)) {
+      case 0x1: upd.headerTableSize = val; break;
+      case 0x2: upd.enablePush = val !== 0; break;
+      case 0x3: upd.maxConcurrentStreams = val; break;
+      case 0x4: upd.initialWindowSize = val; break;
+      case 0x5: upd.maxFrameSize = val; break;
+      case 0x6: upd.maxHeaderListSize = val; upd.maxHeaderSize = val; break;
+      case 0x8: upd.enableConnectProtocol = val !== 0; break;
+      default: break;
+    }
+  }
+  return upd;
+}
+// ECP 1→0 毒化（cant-turn-off）：node 客户端把 ECP 1→0 当连接错误。
+// 开流/待开流先报，再报会话错（探针序：REQ error → REQ close → CLIENT error）。
+// 返 true = 已毒化（调用方 break，不再发 remoteSettings）。
+function __maybeProtoPoison(session, upd) {
+  if (upd.enableConnectProtocol !== false || session.__sawECP1 !== true) return false;
+  const err = __h2Err("ERR_HTTP2_ERROR", "Protocol error");
+  for (const [, st] of session.__streams) {
+    st.emit("error", err);
+    st.destroy();
+  }
+  session.__streams.clear();
+  for (const pst of session.__pendingOpens.splice(0)) {
+    pst.emit("error", err);
+    pst.destroy();
+  }
+  session.emit("error", err);
+  session.destroy();
+  return true;
+}
+// 客户端流 aborted（h2_client.js __onAborted 委托；放此处守 1000 行门）。
+// 干净收尾：先发 aborted，再递 end 后收尾（client-socket-destroy：
+// node 序 aborted → end → close；直接 destroy 会吞掉 end）。
+// 对端 RST 带码：aborted 置位并按码错误（error 先于 close）。
+function __clientOnAborted(st, rstCode) {
+  if (st.aborted || st.destroyed) return;
+  const n = Number(rstCode);
+  const hasCode = Number.isInteger(n) && (rstCode !== undefined && rstCode !== null && rstCode !== "");
+  const err = hasCode ? __h2RstError(n) : undefined;
+  if (hasCode && n !== 0) {
+    st.aborted = true;
+    st.rstCode = n;
+  }
+  st.emit("aborted");
+  st.push(null);
+  if (err !== undefined) {
+    st.destroy(err);
+    return;
+  }
+  if (st.readableEnded) {
+    st.destroy();
+    return;
+  }
+  let done = false;
+  const fin = () => {
+    if (done || st.destroyed) return;
+    done = true;
+    st.destroy();
+  };
+  st.once("end", fin);
+  setImmediate(fin);
+}
+// GOAWAY 非零码的会话级销毁（propagate-session-destroy-code）：
+// 全流 SESSION_ERROR + 会话 error + 销毁（closed 保持 false，connClose 后才 close）。
+function __goawaySessionDestroy(session, code) {
+  if (session.destroyed) return;
+  const serr = __h2Err("ERR_HTTP2_SESSION_ERROR", `Session closed with error code ${code}`);
+  for (const [, st] of session.__streams) {
+    if (!st.destroyed) {
+      st.rstCode = code;
+      st.emit("error", serr);
+      st.destroy();
+      session.__goneStreams.add(st.id);
+    }
+  }
+  session.__streams.clear();
+  for (const pst of session.__pendingOpens.splice(0)) {
+    pst.emit("error", serr);
+    pst.destroy();
+  }
+  session.destroyed = true;
+  session.emit("error", serr);
+  // 连接拆除走正常 teardown（Close 臂 abort 在途任务收尾）。
+  if (session.__id) {
+    __wjs2_net_destroy(session.__id);
+    session.__id = 0;
+  }
+}
+// GOAWAY 非零码的流级翻 mapping（too-large-headers：h2 线上 GOAWAY(11)，
+// node 线上 RST_STREAM(11)——未收应答的在途流翻成对应流错误）。
+function __goawayStreamErrors(session, inner) {
+  const code = Number(inner.code);
+  const lastId = Number(inner.lastId ?? 0);
+  if (code !== 11) return;
+  const err = __h2Err("ERR_HTTP2_STREAM_ERROR",
+    "Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM");
+  for (const [sid, st] of session.__streams) {
+    if (Number(sid) > lastId && !st.__responseReceived && !st.destroyed) {
+      st.rstCode = 11;
+      st.emit("error", err);
+      st.destroy();
+    }
+  }
+}
+
+// ── 客户端开流（h2_client.js ClientHttp2Stream.__openNow 委托；放此处守 1000 行门）
+function __clientOpenNow(st, extraBody, streaming = false) {
+  if (st.__opened) return;
+  st.__opened = true;
+  st.__streaming = !!streaming;
+  const parts = extraBody ? [...st.__pendingBody, extraBody] : st.__pendingBody;
+  st.__pendingBody = [];
+  let total = 0;
+  for (const b of parts) total += b.length;
+  const flat = new Uint8Array(total);
+  let off = 0;
+  for (const b of parts) { flat.set(b, off); off += b.length; }
+  try {
+    __wjs2_h2_open(st.__session.__id, st.id,
+      JSON.stringify({
+        method: st.sentHeaders[":method"], path: st.sentHeaders[":path"],
+        scheme: st.sentHeaders[":scheme"], authority: st.sentHeaders[":authority"],
+        // 扩展 CONNECT 的 `:protocol`（RFC 8441；hyper 经 extensions 上线）
+        protocol: st.sentHeaders[":protocol"] ?? "",
+        waitTrailers: st.__waitTrailers,
+        // 流式上传（cancel-while-client-reading）：首块随头出线但流保持
+        // 开放，后续块经 __wjs2_h2_data、收尾经 __wjs2_h2_end。
+        streaming: !!st.__streaming,
+        // node request() 缺省：无 body 意图的方法（GET/HEAD/DELETE）END_STREAM
+        // 随头出线（endafterheaders 套件）；POST 等分开发。native 不再按体空猜。
+        endStream: !!st.__endStream,
+        headers: Object.entries(st.sentHeaders)
+          .filter(([k]) => !k.startsWith(":"))
+          .map(([k, v]) => [
+            k,
+            // node prepareRequestHeaders 口径：cookie 数组 "; " 并串为单条线
+            (k === "cookie" && Array.isArray(v)) ? v.join("; ") : v,
+          ]),
+      }),
+      __b64enc(flat));
+  } catch {
+    // 会话已亡（销毁竞态）：流随会话终止，不再上抛
+    st.__detachFromSession();
+  }
+  if (st.__waitTrailers) {
+    queueMicrotask(() => {
+      if (st.destroyed) return;
+      st.__wantTrailersFired = true;
+      st.emit("wantTrailers");
+    });
+  }
 }
 
 // ── Http2Session（服务端每连接一个；'session' 事件载体）──────────────────────
@@ -451,6 +654,9 @@ class Http2Session extends EventEmitter {
       deflateDynamicTableSize: 4096,
       inflateDynamicTableSize: 4096,
     };
+    // node core.js：会话构造即绑 kSocket（server-socket-destroy 套件直探
+    // session[kSocket]，懒 getter 在直接访问时给 undefined）。
+    this[kSocket] = __mkSessionSocket(this, this.__peer, server.__listening);
     this.__ev = this.__ev.bind(this);
   }
   get socket() {
@@ -489,6 +695,26 @@ class Http2Session extends EventEmitter {
   settings(settings = {}, cb) {
     const validated = __validateSettings(settings);
     if (this.destroyed) throw __code("ERR_HTTP2_INVALID_SESSION");
+    // ECP 1→0（cant-turn-off）：node 把"开后关"当连接级 PROTOCOL_ERROR——
+    // 服务端发坏 SETTINGS 后会话死、客户端连接错。hyper 无 mid-connection
+    // SETTINGS API：stream_id 0 的 reset 令 Rust  waiter 在握手 SETTINGS
+    // 落线后直写坏帧（wire-faithful），连接不断（node 同形：坏帧后 socket
+    // 照开，收尾由客户端 teardown 触发）。本地会话记毒化：后续上线
+    // HEADERS 直接丢弃（对端残留 HEADERS 到达时不再建流）。
+    if (validated.enableConnectProtocol === false && this.__settings.enableConnectProtocol === true) {
+      this.__settings = __applySettings(this.__settings, validated);
+      this.__pendingSettingsAck = true;
+      this.__poisoned = true;
+      if (this.__conn) __wjs2_h2_reset(this.__conn, 0, 1);
+      setTimeout(() => {
+        this.__pendingSettingsAck = false;
+        if (!this.destroyed) {
+          this.emit("localSettings", this.__settings);
+          if (typeof cb === "function") cb();
+        }
+      }, 1);
+      return this;
+    }
     this.__pendingSettingsAck = true;
     this.__outstandingSettings++;
     if (Number.isFinite(this.__maxOutstandingSettings) &&
@@ -649,7 +875,32 @@ class Http2Session extends EventEmitter {
     if (typeof cb === "function") this.once("close", cb);
     if (this.destroyed) return this;
     this.destroyed = true;
-    this.close();
+    // node session.destroy(code) 口径（propagate-session-destroy-code）：
+    // 非零非 CANCEL 码 → 开流逐个 RST(code) + 流错误（SESSION_ERROR）+
+    // 会话 error（同错）；closed 保持 false 直到 connClose（测试点名）。
+    // 干净码走旧路（优雅关，不断流语义不变）。
+    const c = Number(code) || 0;
+    if (c !== 0 && c !== 8) {
+      const serr = __code("ERR_HTTP2_SESSION_ERROR", c);
+      // GOAWAY(code) 先行（客户端凭此判会话级销毁，逐流 RST 随后）；
+      // 魔数流号经 H2RespondReset 复用通道（新 native 需 mod.rs，另案）。
+      if (this.__conn) __wjs2_h2_reset(this.__conn, 0xffffffff, c);
+      for (const [, st] of this.__streams) {
+        try { __wjs2_h2_reset(this.__conn, st.id, c); } catch {}
+        st.rstCode = c;
+        st.emit("error", serr);
+        st.destroy();
+      }
+      this.__streams.clear();
+      this.emit("error", serr);
+    }
+    // closed 不置位（connClose → __finish 置位并发 close；测试断言 destroy 后 closed=false）。
+    // 不经 close() 委派（destroyed 置位后 close 直接返回，连接永不拆除——旧坑）。
+    if (this.__conn) {
+      __wjs2_net_destroy(this.__conn);
+    } else {
+      setImmediate(() => this.__finish());
+    }
     return this;
   }
   __finish() {

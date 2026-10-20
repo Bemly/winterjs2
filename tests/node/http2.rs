@@ -458,8 +458,10 @@ server.listen(0, () => {
 
 #[test]
 fn http2_compat_connect_default() {
-    // c2：CONNECT 无监听缺省 405（旧 501 误植；node onServerStream 逐字）+
-    // 有监听走 connect 事件。
+    // c2：CONNECT 缺省 405（旧 501 误植；node onServerStream 逐字）+
+    // 有监听走 connect 事件。node setupCompat 口径：compat 路由（connect/405）
+    // 只在 'request' 监听器出现过后接线——两 dummy request 监听为接线用，
+    // CONNECT 本体不走 request（connect-method 套件：纯 stream 监听不 405）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_fs_file(
         &dir,
@@ -467,6 +469,7 @@ fn http2_compat_connect_default() {
         r#"
 import http2 from "node:http2";
 const s1 = http2.createServer();
+s1.on("request", (req, res) => res.end("r"));
 s1.listen(0, () => {
   const c = http2.connect(`http://localhost:${s1.address().port}`);
   const req = c.request({ ":method": "CONNECT", ":authority": "x" });
@@ -476,6 +479,7 @@ s1.listen(0, () => {
   req.end();
 });
 const s2 = http2.createServer();
+s2.on("request", (req, res) => res.end("r"));
 s2.on("connect", (req, res) => {
   console.log("connect-ev", req.headers[":method"]);
   res.statusCode = 200;
@@ -765,3 +769,4 @@ s2.listen(0, () => {
     }
     dir.close().unwrap();
 }
+

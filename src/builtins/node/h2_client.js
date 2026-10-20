@@ -1,17 +1,17 @@
 const kPendingOptions = Symbol("options");
 
 // ── 客户端 ──────────────────────────────────────────────────────────────
-const __DEFERRED_METHODS = new Set(["POST", "PUT", "PATCH"]);
 class ClientHttp2Stream extends Duplex {
   constructor(session, id, headers, options) {
     super();
     this.__session = session;
     this.id = id;
     this.sentHeaders = headers;
+    // node：干净关的流 rstCode 为 0（connect-method-extended 套件点名）
+    this.rstCode = 0;
     this.__ended = false;
     this.aborted = false;
     this.__opened = false;
-    this.__deferred = __DEFERRED_METHODS.has(String(headers[":method"]));
     this.__waitTrailers = !!(options && options.waitForTrailers);
     this.__pendingBody = [];
     this.endAfterHeaders = false;
@@ -40,57 +40,55 @@ class ClientHttp2Stream extends Duplex {
     };
   }
   _read() {}
-  __openNow(extraBody) {
-    if (this.__opened) return;
-    this.__opened = true;
-    const parts = extraBody ? [...this.__pendingBody, extraBody] : this.__pendingBody;
-    this.__pendingBody = [];
-    let total = 0;
-    for (const b of parts) total += b.length;
-    const flat = new Uint8Array(total);
-    let off = 0;
-    for (const b of parts) { flat.set(b, off); off += b.length; }
-    try {
-      __wjs2_h2_open(this.__session.__id, this.id,
-        JSON.stringify({
-          method: this.sentHeaders[":method"], path: this.sentHeaders[":path"],
-          scheme: this.sentHeaders[":scheme"], authority: this.sentHeaders[":authority"],
-          waitTrailers: this.__waitTrailers,
-          // node request() 缺省：无 body 意图的方法（GET/HEAD/DELETE）END_STREAM
-          // 随头出线（endafterheaders 套件）；POST 等分开发。native 不再按体空猜。
-          endStream: !!this.__endStream,
-          headers: Object.entries(this.sentHeaders)
-            .filter(([k]) => !k.startsWith(":"))
-            .map(([k, v]) => [
-              k,
-              // node prepareRequestHeaders 口径：cookie 数组 "; " 并串为单条线
-              (k === "cookie" && Array.isArray(v)) ? v.join("; ") : v,
-            ]),
-        }),
-        __b64enc(flat));
-    } catch {
-      // 会话已亡（销毁竞态）：流随会话终止，不再上抛
-      this.__detachFromSession();
-    }
-    if (this.__waitTrailers) {
-      queueMicrotask(() => {
-        if (this.destroyed) return;
-        this.__wantTrailersFired = true;
-        this.emit("wantTrailers");
-      });
-    }
+  __openNow(extraBody, streaming = false) {
+    __clientOpenNow(this, extraBody, streaming);
   }
   _write(chunk, encoding, cb) {
-    if (this.__opened || this.__ended) {
+    // 已开流直发块；悬置期缓冲（connect 冲刷）；单发流写即错。
+    if (this.__ended || (!this.__streaming && this.__opened)) {
       cb(__code("ERR_STREAM_WRITE_AFTER_END"));
       return;
     }
     const u8 = chunk instanceof Uint8Array ? chunk : __toU8(String(chunk), "write");
+    if (this.__opened) {
+      try {
+        __wjs2_h2_data(this.__session.__id, this.id, __b64enc(u8));
+      } catch {
+        this.__detachFromSession();
+      }
+      queueMicrotask(cb);
+      return;
+    }
     this.__pendingBody.push(u8);
     queueMicrotask(cb);
   }
   _final(cb) {
-    this.__openNow(null);
+    this.__ended = true;
+    if (!this.__opened) {
+      this.__openNow(null);
+    } else if (this.__streaming) {
+      // 流式收尾：余块刷出 + END（waitTrailers 由 sendTrailers 收尾，此处跳过）。
+      if (this.__pendingBody.length > 0) {
+        let total = 0;
+        for (const b of this.__pendingBody) total += b.length;
+        const flat = new Uint8Array(total);
+        let off = 0;
+        for (const b of this.__pendingBody) { flat.set(b, off); off += b.length; }
+        this.__pendingBody = [];
+        try {
+          __wjs2_h2_data(this.__session.__id, this.id, __b64enc(flat));
+        } catch {
+          this.__detachFromSession();
+        }
+      }
+      if (!this.__waitTrailers && this.__session?.__id) {
+        try {
+          __wjs2_h2_end(this.__session.__id, this.id, "[]");
+        } catch {
+          this.__detachFromSession();
+        }
+      }
+    }
     cb();
   }
   sendTrailers(trailers) {
@@ -125,13 +123,8 @@ class ClientHttp2Stream extends Duplex {
       this.once("end", () => { if (!this.destroyed) this.destroy(); });
     }
   }
-  __onAborted() {
-    if (this.aborted) return;
-    // node：session destroy 路径的流 'aborted' 事件发出但 aborted 属性
-    // 保持 false（aborted 属性 = 对端 RST 中断语义；client-destroy 套件）
-    this.emit("aborted");
-    this.push(null);
-    this.destroy(__code("ERR_HTTP2_STREAM_CANCEL"));
+  __onAborted(rstCode) {
+    __clientOnAborted(this, rstCode);
   }
   priority(options) {
     __h2PriorityDeprecate();
@@ -159,6 +152,13 @@ class ClientHttp2Stream extends Duplex {
     if (!this.destroyed) {
       if (typeof cb === "function") this.once("close", cb);
       this.__ended = true;
+      const rstErr = __h2RstError(code);
+      if (rstErr !== undefined) {
+        this.rstCode = code;
+        this.emit("error", rstErr); // 非零非 CANCEL 即本地流错误，先于 close。
+      } else if ((code ?? 0) !== 0) {
+        this.rstCode = code;
+      }
       if (this.__opened && this.__session.__id) {
         __wjs2_h2_reset(this.__session.__id, this.id, code ?? 0);
       }
@@ -216,6 +216,8 @@ class ClientHttp2Session extends EventEmitter {
     this.__id = 0;
     this.__seq = 1;
     this.__streams = new Map();
+    // 已终结流 tombstone：迟到重复终点静默丢弃，禁回落会话 error。
+    this.__goneStreams = new Set();
     this.__authority = authority;
     this.__options = options ?? {};
     this.destroyed = false;
@@ -456,9 +458,34 @@ class ClientHttp2Session extends EventEmitter {
           this[kSocket].connecting = false;
           queueMicrotask(() => this[kSocket].emit("connect"));
         }
-        for (const pst of this.__pendingOpens.splice(0)) pst.__openNow(null);
+        for (const pst of this.__pendingOpens.splice(0)) pst.__openNow(null, !pst.__endStream);
         this.emit("connect", this, null);
         break;
+      case "remoteSettings": {
+        // 服务端 SETTINGS（SnoopIo 线上窥探；hyper 无回调）——node 口径：
+        // 缺省全集 + 线上值覆盖；ECP 1→0 即连接级 PROTOCOL_ERROR
+        //（cant-turn-off：remoteSettings 不再发，直接走协议错误）。
+        const o = JSON.parse(payload);
+        const upd = __decodeRemotePairs(JSON.parse(o.payload ?? "[]"));
+        if (__maybeProtoPoison(this, upd)) break;
+        if (upd.enableConnectProtocol === true) this.__sawECP1 = true;
+        this.__remoteSettings = { ...this.__remoteSettings, ...upd };
+        this.emit("remoteSettings", this.__remoteSettings);
+        break;
+      }
+      case "goawayError": {
+        // 服务端 GOAWAY 非零码。11 = header 超限（too-large-headers）；
+        // 其余 = 会话级销毁（propagate-session-destroy-code，见 h2_head.js）。
+        const o = JSON.parse(payload);
+        const inner = o.payload === undefined ? o : JSON.parse(o.payload);
+        const code = Number(inner.code);
+        if (code === 11) {
+          __goawayStreamErrors(this, inner);
+          break;
+        }
+        __goawaySessionDestroy(this, code);
+        break;
+      }
       case "response": {
         const o = JSON.parse(payload);
         const st = this.__streams.get(Number(o.streamId));
@@ -490,6 +517,7 @@ class ClientHttp2Session extends EventEmitter {
         if (!st) break;
         st.__onEnd();
         this.__streams.delete(sid);
+        this.__goneStreams.add(sid);
         break;
       }
       case "aborted": {
@@ -497,8 +525,9 @@ class ClientHttp2Session extends EventEmitter {
         const sid = Number(o.streamId);
         const st = this.__streams.get(sid);
         if (!st) break;
-        st.__onAborted();
+        st.__onAborted(o.payload);
         this.__streams.delete(sid);
+        this.__goneStreams.add(sid);
         break;
       }
       case "error": {
@@ -514,9 +543,17 @@ class ClientHttp2Session extends EventEmitter {
           // 否则 close 永不到，fd-invalid 类套件挂死）。无监听器回落会话
           //（旧口径保留，error-order 系套件依赖）。
           if (inner.rst !== undefined && inner.rst !== null) st.rstCode = Number(inner.rst);
+          // 传输层死亡先 aborted 后 error（探针序）；流 RST 错误不发 aborted。
+          if (inner.code === "ECONNRESET" && !st.aborted) {
+            st.aborted = true;
+            st.emit("aborted");
+          }
           if (st.listenerCount("error") > 0) st.emit("error", err);
           else this.emit("error", err);
           st.destroy();
+          this.__goneStreams.add(sid);
+        } else if (sid !== undefined && this.__goneStreams.has(sid)) {
+          break; // 迟到重复终点：静默丢弃。
         } else {
           this.emit("error", err);
         }
@@ -615,18 +652,16 @@ class ClientHttp2Session extends EventEmitter {
         st.once("close", () => disposable[Symbol.dispose]());
       }
     }
-    if (!st.__deferred) {
-      // node isPayloadMeaningless：GET/HEAD/DELETE 缺省 endStream=true → 可写侧即尽，
-      // 收完应答流即 'close'（修前可写侧悬着，req 'close' 永不到）。
-      // 意图记流上，open 时带给 native 定 HEADERS 是否带 END_STREAM
-      //（endafterheaders 套件：GET 随头 fin，POST 分开）——先记再开。
-      const m = String(st.sentHeaders[":method"]);
-      const endStream = options?.endStream ?? (m === "GET" || m === "HEAD" || m === "DELETE");
-      st.__endStream = endStream;
-      if (this.connecting && !this.closed) this.__pendingOpens.push(st);
-      else st.__openNow(null);
-      if (endStream) st.end();
-    }
+    // node：request 即开流（HEADERS 即时出线；POST 等体随写随走、
+    // 收尾随 end）。endStream（GET/HEAD/DELETE 缺省、显式选项）单发
+    // 随头 fin；余者流式（首块随头、后块增量、END 随 end）。
+    //（旧 deferred 攒包到 end 才开流，无 end 的上传永不开——server-socket-destroy。）
+    const m = String(st.sentHeaders[":method"]);
+    const endStream = options?.endStream ?? (m === "GET" || m === "HEAD" || m === "DELETE");
+    st.__endStream = endStream;
+    if (this.connecting && !this.closed) this.__pendingOpens.push(st);
+    else st.__openNow(null, !endStream);
+    if (endStream) st.end();
     return st;
   }
   // node：client.close() 优雅关（GOAWAY）：新流被拒、已收到应答的流继续、
@@ -692,7 +727,9 @@ class ClientHttp2Session extends EventEmitter {
           if (!st.__responseReceived && this.__id) {
             __wjs2_h2_reset(this.__id, st.id, 8);
           }
-          if (!st.destroyed) st.destroy();
+          // 经 __onAborted 收尾（先 aborted，有缓冲即递 end 后 close；
+          // 真机 destroy 探针序；直接 destroy 会吞 end，client-socket-destroy）。
+          if (!st.destroyed) st.__onAborted("");
         }
         if (this.__id) {
           __wjs2_net_destroy(this.__id);

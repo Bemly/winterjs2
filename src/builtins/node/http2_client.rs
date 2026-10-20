@@ -3,7 +3,8 @@
 use mozjs::jsval::JSVal;
 use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
-use super::http2::{BodyFeeds, BodyMsg, ChanBody, Exec, TokioIo, b64, b64dec, ensure_provider, h2_err_msg_rst, headers_json, report_error_static, opt_num, set_rval_str};
+use super::http2::{BodyFeeds, BodyMsg, ChanBody, Exec, b64, b64dec, ensure_provider, h2_err_msg_rst, headers_json, report_error_static, opt_num, set_rval_str};
+use super::http2_server::SharedIo;
 use super::net::{NetCmd, NetEvent, NetKind};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ struct TlsClientOpts {
     servername: Option<String>,
 }
 
-/// 开流请求 JSON：`{method, path, scheme, authority, waitTrailers, endStream, headers: [[k,v]]}`。
+/// 开流请求 JSON：`{method, path, scheme, authority, waitTrailers, endStream, protocol, headers: [[k,v]]}`。
 #[derive(Debug, serde::Deserialize)]
 struct OpenReq {
     method: String,
@@ -43,6 +44,15 @@ struct OpenReq {
     // endafterheaders 套件）。native 不再按体空猜。
     #[serde(rename = "endStream", default)]
     end_stream: bool,
+    // 流式上传（cancel-while-client-reading：首 write 即开流，后续块经
+    // H2RespondData、收尾经 H2RespondEnd；无新 native，复用既有命令）。
+    // 非流式保持单发语义（整包 body + End/EndPending 一次到位）。
+    #[serde(default)]
+    streaming: bool,
+    // 扩展 CONNECT 的 `:protocol`（RFC 8441；hyper 经 extensions 发送）。
+    // 空串 = 非扩展请求（常规 CONNECT/他法无此键）。
+    #[serde(default)]
+    protocol: String,
     // 值可为 string 或 array（set-cookie 等多值头；数组展开为多条线，
     // node 客户端同口径）。此前 String 收不了 sequence 即
     // "bad open params: invalid type: sequence"（cookies/multiheaders 套件）。
@@ -86,13 +96,21 @@ fn default_scheme() -> String {
 /// 10f：response 事件带真 flags（END_STREAM→5）、trailers 事件、session 终结时
 /// 未完结流补 aborted（先于 close，§4.52 顺序）。
 async fn drive_session<S>(
-    io: TokioIo<S>,
+    raw: S,
     id: u64,
     ev_tx: tokio::sync::mpsc::UnboundedSender<NetEvent>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<NetCmd>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // 双向 wire 窥探 + 精确 RST 注入（hyper client 无 SETTINGS 回调/RST 码 API；
+    // remoteSettings/goawayError/对端 RST-aborted 事件源；close(code) 原码上线）。
+    let mut io = SharedIo::new(raw);
+    io.set_ev(ev_tx.clone(), id, false);
+    let injector = io.clone();
+    // 精确 RST 开关：任一 send_request 出错即 wire 序位不可信，此后只 abort
+    // 不注码（禁伤及无辜流；stream-destroy 的单流场景恒精确）。
+    let exact_rst = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let hs = hyper::client::conn::http2::Builder::new(Exec).handshake::<_, ChanBody>(io);
     let (sender, conn) = match hs.await {
         Ok(t) => t,
@@ -179,6 +197,13 @@ async fn drive_session<S>(
                         let mut builder = http::Request::builder()
                             .method(req.method.as_str())
                             .uri(uri.as_str());
+                        // 扩展 CONNECT：`:protocol` 经 extensions 上线（hyper/h2
+                        // 按 RFC 8441 编成伪头；对端未开 ECP 即流错误，client 侧报）。
+                        if !req.protocol.is_empty() {
+                            builder = builder.extension(hyper::ext::Protocol::from(
+                                req.protocol.as_str(),
+                            ));
+                        }
                         for (k, v) in parsed_headers {
                             builder = builder.header(k.as_str(), v.as_str());
                         }
@@ -188,7 +213,13 @@ async fn drive_session<S>(
                         // 有体即先 Data 后 End；waitTrailers 悬置 EndPending。
                         let (utx, urx) = tokio::sync::mpsc::unbounded_channel::<BodyMsg>();
                         let mut done = req.end_stream && body.is_empty() && !req.wait_trailers;
-                        if !body.is_empty() {
+                        // 流式上传：首块随头出线但流保持开放（done=false 且不排 End），
+                        // 后续块走 H2RespondData、收尾走 H2RespondEnd；utx 必登记。
+                        let streaming = req.streaming && !req.end_stream;
+                        if streaming {
+                            let _ = utx.send(BodyMsg::Data(bytes::Bytes::from(body)));
+                            done = false;
+                        } else if !body.is_empty() {
                             let _ = utx.send(BodyMsg::Data(bytes::Bytes::from(body)));
                             done = false;
                             if req.wait_trailers {
@@ -204,7 +235,7 @@ async fn drive_session<S>(
                             // 迫 hyper 分开发（END_STREAM 不随头）。
                             let _ = utx.send(BodyMsg::End(None));
                         }
-                        if req.wait_trailers {
+                        if req.wait_trailers || streaming {
                             uploads.lock().await.insert(stream_id, utx);
                         }
                         let request = builder.body(ChanBody { rx: urx, done });
@@ -228,11 +259,14 @@ async fn drive_session<S>(
                         };
                         let ev2 = ev_tx.clone();
                         let open2 = open.clone();
+                        let exact2 = exact_rst.clone();
                         open.lock().unwrap().insert(stream_id, false);
                         let mut sender = sender.clone();
                         let task = tokio::spawn(async move {
                             match sender.send_request(request).await {
                                 Err(e) => {
+                                    // 发送失败 helm：wire 序位此后不可信，精确 RST 熄火。
+                                    exact2.store(false, std::sync::atomic::Ordering::Release);
                                     let (msg, rst) = h2_err_msg_rst(&e);
                                     let _ = ev2.send(NetEvent {
                                         id,
@@ -330,7 +364,10 @@ async fn drive_session<S>(
                                             open2.lock().unwrap().insert(stream_id, true);
                                         }
                                         Some((e, rst)) => {
-                                            // NO_ERROR 干净收尾按子串判，其余按流错误上报
+                                            // NO_ERROR 干净收尾按子串判；h2 原因码按流错误上报；
+                                            // 无原因码的传输层死亡（server socket destroy 等）→
+                                            // node 口径 ECONNRESET（server-socket-destroy
+                                            // 套件：ECONNRESET 或无错，二者皆允）。
                                             if e.contains("NO_ERROR") {
                                                 let _ = ev2.send(NetEvent {
                                                     id,
@@ -341,7 +378,7 @@ async fn drive_session<S>(
                                                     },
                                                 });
                                                 open2.lock().unwrap().insert(stream_id, true);
-                                            } else {
+                                            } else if rst.is_some() {
                                                 let _ = ev2.send(NetEvent {
                                                     id,
                                                     kind: NetKind::H2Stream {
@@ -356,6 +393,20 @@ async fn drive_session<S>(
                                                     },
                                                 });
                                                 open2.lock().unwrap().insert(stream_id, true);
+                                            } else {
+                                                let _ = ev2.send(NetEvent {
+                                                    id,
+                                                    kind: NetKind::H2Stream {
+                                                        stream_id,
+                                                        what: "error".into(),
+                                                        payload: serde_json::json!({
+                                                            "code": "ECONNRESET",
+                                                            "msg": "connection reset by peer",
+                                                        })
+                                                        .to_string(),
+                                                    },
+                                                });
+                                                open2.lock().unwrap().insert(stream_id, true);
                                             }
                                         }
                                     }
@@ -364,12 +415,36 @@ async fn drive_session<S>(
                         });
                         stream_tasks.lock().unwrap().insert(stream_id, task.abort_handle());
                     }
-                    Some(NetCmd::H2RespondReset { stream_id, .. }) => {
-                        // 客户端流取消：abort 在途请求任务 → hyper RST(CANCEL)
+                    Some(NetCmd::H2RespondReset { stream_id, code }) => {
+                        // 客户端流取消：abort 在途请求任务 + 精确 RST 码线注
+                        //（close(code) 原码上线；hyper abort 只给 CANCEL）。
                         if let Some(h) = stream_tasks.lock().unwrap().remove(&stream_id) {
                             h.abort();
                         }
+                        if exact_rst.load(std::sync::atomic::Ordering::Acquire) {
+                            let _ = injector.inject_rst(stream_id, code).await;
+                        }
+                        uploads.lock().await.remove(&stream_id);
                         open.lock().unwrap().insert(stream_id, true);
+                    }
+                    Some(NetCmd::H2RespondData { stream_id, data_b64 }) => {
+                        // 流式上传后续块（cancel-while-client-reading；H2RespondData
+                        // 复用：client 会话上即上传块，server 会话由 serve_conn 消费）。
+                        if let Some(tx) = uploads.lock().await.get(&stream_id) {
+                            if let Ok(data) = b64dec(&data_b64) {
+                                if !data.is_empty() {
+                                    let _ = tx.send(BodyMsg::Data(bytes::Bytes::from(data)));
+                                }
+                            }
+                        }
+                    }
+                    Some(NetCmd::H2RespondEnd { stream_id, trailers_json }) => {
+                        // 流式上传收尾（end()）：trailers 有即带、无即干净 END。
+                        let trailers: Vec<(String, String)> =
+                            serde_json::from_str(&trailers_json).unwrap_or_default();
+                        if let Some(tx) = uploads.lock().await.remove(&stream_id) {
+                            let _ = tx.send(BodyMsg::End(Some(trailers)));
+                        }
                     }
                     Some(NetCmd::H2OpenTrailers { stream_id, trailers_json }) => {
                         let trailers: Vec<(String, String)> =
@@ -482,11 +557,12 @@ pub unsafe extern "C" fn h2_connect(
                 Err(e) => {
                     report_error_static(&ev_tx, id, &format!("ERR_TLS_HANDSHAKE: {e}"));
                 }
-                Ok(tls) => drive_session(TokioIo::new(tls), id, ev_tx, cmd_rx).await,
+                Ok(tls) => drive_session(tls, id, ev_tx, cmd_rx).await,
             }
         } else {
-            drive_session(TokioIo::new(tcp), id, ev_tx, cmd_rx).await;
+            drive_session(tcp, id, ev_tx, cmd_rx).await;
         }
     });
     true
 }
+

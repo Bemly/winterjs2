@@ -488,6 +488,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 4d: 异步 spawn（c-4x 加 pipe：stdin 写/关 natives）
             ("__wjs2_spawn_start", Some(node::child::spawn_start), 5),
             ("__wjs2_child_kill", Some(node::child::child_kill), 2),
+            ("__wjs2_child_unref", Some(node::child::child_unref), 1),
+            ("__wjs2_child_ref", Some(node::child::child_ref), 1),
             ("__wjs2_child_pid", Some(node::child::child_pid), 1),
             ("__wjs2_child_stdin_write", Some(node::child::child_stdin_write), 2),
             ("__wjs2_child_stdin_close", Some(node::child::child_stdin_close), 1),

@@ -287,3 +287,17 @@
 - 根因：node onStreamCloseResponse 在流关闭时置 closed 并（可写已终则）发 finish；旧移植在流 finish 即转发，早了一拍。
 - 修法：流 finish 只记账，response finish 延至流 close（writableFinished 前提），socket 门加 __resClosed；destroy 路径即时 finish 不动。
 - 推广铁律：**终结事件看关闭不看完成**——finish/close 的派发点与可见性门以 node 状态机为准，不以宿主流事件时间为准。
+### 4.300 Cli 加字段必须配 en+zh 翻译（2026-10-21，child lane）
+
+- 症状：`Cli` 加一个字段（`-e` 静默 eval）后全旗解析错乱（`--run X` 报
+  lang 取值错、`--eval X` 落 run、`-e X` 进错位），无 panic、无报错，
+  行为级静默错位；回退字段即好。
+- 根因：`with_localized_args` 对每个有译文的 arg 做 `mut_arg`（remove +
+  末尾重插）；有译文者相对顺序不变故无事，新字段无译文被跳过、
+  留在原地——相对顺序一变，clap build 后内部索引错位，全旗串位。
+  取证：bypass i18n 即全对；dummy 无关字段亦坏；补 en+zh key 即好。
+- 修法：新增 Cli 字段必须同步 `locales/en.yml` + `locales/zh.yml`
+  加 `arg.<id>.help/value`（与字段同 commit）。
+- 复现：加字段不加翻译，`--run <file>` 即报 `--lang` 取值错。
+- 推广铁律：**Cli 字段与翻译同提交**——i18n mut 环后相对顺序是解析正确
+  的前置条件；未翻译字段即便显示正常也会毒化整表。

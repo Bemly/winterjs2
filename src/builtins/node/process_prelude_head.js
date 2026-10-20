@@ -5,6 +5,8 @@
 function __wjs2_stdio_stream(fd) {
   return {
     __wjs2_fd: fd,
+    // 真机 fd 面（getValidStdio 逐字读 .fd；validate-stdio 套件）。
+    get fd() { return fd; },
     // 可写恒真（execve-throws 套件点名 stdout/stderr.writable；真机流面）。
     writable: true,
     write(s, ...rest) {
@@ -405,13 +407,13 @@ globalThis.process = {
       envArray.push(`${key}=${value}`);
     }
     // 自身：裸文件形补 --run（子进程 argv 保持 node 形，execve 套件点名）；
-    // `-p` 译 `--eval`（打印），`-e` 直通（本仓 -e 即静默）。
+    // `-p`/`-pe` 译 `--eval`（打印），`-e` 直通（本仓 -e 即静默）。
     let argv = args;
     try {
       const fs = require("node:fs");
       if (fs.realpathSync(execPath) === fs.realpathSync(process.execPath)) {
         const a = [...args];
-        if (a[1] === "-p") a.splice(1, 1, "--eval");
+        if (a[1] === "-p" || a[1] === "-pe") a.splice(1, 1, "--eval");
         else if (a[1] !== undefined && !String(a[1]).startsWith("-")) a.splice(1, 0, "--run");
         argv = a;
       }
@@ -562,6 +564,8 @@ globalThis.process = {
   stderr: __wjs2_stdio_stream(2),
   stdin: {
     get isTTY() { return __wjs2_stdio_istty(0); },
+    // 真机 fd 面（stdin.fd === 0；validate-stdio 套件）。
+    get fd() { return 0; },
     __wjs2_listeners: {},
     __wjs2_enc: null,
     __wjs2_polling: false,

@@ -262,6 +262,7 @@
 - 4.297 node respondWithFile 自动 content-length（2026-10-20，http2 lane）
 - 4.298 h2 'connection' 手动 emit 无监听即 TIMEOUT（2026-10-20，http2 lane）
 - 4.299 response 'finish' 在流关闭时（2026-10-20，http2 lane）
+- 4.300 Cli 加字段必须配 en+zh 翻译（2026-10-21，child lane）
 
 ## 条目
 

@@ -150,8 +150,7 @@ function __normSpawnAsyncOpts(opts) {
       e.code = "EPERM"; e.errno = -1; e.syscall = "spawn"; throw e;
     }
   }
-  // serialization：undefined/'json'/'advanced' 外一律 ARG_VALUE（真机逐字文案；
-  // advanced-serialization 套件首段点名；fork 同口径，见 __normForkOpts）。
+  // serialization 校验（真机逐字；advanced-serialization 套件）。
   if (opts.serialization !== undefined && opts.serialization !== "json" && opts.serialization !== "advanced") {
     const e = new TypeError("The property 'options.serialization' must be one of: undefined, 'json', 'advanced'. Received " + __inspect(opts.serialization));
     e.code = "ERR_INVALID_ARG_VALUE"; throw e;
@@ -267,8 +266,11 @@ export function spawn(file, args, opts) {
   else { opts = args; args = []; }
   if (opts === undefined) opts = {};
   else if (typeof opts !== "object" || opts === null || Array.isArray(opts)) { throw new ERR_INVALID_ARG_TYPE("options", "object", opts); }
-  const o = __normSpawnAsyncOpts(opts);
-  return __spawnInto(new ChildProcess(), file, args, o);
+  // 经 `ChildProcess.prototype.spawn` 落地（归一/预检/自举全在里面走一遍；
+  // mock 原型方法可见——windows-hide/bad-stdio 套件；显式 file/args 优先）。
+  const proc = new ChildProcess();
+  proc.spawn({ ...opts, file, args });
+  return proc;
 }
 // stdio 流转交（pipe-dataflow/merge/reuse 套件）：spawn 数组元为流对象时
 // 按位搭桥——stdin 位可读流 data/end 转入子 stdin；stdout/stderr 位可写流
@@ -546,6 +548,11 @@ export function execFile(file, args, opts, cb) {
     signal: o.signal,
     shell: shellOpt,
     stdio: ["pipe", "pipe", "pipe"],
+    // 原样透传（mock 可见面；spawn 侧重验，undefined 即缺席）。
+    uid: opts.uid,
+    gid: opts.gid,
+    windowsHide: opts.windowsHide,
+    windowsVerbatimArguments: opts.windowsVerbatimArguments,
   });
   child.__cmdStr = cmdStr;
   __execCollect(child, o, cmdStr, argv, cb);
@@ -637,6 +644,7 @@ export function execFileSync(file, args, opts) {
 // // "disconnect"}` 单键载荷不投递给用户（见父端 `disconnect()`）。
 const __FORK_CHILD_SRC = `
 import { parentPort } from "node:worker_threads";
+import { createRequire as __createForkRequire } from "node:module";
 const __mod = __FORK_MOD__;
 const __forkArgs = __FORK_ARGV__;
 process.argv = [process.execPath, __mod, ...__forkArgs];
@@ -696,16 +704,40 @@ process.send = (message, ...rest) => {
 process.disconnect = () => {
   if (!process.connected) return;
   process.connected = false;
-  try { parentPort.close(); } catch {}
+  // 父端通告（子→父 disconnect 信封；父端 __onForkMessage 转派发。
+  // ref2/fork-url 套件：不断即父永等）。
+  try { parentPort.postMessage({ __wjs2_fork_ctl: "disconnect" }); } catch {}
+  // 先发本地事件再关端口——handler 内写（fork-ref  disconnect 写 '3'）须投递；
+  // 重入 disconnect 由 connected 旗拦截。
   process.__wjs2_emit("disconnect");
+  try { parentPort.close(); } catch {}
 };
+// silent 管道上行（fork-ref 套件）：子输出逐块投递父端管形流；本地直写保留
+// （线程底座共享 stdio 偏差）。无模板字面量（外层模板字符串约束，见 §4.44）。
+(function () {
+  function __wrapOut(stream, fd) {
+    if (!stream || typeof stream.write !== "function") return;
+    var __orig = stream.write.bind(stream);
+    stream.write = function (chunk, enc, cb) {
+      try {
+        var b64 = (typeof chunk === "string") ? Buffer.from(chunk).toString("base64")
+          : Buffer.from(chunk instanceof Uint8Array ? chunk : new Uint8Array(0)).toString("base64");
+        parentPort.postMessage({ __wjs2_fork_io: [fd, b64] });
+      } catch (e) {}
+      return __orig(chunk, enc, cb);
+    };
+  }
+  try { __wrapOut(process.stdout, 1); } catch (e) {}
+  try { __wrapOut(process.stderr, 2); } catch (e) {}
+})();
 parentPort.on("message", (message) => {
   if (message !== null && typeof message === "object" && !Array.isArray(message) &&
       Object.keys(message).length === 1 && message.__wjs2_fork_ctl === "disconnect") {
     if (process.connected) {
       process.connected = false;
-      try { parentPort.close(); } catch {}
+      // 同上：先发事件再关端口（handler 内写须投递）。
       process.__wjs2_emit("disconnect");
+      try { parentPort.close(); } catch {}
     }
     return;
   }
@@ -730,6 +762,12 @@ parentPort.on("close", () => {
 // 事件），故直包 message 订阅入口（once/addListener 走 on，removeListener
 // 走 off）；投递走 listenerCount 门控，不受 counting 位影响。
 // 注意：本块在外层模板字符串内，禁用模板字面量与插值写法。
+// 端口默认不监听（idle fork 子照常退出，真机同）；有 message 订阅才
+// listen（下）。未监听端口在退出沿丢件——子→父回写/父→子信封须在
+// 监听窗口内（ref2/fork-url 自发侧常驻监听故稳；fork-ref 父发 disconnect
+// 撞子退出沿为 worker 面 flush 缺口，见 journal，转 worker lane）。
+// （曾试 load 期强制 listen：回写稳但 idle 子永不退——监听建立时机
+// 影响续命判定，故维持默认不监听。）
 try { __wjs2_port_unlisten(parentPort.__id); } catch {}
 const __ppId = parentPort.__id;
 const __procListen = () => { try { __wjs2_port_listen(__ppId); } catch {} };
@@ -755,7 +793,18 @@ process.removeAllListeners = function (type) {
   if (type === undefined || type === "message") __procUnlisten();
   return r;
 };
-await import(__mod);
+// 模块加载分流（fork-close CJS 双求值案：await import 在 fork 上下文对
+// CJS 体求值两次；CJS 系（.cjs/.js/无后缀）走 require 单次，ESM 系走 import）。
+// 无花括号/模板字面量（外层模板约束 §4.44）；加载分流布尔由父端 bake
+//（注：此处禁写占位符原文，首个匹配在注释即吞替换——血泪）。
+if (__USE_IMPORT__) {
+  await import(__mod);
+} else {
+  var __forkRq = null;
+  try { __forkRq = __createForkRequire(__mod); } catch (e) {}
+  if (__forkRq) { __forkRq(__mod); }
+  else { await import(__mod); }
+}
 `;
 function __normForkOpts(opts) {
   const o = { execPath: process.execPath, killSignal: "SIGTERM", silent: false, signal: null, killSigname: "SIGTERM", killSigno: 15, timeoutMs: 0 };
@@ -800,8 +849,7 @@ function __normForkOpts(opts) {
     const e = new TypeError("The property 'options.serialization' must be one of: undefined, 'json', 'advanced'. Received " + __inspect(opts.serialization));
     e.code = "ERR_INVALID_ARG_VALUE"; throw e;
   }
-  // timeout：validateInteger 逐字口径（fork-timeout-kill-signal 套件
-  // 'badValue'/{} 点名；"timeout" argument 名 + 2^53-1 上限与 spawn 同文）。
+  // timeout 校验（fork-timeout-kill-signal 套件）。
   if (opts.timeout !== undefined && opts.timeout !== null) {
     if (typeof opts.timeout !== "number") {
       throw new ERR_INVALID_ARG_TYPE("timeout", "number", opts.timeout);
@@ -816,9 +864,7 @@ function __normForkOpts(opts) {
     }
     o.timeoutMs = opts.timeout;
   }
-  // stdio：string 形仅 pipe/inherit/ignore/overlapped（余下 ARG_VALUE，
-  // fork-stdio-string-variant 套件 '33' 点名；'ipc' 亦非法）；数组形须恰一
-  // 'ipc'（缺即 IPC_REQUIRED，多即 ONE_PIPE；线程底座值本身忽略）。
+  // stdio 校验（'33'/ipc 非法；数组须恰一 ipc；值本身忽略）。
   if (typeof opts.stdio === "string") {
     if (!["pipe", "inherit", "ignore", "overlapped"].includes(opts.stdio)) {
       throw new ERR_INVALID_ARG_VALUE("stdio", opts.stdio);
@@ -841,141 +887,3 @@ function __normForkOpts(opts) {
   if (hit) { o.killSigname = hit.name; o.killSigno = hit.signo; }
   return o;
 }
-export function fork(modulePath, args, opts) {
-  if (modulePath === undefined || modulePath === null ||
-      (typeof modulePath !== "string" && !(modulePath instanceof URL))) {
-    const err = new TypeError("The \"modulePath\" argument must be of type string or URL");
-    err.code = "ERR_INVALID_ARG_TYPE";
-    throw err;
-  }
-  // args/options 归一（真机 fork 口径：缺席即 []/{}；纯对象回落 options；
-  // 余下非数组即 ARG_TYPE/Array；options 数组与非对象即 ARG_TYPE）。
-  if (args === undefined || args === null) { args = []; }
-  else if (typeof args === "object" && !Array.isArray(args)) { opts = args; args = []; }
-  else if (!Array.isArray(args)) { throw new ERR_INVALID_ARG_TYPE("args", "Array", args); }
-  if (opts === undefined || opts === null) opts = {};
-  else if (typeof opts !== "object" || Array.isArray(opts)) { throw new ERR_INVALID_ARG_TYPE("options", "object", opts); }
-  if (modulePath instanceof URL && modulePath.protocol !== "file:") {
-    const err = new TypeError("The \"modulePath\" argument must be a file URL");
-    err.code = "ERR_INVALID_ARG_VALUE";
-    throw err;
-  }
-  __nullCheck(String(modulePath instanceof URL ? modulePath.href : modulePath), "modulePath", "must be a string, Uint8Array, or URL without null bytes");
-  for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
-  const o = __normForkOpts(opts);
-  const modStr = modulePath instanceof URL ? modulePath.href : String(modulePath);
-  const fileUrl = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(modStr) ? modStr : pathToFileURL(modStr).href;
-  const argsArr = [...(args || [])].map(String);
-  const proc = new ChildProcess();
-  proc.__forkChild = true;
-  proc.__killSignal = o.killSignal;
-  proc.spawnfile = o.execPath;
-  proc.spawnargs = [o.execPath, fileUrl, ...argsArr];
-  // 预中止：线程不起（真机不起子进程同理），异步 error + exit/close(null, killSignal)
-  //（fork-abort-signal 套件 exit mustCall(null, 'SIGTERM'/'SIGKILL')）。
-  if (o.signal && o.signal.aborted) {
-    const signame = o.killSigname;
-    const reason = o.signal.reason;
-    queueMicrotask(() => {
-      proc.__emitAbort(reason);
-      if (typeof proc.onexit === "function") proc.onexit(null, signame);
-      if (typeof proc.onclose === "function") proc.onclose(null, signame);
-    });
-    return proc;
-  }
-  // silent（或 stdio: 'pipe'）：stdout/stderr 挂无数据管形流——pipe/unpipe 形状
-  // 在（silent 套件 `child.stderr.pipe(process.stderr, {end:false})` 必须可用）；
-  // 数据面偏差记档：线程底座子输出直走共享 stdio。
-  if (o.silent) {
-    proc.stdout = __forkNullStream();
-    proc.stderr = __forkNullStream();
-  }
-  const src = __FORK_CHILD_SRC
-    .replace("__FORK_MOD__", () => JSON.stringify(fileUrl))
-    .replace("__FORK_ARGV__", () => JSON.stringify(argsArr));
-  const worker = new Worker(src, { eval: true, __wjs2_forkChild: true, env: o.env });
-  proc.__worker = worker;
-  proc.__connected = true;
-  // 非 silent（stdio 继承）：stdout/stderr 恒 null（真机 26 逐项：fork 未 silent
-  // 时 `c.stdout === null` 三面全真——继承无管道句柄；silent 才挂管形流）。
-  proc.stdin = null;
-  if (!o.silent) {
-    proc.stdout = null;
-    proc.stderr = null;
-  }
-  proc.channel = { ref() {}, unref() {} };
-  worker.on("message", (m) => proc.__onForkMessage(m));
-  worker.on("error", (e) => {
-    if (typeof proc.onerror === "function") proc.onerror(e);
-  });
-  worker.on("exit", (code) => proc.__onForkExit(code));
-  // 退出收尾钩（自然退：清 timeout timer + abort 监听 dispose 归零，
-  // timeout-kill 套件 listenerCount 断言）。
-  const __kDispose = Symbol.dispose ?? Symbol.for("Symbol.dispose");
-  let __abortDispose = null;
-  const __disposeAbort = () => {
-    if (__abortDispose !== null) {
-      try { __abortDispose[__kDispose](); } catch {}
-      __abortDispose = null;
-    }
-  };
-  // timeout（fork-timeout-kill-signal 套件：到点按 killSignal 杀，
-  // exit(null, signame)；自然先退则清 timer 不补发）。
-  if (o.timeoutMs > 0) {
-    const __forkTmo = setTimeout(() => {
-      if (proc.__exitDone) return;
-      proc.__exitDone = true;
-      try { worker.terminate(); } catch {}
-      __disposeAbort();
-      if (typeof proc.onexit === "function") proc.onexit(null, o.killSigname);
-      if (typeof proc.onclose === "function") proc.onclose(null, o.killSigname);
-    }, o.timeoutMs);
-    const __rawForkExit = proc.__onForkExit.bind(proc);
-    proc.__onForkExit = (code) => { clearTimeout(__forkTmo); __disposeAbort(); __rawForkExit(code); };
-  } else {
-    const __rawForkExit = proc.__onForkExit.bind(proc);
-    proc.__onForkExit = (code) => { __disposeAbort(); __rawForkExit(code); };
-  }
-  // abort（node：error 先行 + terminate；exit(null, killSignal) 由 abort 路径
-  // 自发——线程 exit 事件被 __exitDone 旗拦下；addAbortListener 供 listenerCount
-  // 可见，退出各路径 dispose）。
-  if (o.signal) {
-    __abortDispose = addAbortListener(o.signal, () => {
-      if (proc.__exitDone) return;
-      proc.__exitDone = true;
-      try { worker.terminate(); } catch { /* 已退即走下 */ }
-      __disposeAbort();
-      proc.__emitAbort(o.signal.reason);
-      if (typeof proc.onexit === "function") proc.onexit(null, o.killSigname);
-      if (typeof proc.onclose === "function") proc.onclose(null, o.killSigname);
-    });
-  }
-  return proc;
-}
-// fork silent 管形流（无数据——见 `fork` 文档偏差；pipe/unpipe/on 形状在）。
-function __forkNullStream() {
-  const listeners = {};
-  return {
-    on(ev, cb) { (listeners[ev] ||= []).push(cb); return this; },
-    once(ev, cb) { const w = (...a) => { this.off(ev, w); cb(...a); }; w.__wjs2_orig = cb; return this.on(ev, w); },
-    off(ev, cb) {
-      const l = listeners[ev];
-      if (l) {
-        let i = l.findIndex((f) => f === cb || f.__wjs2_orig === cb);
-        while (i >= 0) { l.splice(i, 1); i = l.findIndex((f) => f === cb || f.__wjs2_orig === cb); }
-      }
-      return this;
-    },
-    removeListener(ev, cb) { return this.off(ev, cb); },
-    pipe(dest) { return dest; },
-    unpipe() { return this; },
-    setEncoding() { return this; },
-    pause() { return this; },
-    resume() { return this; },
-    read() { return null; },
-    destroy() { return this; },
-    get readable() { return false; },
-    get destroyed() { return false; },
-  };
-}
-export default { execSync, spawnSync, spawn, exec, execFile, execFileSync, fork, ChildProcess };

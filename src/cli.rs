@@ -552,11 +552,17 @@ pub fn strip_node_compat_args(
         }
         out.push(a.clone());
     }
+    // `-pe` 无条件译 `--eval`（node print-eval 合旗；本仓解作 publish+quiet
+    // 双动作恒错，改写纯赚；spawnsync-shell `$NODE -pe` 面）。
+    if out.len() > 2 && out[1] == "-pe" {
+        out[1] = OsString::from("--eval");
+    }
     if !stripped.is_empty() && out.len() > 1 {
         // node 自举翻译（max-header-size 套件：子进程即自身，`--flag -p expr`
         // 形；`-p`（node print）→ `--eval`（本仓 --eval 即打印完成值）。
         // 仅剥过兼容旗时（node-spawn 上下文证据），纯 `winterjs2 -p` 照旧 publish。
         // `-e` 不再改写（本仓 `-e` 即静默，node 同形；kill 套件精确输出面）。
+        // `-pe` 已在上 unconditional 改写，此处只剩 `-p`。
         if out.len() > 2 && out[1] == "-p" {
             out[1] = OsString::from("--eval");
         }

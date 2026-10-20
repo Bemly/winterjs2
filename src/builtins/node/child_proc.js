@@ -411,7 +411,7 @@ export function spawnSync(file, args, opts) {
   // shell 预包装（file→shell 本体、args=[sh,-c,拼串]，mock 可见；无参形
   // 拼串即 file 本体；不转义；真执行走 __orig 原串）。
   let io = { ...o, file: f, args: origArgs };
-  if (opts.shell !== undefined && opts.shell !== null) io.shell = opts.shell;
+  if (o.shell !== undefined && o.shell !== null) io.shell = o.shell;
   if (o.shell) {
     // 缺省 shell 平台相关（读调用时 platform/env，mock 生效）。
     const sh = (typeof o.shellPath === "string" && o.shellPath !== "") ? o.shellPath

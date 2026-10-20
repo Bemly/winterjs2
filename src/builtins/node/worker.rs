@@ -72,7 +72,9 @@ pub enum WorkerEvent {
     /// 主→worker：终止（置 `worker_terminated` 旗，检查点退出）。
     WTerminate,
     /// 跨线程直投（`postMessageToThread`）：目标会话 `workerMessage` 派发 + 回执。
-    ThreadMsg { nonce: String, source: u64, wire: String, reply_tx: tokio::sync::mpsc::UnboundedSender<WorkerEvent> },
+    /// dest 0（主线程）非主会话收到即沿派生链上转（worker 的 `worker_main_inbox`
+    /// 恒为直接派生者，主线程无注册表——node 全线程直连主端口的等价实现）。
+    ThreadMsg { nonce: String, source: u64, dest: u64, wire: String, reply_tx: tokio::sync::mpsc::UnboundedSender<WorkerEvent> },
     /// 直投回执（发送方会话唤醒等待者；0 投递/1 无监听/2 监听抛错）。
     ThreadAck { nonce: String, result: u64 },
 }
@@ -175,7 +177,14 @@ pub fn dispatch(
             }
             Ok(())
         }
-        WorkerEvent::ThreadMsg { nonce, source, wire, reply_tx } => {
+        WorkerEvent::ThreadMsg { nonce, source, dest, wire, reply_tx } => {
+            // 主线程收件：非主会话即沿派生链上转（每跳严格上行，必达主线程）。
+            if dest == 0 && !state::worker_is_main() {
+                if let Some(up) = state::with_plain(|p| p.worker_main_inbox.clone()) {
+                    let _ = up.send(WorkerEvent::ThreadMsg { nonce, source, dest, wire, reply_tx });
+                }
+                return Ok(());
+            }
             super::worker_messaging::thread_deliver(cx, global, &failed, &nonce, source, &wire, reply_tx)
         }
         WorkerEvent::ThreadAck { nonce, result } => {

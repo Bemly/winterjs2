@@ -139,7 +139,7 @@ pub unsafe extern "C" fn post_to_thread(
         frame.set_rval(mozjs::jsval::BooleanValue(false));
         return true;
     };
-    let ok = tx.send(WorkerEvent::ThreadMsg { nonce, source, wire, reply_tx }).is_ok();
+    let ok = tx.send(WorkerEvent::ThreadMsg { nonce, source, dest: dest.unwrap_or(u64::MAX), wire, reply_tx }).is_ok();
     if !ok && let Some(t) = dest {
         state::thread_unregister(t);
     }

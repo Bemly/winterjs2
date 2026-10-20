@@ -278,6 +278,67 @@ fn run_entry_respects_package_json_type() {
     dir2.close().unwrap();
 }
 
+#[test]
+fn json_module_default_export() {
+    // `import d from './d.json' with { type: 'json' }`：默认导出即 JSON 值
+    //（对象 + 数组；whatwg encoding-singlebyte 面）。
+    let (_dir, entry) = mod_dir(
+        &[
+            ("d.json", "{\"a\":1,\"b\":[true,null]}\n"),
+            (
+                "app.mjs",
+                "import d from \"./d.json\" with { type: \"json\" };\nconsole.log(JSON.stringify(d));\n",
+            ),
+        ],
+        "app.mjs",
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs2().arg("--run").arg(&entry)),
+        "{\"a\":1,\"b\":[true,null]}\n"
+    );
+}
+
+#[test]
+fn json_module_invalid_rejected() {
+    // 非法 JSON：入口失败 exit=1，文案点名 is not valid JSON。
+    let (_dir, entry) = mod_dir(
+        &[
+            ("bad.json", "{\"a\":}\n"),
+            (
+                "app.mjs",
+                "import d from \"./bad.json\" with { type: \"json\" };\nconsole.log(d);\n",
+            ),
+        ],
+        "app.mjs",
+    );
+    let out = winterjs2().arg("--run").arg(&entry).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("is not valid JSON"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn json_module_scalar_roundtrip() {
+    // 边界：顶层标量 JSON（数字/字符串）同样走默认导出。
+    let (_dir, entry) = mod_dir(
+        &[
+            ("n.json", "42\n"),
+            (
+                "app.mjs",
+                "import n from \"./n.json\" with { type: \"json\" };\nconsole.log(typeof n, n);\n",
+            ),
+        ],
+        "app.mjs",
+    );
+    assert_eq!(
+        stdout_of(&mut winterjs2().arg("--run").arg(&entry)),
+        "number 42\n"
+    );
+}
+
 /// 搭一个临时模块目录：files 为 (name, content)，返回 dir（调用方持有）+ 入口路径。
 fn mod_dir(files: &[(&str, &str)], entry: &str) -> (assert_fs::TempDir, std::path::PathBuf) {
     let dir = assert_fs::TempDir::new().unwrap();

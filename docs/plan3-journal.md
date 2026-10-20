@@ -2980,3 +2980,14 @@ G1/G2/G3/G9 已收官。）
   导入真机亦放行（对齐即止）。
 - 事故记：批 2 提交误删 journal 全文（b1c9a0b，2956 行），本轮自
   9e3aa95 恢复 + 补批 2/3 两记；教训：大文件写后必 `wc -l` 核对。
+
+## 2026-10-21 webcrypto 落地批 4（39 件 15→16 绿）
+
+- 转绿 1：sign-verify-ecdsa（ECDSA-SHA3 经 ec_hash + 形错签名即 false +
+  无横线哈希名拒）。
+- 实现：ec_hash SHA3 臂；verify 形错签名统一回 false；normHash 去无横线形；
+  PBKDF2 迭代上限定 int32（derivebits 慢转秒过）；AES-CBC/CTR/KW 导入导出
+  补齐；RSA-OAEP 加解密 OperationError 化。
+- 判明：derivebits.js 余 X448（montgomery 无高层 DH，另案）；X448 同挡
+  derivekey-cfrg；KMAC 需 tiny-keccak kmac 特性门（零新 crate，待批）；
+  RSA-SHA3 需手工（无单独翻转）；OCB 无轮子。

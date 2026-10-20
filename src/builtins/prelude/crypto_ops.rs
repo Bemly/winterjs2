@@ -400,7 +400,8 @@ pub const CRYPTO_OPS_JS: &str = r#"
             throw e;
           }
           if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
-          if (String(e?.message ?? "").startsWith("DataError:")) return false;
+          // 形错签名即 false（真机口径；长度/DER 坏皆然）。
+          if (String(e?.message ?? "").startsWith("DataError:") || /signature length|bad .* signature|malformed|parse|DER/i.test(String(e?.message ?? ""))) return false;
           throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
         }
       }
@@ -441,7 +442,7 @@ pub const CRYPTO_OPS_JS: &str = r#"
           throw new TypeError("PBKDF2 deriveBits needs hash, salt and iterations");
         }
         const it = Number(algorithm.iterations);
-        if (!Number.isInteger(it) || it < 1) throw __wjs2_domErr("OperationError", "PBKDF2 needs at least 1 iteration");
+        if (!Number.isInteger(it) || it < 1 || it > 2147483647) throw __wjs2_domErr("OperationError", "PBKDF2 iterations out of range");
         const n = needBytes(length);
         const out = __wjs2_pbkdf2_derive(hash, st.material, __wjs2_keyBytes(algorithm.salt), it, n);
         return new Uint8Array(out).buffer;
@@ -480,7 +481,7 @@ pub const CRYPTO_OPS_JS: &str = r#"
           throw new TypeError("PBKDF2 deriveKey needs hash, salt and iterations");
         }
         const it = Number(algorithm.iterations);
-        if (!Number.isInteger(it) || it < 1) throw __wjs2_domErr("OperationError", "PBKDF2 needs at least 1 iteration");
+        if (!Number.isInteger(it) || it < 1 || it > 2147483647) throw __wjs2_domErr("OperationError", "PBKDF2 iterations out of range");
         const salt = __wjs2_keyBytes(algorithm.salt);
         bitsOf = (lengthBits) => {
           const n = __wjs2_needBitsLength(lengthBits);

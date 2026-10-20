@@ -125,6 +125,18 @@ pub(crate) fn ec_hash(hash: &str, data: &[u8]) -> Result<Vec<u8>, String> {
             use sha2::Digest as _;
             Ok(sha2::Sha512::digest(data).to_vec())
         }
+        "SHA3-256" => {
+            use sha3::Digest as _;
+            Ok(sha3::Sha3_256::digest(data).to_vec())
+        }
+        "SHA3-384" => {
+            use sha3::Digest as _;
+            Ok(sha3::Sha3_384::digest(data).to_vec())
+        }
+        "SHA3-512" => {
+            use sha3::Digest as _;
+            Ok(sha3::Sha3_512::digest(data).to_vec())
+        }
         other => Err(format!("NotSupportedError: unsupported ECDSA hash '{other}'")),
     }
 }

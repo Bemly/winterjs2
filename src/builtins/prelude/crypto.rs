@@ -81,7 +81,7 @@ function __wjs2BrandErr() {
 // Ed448/X448），余者沿用大写存值。
 function __wjs2_canonAlgName(n) {
   const u = String(n ?? "").toUpperCase();
-  return { ED25519: "Ed25519", X25519: "X25519", ED448: "Ed448", X448: "X448" }[u] ?? n;
+  return { ED25519: "Ed25519", X25519: "X25519", ED448: "Ed448", X448: "X448", "CHACHA20-POLY1305": "ChaCha20-Poly1305" }[u] ?? n;
 }
 // 非对称 usages 公私分流（node 口径：public 仅 verify/encrypt/wrapKey 系，
 // private 仅 sign/decrypt/unwrapKey/derive 系；private 为空即抛）。

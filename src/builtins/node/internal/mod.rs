@@ -18,6 +18,8 @@ pub mod binding;
 pub mod blob;
 pub mod abort_controller;
 pub mod buffer;
+pub mod crypto_keys;
+pub mod crypto_util;
 pub mod debuglog;
 pub mod encoding;
 pub mod http2_util;
@@ -60,6 +62,8 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/events/abort_listener", abort_listener::SOURCE),
     ("node:internal/events/symbols", symbols::SOURCE),
     ("node:internal/event_target", event_target::SOURCE),
+    ("node:internal/crypto/util", crypto_util::SOURCE),
+    ("node:internal/crypto/keys", crypto_keys::SOURCE),
     // Phase 9b：streams 系共享件
     ("node:internal/primordials", primordials::SOURCE),
     ("node:internal/registry", registry::SOURCE),

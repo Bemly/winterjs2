@@ -106,6 +106,11 @@ globalThis.crypto = {
         crypto.getRandomValues(bytes);
         return __wjs2_makeKey({ name: "AES-KW", length }, bytes, usages, !!extractable);
       }
+      if (name === "CHACHA20-POLY1305") {
+        const bytes = new Uint8Array(32);
+        crypto.getRandomValues(bytes);
+        return __wjs2_makeKey({ name }, bytes, usages, !!extractable);
+      }
       if (name === "HMAC") {
         if (alg?.hash === undefined) {
           const e = new TypeError("HMAC generateKey needs hash");
@@ -186,14 +191,15 @@ globalThis.crypto = {
         }
         const badData = () => __wjs2_domErr("DataError", "Invalid keyData");
         if (format === "jwk") {
-          if (!keyData || keyData.kty !== "RSA" || typeof keyData.n !== "string" || typeof keyData.e !== "string") {
+          __wjs2_checkJwkKty(keyData, "RSA");
+          if (typeof keyData.n !== "string" || typeof keyData.e !== "string") {
             throw badData();
           }
           __wjs2_checkJwkMeta(keyData,
             name === "RSASSA-PKCS1-V1_5" ? { "SHA-256": ["RS256"], "SHA-384": ["RS384"], "SHA-512": ["RS512"] }[hash]
             : name === "RSA-PSS" ? { "SHA-256": ["PS256"], "SHA-384": ["PS384"], "SHA-512": ["PS512"] }[hash]
             : { "SHA-256": ["RSA-OAEP-256"], "SHA-384": ["RSA-OAEP-384"], "SHA-512": ["RSA-OAEP-512"] }[hash],
-            name !== "RSA-OAEP");
+            name !== "RSA-OAEP", !!extractable);
           __wjs2_checkKeyOps(keyData, usages, name, typeof keyData.d === "string" ? "private" : "public");
           let n, e;
           try {
@@ -251,12 +257,13 @@ globalThis.crypto = {
         // 素材坏即 DataError（真机一律 Invalid keyData；crv 失配文案保留）。
         const badData = () => __wjs2_domErr("DataError", "Invalid keyData");
         if (format === "jwk") {
-          if (!keyData || keyData.kty !== "EC" || typeof keyData.x !== "string" || typeof keyData.y !== "string") {
+          __wjs2_checkJwkKty(keyData, "EC");
+          if (typeof keyData.x !== "string" || typeof keyData.y !== "string") {
             throw badData();
           }
           if (!keyData.crv) throw badData();
           if (keyData.crv !== curve) throw new Error('JWK "crv" does not match the requested algorithm');
-          __wjs2_checkJwkMeta(keyData, name === "ECDSA" ? { "P-256": ["ES256"], "P-384": ["ES384"], "P-521": ["ES512"] }[curve] : ["ECDH-ES"], name === "ECDSA");
+          __wjs2_checkJwkMeta(keyData, name === "ECDSA" ? { "P-256": ["ES256"], "P-384": ["ES384"], "P-521": ["ES512"] }[curve] : ["ECDH-ES"], name === "ECDSA", !!extractable);
           __wjs2_checkKeyOps(keyData, usages, name, typeof keyData.d === "string" ? "private" : "public");
           let x, y;
           try {
@@ -343,12 +350,13 @@ globalThis.crypto = {
         }
         const badData = () => __wjs2_domErr("DataError", "Invalid keyData");
         if (format === "jwk") {
-          if (!keyData || keyData.kty !== "OKP" || typeof keyData.x !== "string") {
+          __wjs2_checkJwkKty(keyData, "OKP");
+          if (typeof keyData.x !== "string") {
             throw badData();
           }
           if (!keyData.crv) throw badData();
           if (keyData.crv !== crv) throw new Error('JWK "crv" Parameter and algorithm name mismatch');
-          __wjs2_checkJwkMeta(keyData, name === "ED25519" ? ["EdDSA"] : null, name === "ED25519");
+          __wjs2_checkJwkMeta(keyData, name === "ED25519" ? ["EdDSA"] : null, name === "ED25519", !!extractable);
           __wjs2_checkKeyOps(keyData, usages, name, typeof keyData.d === "string" ? "private" : "public");
           let x;
           try {
@@ -397,10 +405,24 @@ globalThis.crypto = {
       if (format === "raw") {
         bytes = __wjs2_keyBytes(keyData);
       } else if (format === "jwk") {
-        if (!keyData || keyData.kty !== "oct" || typeof keyData.k !== "string") {
-          throw new Error("NotSupportedError: only oct JWK keys for now");
+        const badJwk = () => __wjs2_domErr("DataError", "Invalid keyData");
+        __wjs2_checkJwkKty(keyData, "oct");
+        if (typeof keyData.k !== "string") {
+          throw badJwk();
         }
-        bytes = __wjs2_b64urlDecode(keyData.k);
+        try {
+          bytes = __wjs2_b64urlDecode(keyData.k);
+        } catch { throw badJwk(); }
+        // 对称 JWK alg/use/ext/key_ops（chacha 等套件真机逐项）。
+        const symAlgs = name === "AES-GCM" ? [128, 192, 256].map((l) => `A${l}GCM`)
+          : name === "AES-CBC" ? [128, 192, 256].map((l) => `A${l}CBC`)
+          : name === "AES-CTR" ? [128, 192, 256].map((l) => `A${l}CTR`)
+          : name === "AES-KW" ? [128, 192, 256].map((l) => `A${l}KW`)
+          : name === "CHACHA20-POLY1305" ? ["C20P"]
+          : name === "HMAC" ? ["HS1", "HS256", "HS384", "HS512"]
+          : null;
+        __wjs2_checkJwkMeta(keyData, symAlgs, name === "HMAC", !!extractable);
+        __wjs2_checkKeyOps(keyData, usages, name, "secret");
       } else throw new Error(`NotSupportedError: importKey ${format} needs Phase 3 c-4`);
       if (name === "AES-GCM") {
         if (![16, 24, 32].includes(bytes.length)) throw __wjs2_domErr("DataError", "Invalid key length");
@@ -417,6 +439,10 @@ globalThis.crypto = {
       if (name === "AES-KW") {
         if (![16, 24, 32].includes(bytes.length)) throw __wjs2_domErr("DataError", "Invalid key length");
         return __wjs2_makeKey({ name, length: bytes.length * 8 }, bytes, usages, !!extractable);
+      }
+      if (name === "CHACHA20-POLY1305") {
+        if (bytes.length !== 32) throw __wjs2_domErr("DataError", "Invalid key length");
+        return __wjs2_makeKey({ name }, bytes, usages, !!extractable);
       }
       if (name === "HMAC") {
         return __wjs2_makeKey({ name, hash: needHash, length: bytes.length * 8 }, bytes, usages, !!extractable);

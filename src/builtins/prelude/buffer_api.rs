@@ -106,7 +106,8 @@ function __wjs2_domErr(name, message) { return new DOMException(String(message),
 function __wjs2_normHash(h) {
   const s = typeof h === "string" ? h : String(h?.name ?? "");
   const up = s.trim().toUpperCase();
-  const map = { "SHA-1": "SHA-1", "SHA1": "SHA-1", "SHA-256": "SHA-256", "SHA256": "SHA-256", "SHA-384": "SHA-384", "SHA384": "SHA-384", "SHA-512": "SHA-512", "SHA512": "SHA-512", "SHA3-256": "SHA3-256", "SHA3-384": "SHA3-384", "SHA3-512": "SHA3-512" };
+  // 真机逐项：无横线形（SHA256 等）一律拒，仅横线形大小写无关。
+  const map = { "SHA-1": "SHA-1", "SHA-256": "SHA-256", "SHA-384": "SHA-384", "SHA-512": "SHA-512", "SHA3-256": "SHA3-256", "SHA3-384": "SHA3-384", "SHA3-512": "SHA3-512" };
   if (!map[up]) throw new DOMException("Unrecognized algorithm name", "NotSupportedError");
   return map[up];
 }
@@ -127,7 +128,7 @@ function __wjs2_allowedUsages(name, kind) {
   if (kind === "secret") {
     if (name === "HMAC") return ["sign", "verify"];
     if (name === "HKDF" || name === "PBKDF2") return ["deriveKey", "deriveBits"];
-    if (name.startsWith("AES-")) return ["encrypt", "decrypt", "wrapKey", "unwrapKey"];
+    if (name.startsWith("AES-") || name === "CHACHA20-POLY1305") return ["encrypt", "decrypt", "wrapKey", "unwrapKey"];
     return null;
   }
   if (kind === "public") {
@@ -153,9 +154,14 @@ function __wjs2_checkUsages(name, kind, usages) {
     if (!allowed.includes(u)) throw new DOMException(`Unsupported key usage for ${name} key`, "SyntaxError");
   }
 }
+// JWK kty 校验（真机逐项）：缺失/非串即 Invalid keyData；值错即 kty 文案。
+function __wjs2_checkJwkKty(keyData, expected) {
+  if (typeof keyData?.kty !== "string") throw __wjs2_domErr("DataError", "Invalid keyData");
+  if (keyData.kty !== expected) throw __wjs2_domErr("DataError", 'Invalid JWK "kty" Parameter');
+}
 // JWK use/alg 校验（export-import 各套件真机逐项）：alg 缺省即过，白名单外
-// 即 DataError；use 按签名/加密两族（缺省即过）。
-function __wjs2_checkJwkMeta(keyData, algs, sigFamily) {
+// 即 DataError；use 按签名/加密两族（缺省即过）；ext=false + extractable 即失配。
+function __wjs2_checkJwkMeta(keyData, algs, sigFamily, extractable) {
   if (keyData?.alg !== undefined) {
     if (algs !== null && !algs.includes(keyData.alg)) {
       throw __wjs2_domErr("DataError", 'JWK "alg" does not match the requested algorithm');
@@ -164,6 +170,9 @@ function __wjs2_checkJwkMeta(keyData, algs, sigFamily) {
   if (keyData?.use !== undefined) {
     const ok = sigFamily ? keyData.use === "sig" : keyData.use === "enc";
     if (!ok) throw __wjs2_domErr("DataError", 'Invalid JWK "use" Parameter');
+  }
+  if (keyData?.ext === false && extractable === true) {
+    throw __wjs2_domErr("DataError", 'JWK "ext" Parameter and extractable mismatch');
   }
 }
 const __wjs2_keyUsageValues = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits", "wrapKey", "unwrapKey"];

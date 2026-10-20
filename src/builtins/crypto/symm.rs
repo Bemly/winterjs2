@@ -97,6 +97,94 @@ pub unsafe extern "C" fn aesgcm_decrypt(
     }
 }
 
+/// ChaCha20-Poly1305（12B nonce + 16B tag；chacha20poly1305 0.11 直引）：
+/// `__wjs2_chacha_encrypt(keyU8, nonceU8, aadU8, dataU8)` /
+/// `__wjs2_chacha_decrypt(keyU8, nonceU8, aadU8, dataU8)` → Uint8Array。
+fn chacha_crypt(key: &[u8], nonce: &[u8], aad: &[u8], data: &[u8], enc: bool) -> Result<Vec<u8>, String> {
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
+    if key.len() != 32 {
+        return Err("OperationError: ChaCha20-Poly1305 key must be 32 bytes".to_string());
+    }
+    if nonce.len() != 12 {
+        return Err("OperationError: ChaCha20-Poly1305 nonce must be 12 bytes".to_string());
+    }
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| format!("OperationError: bad ChaCha20-Poly1305 key: {e}"))?;
+    let n = chacha20poly1305::Nonce::try_from(nonce)
+        .map_err(|_| "OperationError: bad ChaCha20-Poly1305 nonce".to_string())?;
+    if enc {
+        cipher
+            .encrypt(&n, Payload { msg: data, aad })
+            .map_err(|e| format!("OperationError: ChaCha20-Poly1305 encrypt failed: {e}"))
+    } else {
+        cipher
+            .decrypt(&n, Payload { msg: data, aad })
+            .map_err(|_| "OperationError: ChaCha20-Poly1305 decrypt failed (bad key/nonce/tag?)".to_string())
+    }
+}
+
+/// `__wjs2_chacha_encrypt(keyU8, nonceU8, aadU8, dataU8)` → Uint8Array（ct‖tag16）。
+pub unsafe extern "C" fn chacha_encrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: ChaCha20-Poly1305 encrypt needs key, nonce, aad and data");
+        return false;
+    }
+    let (Some(key), Some(nonce), Some(aad), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "ChaCha20-Poly1305 key"),
+        view_bytes(&mut cx, frame.arg(1), "ChaCha20-Poly1305 nonce"),
+        opt_view_bytes(&mut cx, frame.arg(2), "ChaCha20-Poly1305 aad"),
+        view_bytes(&mut cx, frame.arg(3), "ChaCha20-Poly1305 data"),
+    ) else {
+        return false;
+    };
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    match chacha_crypt(&key, &nonce, aad_ref, &data, true) {
+        Ok(ct) => set_rval_bytes(&mut cx, &frame, &ct),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs2_chacha_decrypt(keyU8, nonceU8, aadU8, dataU8)` → Uint8Array（认证失败抛 OperationError）。
+pub unsafe extern "C" fn chacha_decrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: ChaCha20-Poly1305 decrypt needs key, nonce, aad and data");
+        return false;
+    }
+    let (Some(key), Some(nonce), Some(aad), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "ChaCha20-Poly1305 key"),
+        view_bytes(&mut cx, frame.arg(1), "ChaCha20-Poly1305 nonce"),
+        opt_view_bytes(&mut cx, frame.arg(2), "ChaCha20-Poly1305 aad"),
+        view_bytes(&mut cx, frame.arg(3), "ChaCha20-Poly1305 data"),
+    ) else {
+        return false;
+    };
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    match chacha_crypt(&key, &nonce, aad_ref, &data, false) {
+        Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
 fn decrypt_with<A>(key: &[u8], iv: &[u8], aad: &[u8], data: &[u8]) -> Result<Vec<u8>, String>
 where
     A: aes_gcm::aead::KeyInit + aes_gcm::aead::Aead,

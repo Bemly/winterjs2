@@ -101,7 +101,21 @@ pub const CRYPTO_OPS_JS: &str = r#"
       }
       if (format === "raw") return st.material.slice().buffer;
       if (format === "jwk") {
-        return { kty: "oct", k: __wjs2_b64urlEncode(st.material), alg: st.alg.name === "AES-GCM" ? `A${st.alg.length}GCM` : `HS${__wjs2_normHash(st.alg.hash).split("-")[1]}`, ext: true, key_ops: [...st.usages] };
+        // 各对称算法 JWK alg（真机逐项；无定义即省略）。
+        let algTag;
+        const an = st.alg.name;
+        if (an === "AES-GCM") algTag = `A${st.alg.length}GCM`;
+        else if (an === "AES-CBC") algTag = `A${st.alg.length}CBC`;
+        else if (an === "AES-CTR") algTag = `A${st.alg.length}CTR`;
+        else if (an === "AES-KW") algTag = `A${st.alg.length}KW`;
+        else if (an === "CHACHA20-POLY1305") algTag = "C20P";
+        else if (an === "HMAC") {
+          const hn = __wjs2_normHash(st.alg.hash).split("-")[1];
+          if (["1", "256", "384", "512"].includes(hn)) algTag = `HS${hn}`;
+        }
+        const jwk = { kty: "oct", k: __wjs2_b64urlEncode(st.material), ext: true, key_ops: [...st.usages] };
+        if (algTag !== undefined) jwk.alg = algTag;
+        return jwk;
       }
       throw new Error(`NotSupportedError: exportKey ${format} needs Phase 3 c-4`);
       })();
@@ -138,12 +152,27 @@ pub const CRYPTO_OPS_JS: &str = r#"
         const out = __wjs2_aesctr_crypt(st.material, counter, lenBits, __wjs2_dataBytes(data));
         return out.buffer;
       }
+      if (st.alg.name === "CHACHA20-POLY1305") {
+        const iv = __wjs2_dataBytes(algorithm?.iv);
+        if (iv.length !== 12) throw __wjs2_domErr("OperationError", "ChaCha20-Poly1305 iv must be 12 bytes");
+        const tagLen = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
+        if (tagLen !== 128) throw __wjs2_domErr("OperationError", `${algorithm?.tagLength} is not a valid ChaCha20-Poly1305 tag length`);
+        const aad = algorithm?.additionalData === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.additionalData);
+        const out = __wjs2_chacha_encrypt(st.material, iv, aad, __wjs2_dataBytes(data));
+        return out.buffer;
+      }
       if (st.alg.name === "RSA-OAEP") {
         if (st.kind !== "public") throw new TypeError("encrypt: not an RSA public key");
         const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
         const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
-        const out = __wjs2_rsa_encrypt(hash, st.material, __wjs2_dataBytes(data), label);
-        return out.buffer;
+        try {
+          const out = __wjs2_rsa_encrypt(hash, st.material, __wjs2_dataBytes(data), label);
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       throw new TypeError("encrypt: unsupported key");
       })();
@@ -193,12 +222,33 @@ pub const CRYPTO_OPS_JS: &str = r#"
         const out = __wjs2_aesctr_crypt(st.material, counter, lenBits, __wjs2_dataBytes(data));
         return out.buffer;
       }
+      if (st.alg.name === "CHACHA20-POLY1305") {
+        const iv = __wjs2_dataBytes(algorithm?.iv);
+        if (iv.length !== 12) throw __wjs2_domErr("OperationError", "ChaCha20-Poly1305 iv must be 12 bytes");
+        const tagLen = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
+        if (tagLen !== 128) throw __wjs2_domErr("OperationError", `${algorithm?.tagLength} is not a valid ChaCha20-Poly1305 tag length`);
+        const aad = algorithm?.additionalData === undefined ? new Uint8Array(0) : __wjs2_dataBytes(algorithm.additionalData);
+        try {
+          const out = __wjs2_chacha_decrypt(st.material, iv, aad, __wjs2_dataBytes(data));
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
+      }
       if (st.alg.name === "RSA-OAEP") {
         if (st.kind !== "private") throw new TypeError("decrypt: not an RSA private key");
         const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
         const label = algorithm?.label === undefined ? undefined : __wjs2_dataBytes(algorithm.label);
-        const out = __wjs2_rsa_decrypt(hash, st.material, __wjs2_dataBytes(data), label);
-        return out.buffer;
+        try {
+          const out = __wjs2_rsa_decrypt(hash, st.material, __wjs2_dataBytes(data), label);
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       throw new TypeError("decrypt: unsupported key");
       })();
@@ -217,8 +267,14 @@ pub const CRYPTO_OPS_JS: &str = r#"
       if (st.alg.name === "RSASSA-PKCS1-V1_5") {
         if (st.kind !== "private") throw new TypeError("sign: not an RSA private key");
         const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
-        const out = __wjs2_rsa_sign(hash, st.material, __wjs2_dataBytes(data));
-        return out.buffer;
+        try {
+          const out = __wjs2_rsa_sign(hash, st.material, __wjs2_dataBytes(data));
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "RSA-PSS") {
         if (st.kind !== "private") throw new TypeError("sign: not an RSA private key");
@@ -226,20 +282,38 @@ pub const CRYPTO_OPS_JS: &str = r#"
         // 缺省 saltLength = digest 长度（WebCrypto 口径）。
         const defSalt = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash];
         const salt = algorithm?.saltLength === undefined ? defSalt : Number(algorithm.saltLength);
-        if (!Number.isInteger(salt) || salt < 0) throw new Error("OperationError: bad RSA-PSS saltLength");
-        const out = __wjs2_pss_sign(hash, salt, st.material, __wjs2_dataBytes(data));
-        return out.buffer;
+        if (!Number.isInteger(salt) || salt < 0) throw __wjs2_domErr("OperationError", "bad RSA-PSS saltLength");
+        try {
+          const out = __wjs2_pss_sign(hash, salt, st.material, __wjs2_dataBytes(data));
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "ED25519") {
         if (st.kind !== "private") throw new TypeError("sign: not an Ed25519 private key");
-        const out = __wjs2_ed_sign(st.material, __wjs2_dataBytes(data));
-        return out.buffer;
+        try {
+          const out = __wjs2_ed_sign(st.material, __wjs2_dataBytes(data));
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "ECDSA") {
         if (st.kind !== "private") throw new TypeError("sign: not an EC private key");
         const hash = __wjs2_normHash(algorithm?.hash ?? "SHA-256");
-        const out = __wjs2_ecdsa_sign(st.alg.namedCurve, hash, st.material, __wjs2_dataBytes(data));
-        return out.buffer;
+        try {
+          const out = __wjs2_ecdsa_sign(st.alg.namedCurve, hash, st.material, __wjs2_dataBytes(data));
+          return out.buffer;
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       throw new TypeError("sign: unsupported key");
       })();
@@ -259,24 +333,48 @@ pub const CRYPTO_OPS_JS: &str = r#"
       if (st.alg.name === "RSASSA-PKCS1-V1_5") {
         if (st.kind === "private") throw new TypeError("verify: not an RSA public key");
         const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
-        return __wjs2_rsa_verify(hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        try {
+          return __wjs2_rsa_verify(hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "RSA-PSS") {
         if (st.kind === "private") throw new TypeError("verify: not an RSA public key");
         const hash = __wjs2_normHash(algorithm?.hash ?? st.alg.hash ?? "SHA-256");
         const defSalt = { "SHA-256": 32, "SHA-384": 48, "SHA-512": 64 }[hash];
         const salt = algorithm?.saltLength === undefined ? defSalt : Number(algorithm.saltLength);
-        if (!Number.isInteger(salt) || salt < 0) throw new Error("OperationError: bad RSA-PSS saltLength");
-        return __wjs2_pss_verify(hash, salt, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        if (!Number.isInteger(salt) || salt < 0) throw __wjs2_domErr("OperationError", "bad RSA-PSS saltLength");
+        try {
+          return __wjs2_pss_verify(hash, salt, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "ED25519") {
         if (st.kind === "private") throw new TypeError("verify: not an Ed25519 public key");
-        return __wjs2_ed_verify(st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        try {
+          return __wjs2_ed_verify(st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       if (st.alg.name === "ECDSA") {
         if (st.kind === "private") throw new TypeError("verify: not an EC public key");
         const hash = __wjs2_normHash(algorithm?.hash ?? "SHA-256");
-        return __wjs2_ecdsa_verify(st.alg.namedCurve, hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        try {
+          return __wjs2_ecdsa_verify(st.alg.namedCurve, hash, st.material, __wjs2_dataBytes(signature), __wjs2_dataBytes(data));
+        } catch (e) {
+          if (e instanceof DOMException) throw e;
+          if (String(e?.message ?? "").startsWith("TypeError:")) throw e;
+          throw __wjs2_domErr("OperationError", "The operation failed for an operation-specific reason");
+        }
       }
       throw new TypeError("verify: unsupported key");
       })();

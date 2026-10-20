@@ -2887,3 +2887,29 @@ G1/G2/G3/G9 已收官。）
 - goaway 留守：session-cleanup 3/4 转绿（sessionError 事件，4.324），仅剩 raw-close
  （双 FIN 后无 close；gw8d 同构通而套件不通，时序敏感，另案）。
 - 黑盒：tunnel 外新添 goaway_frame_size_error + read_unshift_readable，全绿。
+## 2026-10-21 Event 体系缺口分析（repl brandcheck 转单）
+
+- 范围：`internal/event_target` 引用 12 件 + 全局 Event 面。真机逐项对照后定级。
+- 已修转绿（小，顺手落地）：global-customevent（全局===内部同一性透传）、
+  events-static-geteventlisteners（直接注册侧读桥）、events-customevent
+  （构造校验/tag/inspect）；messageevent-brandcheck 保持绿。黑盒 +1
+  （events_web_event_faces：正常/报错/边界）。
+- 修面（prelude/events.rs + internal/event_target.rs + events.rs 桥）：
+  只读面（composedPath 派发期 [target]、returnValue、eventPhase 派发期 2、
+  cancelBubble 读写、initEvent、阶段静态、toStringTag 全家）、构造校验
+  （options 对象形逐字、type 缺失/Symbol 形、子类无参）、派发语义（异常
+  不中断后续→uncaughtException 无 error/unhandledRejection、重派发
+  ERR_EVENT_RECURSION、非 target 调 ERR_INVALID_THIS）、元数校验、监听校验、
+  Symbol type、defineEventHandler/makeEventHandler、null 监听 Warning、
+  ET max 警告 + etSetMax 桥、listenerCount/getEventListeners 直读。
+- 定级大（记档不做）：eventtarget-brandcheck 余（全员 ERR_INVALID_THIS
+  品牌检查约 50 点 + NodeEventTarget 混入类）、eventtarget.js 余（弱监听
+  存储/GC 语义 + 63954 保持）、nodeeventtarget/on-async-iterator
+  （NodeEventTarget）、memoryleakwarning（MessagePort/AbortSignal 警告面；
+  另该套件现 node 自红，MessagePort 形已漂移）、abortcontroller-internal
+  （弱监听 + gc，大）、timers-promisified ×3（promisify 同一性，非 Event）、
+  bootstrap-modules（process.moduleLoadList，非 Event）。
+- 验证：`events_` 11/11、`worker_` 17/17、`http_` 35/35；message 系列绿；
+  冒烟 5/5；双守门绿。abortcontroller HANG/messageport-hasref  extra 字段/
+  cloneable 缺 transferable API 皆为既有缺口（未碰其代码面，另案）。
+

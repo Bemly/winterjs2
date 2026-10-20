@@ -362,3 +362,59 @@ console.log("named", captureRejections === false, usingDomains === false, typeof
     assert!(out.contains("named true true function 10"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn events_web_event_faces() {
+    // Event 体系：正常（只读面/派发/once/phase/path）+ 报错（构造校验/
+    // 品牌检查/元数）+ 边界（Symbol type/重派发/空派发）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "p.mjs",
+        r#"
+const t = (f) => { try { return f(); } catch (e) { return (e.code ?? "nocode") + "|" + e.constructor.name; } };
+// 正常：只读面 + 派发 + once + phase/path。
+const et = new EventTarget();
+console.log("ro", new Event("a").type, new Event("b", {bubbles: true}).bubbles, new CustomEvent("c", {detail: 7}).detail);
+console.log("tags", Object.prototype.toString.call(new Event("x")), Object.prototype.toString.call(et));
+console.log("statics", Event.NONE, Event.CAPTURING_PHASE, Event.AT_TARGET, Event.BUBBLING_PHASE);
+let seen = [];
+et.addEventListener("e", (ev) => seen.push([ev.type, ev.eventPhase, ev.composedPath().length, ev.target === et]));
+et.addEventListener("e", () => seen.push("once"), { once: true });
+console.log("dispatch", et.dispatchEvent(new Event("e")), JSON.stringify(seen));
+console.log("after", new Event("z").eventPhase, new Event("z").composedPath().length);
+// 报错：构造校验 + 品牌 + 元数。
+console.log("ctor0", t(() => new Event()));
+console.log("ctoropt", t(() => new Event("a", 1)));
+console.log("ctorsym", t(() => new Event(Symbol())));
+console.log("brand", t(() => Reflect.get(Event.prototype, "type", {})));
+console.log("brandm", t(() => Reflect.apply(Event.prototype.stopPropagation, [], {})));
+console.log("brandt", t(() => Reflect.apply(EventTarget.prototype.addEventListener, [], {})));
+console.log("arity", t(() => et.addEventListener("x")), t(() => et.dispatchEvent()));
+console.log("badls", t(() => et.addEventListener("x", 42)));
+console.log("badsym", t(() => et.addEventListener(Symbol(), () => {})));
+console.log("badev", t(() => et.dispatchEvent({})));
+// 边界：重派发 + 空 target 派发 + onfoo。
+const e2 = new Event("r");
+et.addEventListener("r", () => console.log("redispatch", t(() => et.dispatchEvent(e2))));
+et.dispatchEvent(e2);
+"#,
+    );
+    assert!(out.contains("ro a true 7"), "out: {out}");
+    assert!(out.contains("tags [object Event] [object EventTarget]"), "out: {out}");
+    assert!(out.contains("statics 0 1 2 3"), "out: {out}");
+    assert!(out.contains("dispatch true"), "out: {out}");
+    assert!(out.contains("after 0 0"), "out: {out}");
+    assert!(out.contains("ctor0 nocode|TypeError"), "out: {out}");
+    assert!(out.contains("ctoropt ERR_INVALID_ARG_TYPE|TypeError"), "out: {out}");
+    assert!(out.contains("ctorsym nocode|TypeError"), "out: {out}");
+    assert!(out.contains("brand ERR_INVALID_THIS|TypeError"), "out: {out}");
+    assert!(out.contains("brandm ERR_INVALID_THIS|TypeError"), "out: {out}");
+    assert!(out.contains("brandt ERR_INVALID_THIS|TypeError"), "out: {out}");
+    assert!(out.contains("arity ERR_MISSING_ARGS|TypeError ERR_MISSING_ARGS|TypeError"), "out: {out}");
+    assert!(out.contains("badls ERR_INVALID_ARG_TYPE|TypeError"), "out: {out}");
+    assert!(out.contains("badsym nocode|TypeError"), "out: {out}");
+    assert!(out.contains("badev ERR_INVALID_ARG_TYPE|TypeError"), "out: {out}");
+    assert!(out.contains("redispatch ERR_EVENT_RECURSION|Error"), "out: {out}");
+    dir.close().unwrap();
+}

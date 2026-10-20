@@ -1988,5 +1988,49 @@ G1/G2/G3/G9 已收官。）
   parsing/global 全绿 rc=0；`--test builtins` 41/41；冒烟 5/5；`check-lines: ok`
  （最大 1000 src/state/mod.rs）+ `check-naming: ok`（本区干净，无并行脏文件）。
 
+## 2026-10-20 whatwg31逐件定级（自主定级，不问拍板）
+
+> 方法：`docs/bun-scope.txt` `^test-whatwg-` 55 行全量双跑（新区二进制复用零新构建；
+> 53 件在 `~/node-test` 检出，2 件检出无件见末）。base18 40 红 − 前段已定级 9
+> （W1–W8 bound + W9 续啃落地）= 31 件逐件 node 真机对照，默认对齐 node+bun 自行定级。
+> 结论先行：31 件当前双绿（抽查 9 件 node/wjs 双 0/0 + 55 件全量 wjs 复跑仅 8 红），
+> 定级=已对齐（SAME0），下按簇记 Node 一句话 + Bun 行号 + 修法出处。
+
+- E1 encoding ×5（fatal-streaming/api-invalid-label/fatal/utf16-surrogates/singlebyte）→ 已对齐。
+  Node：`TextDecoder(label,{fatal,ignoreBOM})` 按 encoding 标非法标签抛错/fatal 抛
+  `ERR_ENCODING_INVALID_ENCODED_DATA`（`lib/internal/encoding.js` + WPT 语料）。
+  Bun：Web 通用面推定有（`bun-compat.md:63` url 🟢同族；`bun-parity.md` 无 encoding 缺口行）。
+  修法出处：wave-1（fatal 文案/ASCII-trim/NUL 安全/大写规范，journal:1525）+
+  L-E encoding-singlebyte 29→57（journal:1537/1546）。双跑 0/0。
+- E2 events ×3（passive/signal/this-of-listener）→ 已对齐。
+  Node：`addEventListener` 非函数监听 warn 而非抛（passive 门）/signal 校验/
+  监听器 this 恒收 EventTarget（`lib/internal/event_target.js`）。
+  Bun：events 🟢（`bun-compat.md:50`）。修法出处：wave-1
+  （null-flatten/被动门/signal 校验/handleEager，journal:1525）。双跑 0/0。
+- S1 streams ×5（bad-buffers-and-views/byob/compression/webstreams-encoding/
+  transform-cancel-write-race）→ 已对齐。
+  Node：BYOB 视图空/坏参抛 `ERR_INVALID_*` + `ReadableByteStream` pull 续进/close 后可用 +
+  `CompressionStream` 枚举校验（`lib/internal/webstreams/*.js`）。
+  Bun：stream 🟢（`bun-compat.md:59`）。修法出处：wave-1
+  （BYOB coded 错误/start 竞速/pull 续进/close 后可用，journal:1525）+ webstreams 轮
+  （`bun-parity.md:1292-1308`）。双跑 0/0（byob/compression 抽查）。
+- U1 url ×6（custom-global/parsing/properties/setters/tostringtag/invalidthis）→ 已对齐。
+  Node：URL 全局属性形态/解析抛 `ERR_INVALID_URL`/`ERR_MISSING_ARGS`/属性可枚举顺序/
+  setter 转换先行/非法接收者品牌错（`lib/internal/url.js`）。
+  Bun：url 🟢（`bun-compat.md:63`）。修法出处：wave-1（USP 品牌/缺参/lone-surrogate
+  FFFD/双问号/迭代器品牌+tag，journal:1525）+ fix-forward USP 归一（journal:1538）+
+  W9 inspect（本 lane）。双跑 0/0（parsing/setters/invalidthis 抽查）。
+- U2 searchparams ×12（append/delete/entries/foreach/get/getall/has/keys/set/
+  stringifier/values/constructor/custom-searchparams）→ 已对齐。
+  Node：`URLSearchParams` 增删改查 + 迭代器三形 + 构造器三形（`lib/internal/url.js`
+  searchparams 族）。Bun：url 🟢同上。修法出处：wave-1（MIME 全 fixture 952 对拍 +
+  TES/TDS 缺失补齐，journal:1525）+ fix-forward（序列 key-presence/定长二元组/record
+  含 symbol 键/Map 去重，journal:1538）。双跑 0/0（全量 wjs rc）。
+- 前段 8 bound（readablebytestream/adapters×5/coverage/canparse）维持，不在 31 内，
+  见上段 W1–W8。
+- 检出无件 ×2（`test-whatwg-url-custom-domainto` / `test-whatwg-url-toascii`）→ 记档
+  非欠账：Bun 快照有、node-main 检出无（`ls test/parallel` 零命中），系上游更名/删除，
+  双边无法跑，不计红。
+
 
 

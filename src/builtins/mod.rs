@@ -380,13 +380,18 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_vm_release", Some(node::vm::vm_release), 1),
             ("__wjs2_vm_take_error", Some(node::vm::vm_take_error), 0),
             // Phase 9i-1: vm 模块系（SourceText；Synthetic 纯 JS）
-            ("__wjs2_vm_compile_mod", Some(node::vm::vm_mod_compile), 3),
-            ("__wjs2_vm_link", Some(node::vm::vm_mod_link), 1),
-            ("__wjs2_vm_evaluate", Some(node::vm::vm_mod_evaluate), 1),
-            ("__wjs2_vm_mod_ns", Some(node::vm::vm_mod_ns), 1),
-            ("__wjs2_vm_mod_release", Some(node::vm::vm_mod_release), 1),
-            ("__wjs2_vm_mod_settled", Some(node::vm::vm_mod_settled), 1),
-            ("__wjs2_vm_mod_deps", Some(node::vm::vm_mod_deps), 1),
+            ("__wjs2_vm_compile_mod", Some(node::vm_module::vm_mod_compile), 3),
+            ("__wjs2_vm_link", Some(node::vm_module::vm_mod_link), 1),
+            ("__wjs2_vm_evaluate", Some(node::vm_module::vm_mod_evaluate), 1),
+            ("__wjs2_vm_mod_ns", Some(node::vm_module::vm_mod_ns), 1),
+            ("__wjs2_vm_mod_release", Some(node::vm_module::vm_mod_release), 1),
+            ("__wjs2_vm_mod_settled", Some(node::vm_module::vm_mod_settled), 1),
+            ("__wjs2_vm_mod_deps", Some(node::vm_module::vm_mod_deps), 1),
+            // vm-triage：Promise 结算内态（util.inspect 显示用；vm evaluate 同步落定断言）
+            ("__wjs2_promise_state", Some(node::vm_module::promise_state), 1),
+            ("__wjs2_promise_result", Some(node::vm_module::promise_result), 1),
+            // vm-triage M3：求值超时（watchdog + 中断回调）
+            ("__wjs2_vm_timeout_fired", Some(node::vm::timeout_fired), 0),
             // Phase 9f-2: worker 消息通道（端口对/投递/线程身份/环境数据）
             ("__wjs2_port_pair", Some(node::worker::port_pair), 0),
             ("__wjs2_port_attach", Some(node::worker::port_attach), 2),

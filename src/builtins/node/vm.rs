@@ -43,7 +43,7 @@ use super::vm_error::{throw_vm, vm_stk_envelope};
 
 
 /// 字符串实参（缺省/非串 → TypeError 错，None）。
-fn arg_string(
+pub(super) fn arg_string(
     cx: &mut mozjs::context::JSContext,
     frame: &Frame,
     i: u32,
@@ -67,13 +67,239 @@ fn arg_id(cx: &mut mozjs::context::JSContext, frame: &Frame, i: u32) -> Option<u
 
 /// 查注册表并重 root（调用方 realm 内使用；查无即 TypeError 错）。
 /// 返回裸指针：调用方必须在同一作用域内 rooted 后用（无 GC 间隙）。
-fn lookup_global(cx: &mut mozjs::context::JSContext, id: u64) -> Option<*mut JSObject> {
+pub(super) fn lookup_global(cx: &mut mozjs::context::JSContext, id: u64) -> Option<*mut JSObject> {
     match state::vm_global(id) {
         Some(g) if !g.is_null() => Some(g),
         _ => {
             report_error(cx, "ERR_INVALID_ARG_TYPE: contextifiedObject must be a vm.Context");
             None
         }
+    }
+}
+
+// ── 超时中断（M3；worker_term.rs 的 terminate 钩子同源模式）──────────────────
+// 原理：JS_AddInterruptCallback（每 JS 线程装一次）+ 看门线程到期
+// JS_RequestInterruptCallback。回调只读共享"存活表"（try_lock，从不阻塞；
+// 任意 Rust 借用期内触发安全），最早到期者到点即返回 false 中止脚本。
+// 看门线程一律 sleep 后查表：generation 已摘即过期请求，永不碰已结束会话。
+// Runtime 全泄漏（§4.8，run_isolated 亦 forget），cx 裸指针终身有效。
+
+/// 存活超时（(cx, generation) → (deadline_ms, timeout_ms)；回调按 cx 过滤取最早）。
+static VM_TIMEOUT_LIVE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<(usize, u64), (u64, u64)>>,
+> = std::sync::OnceLock::new();
+/// 世代单调（u64::MAX 保留位外，永不回绕到在用值）。
+static VM_TIMEOUT_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn vm_timeout_live(
+) -> &'static std::sync::Mutex<std::collections::HashMap<(usize, u64), (u64, u64)>> {
+    VM_TIMEOUT_LIVE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+thread_local! {
+    /// 每线程装一次中断钩子。
+    static VM_TIMEOUT_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// 回调命中的超时毫秒（报错文案用最早到期的 ms，非调用方 ms；嵌套外短内长口径）。
+    static VM_TIMEOUT_FIRED_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// SAFETY-BOUNDARY（interrupt 回调）：仅读存活表（try_lock）+ TLS Cell，
+/// 无 JSAPI、无重入（Interrupt.h：回调内禁止再入引擎）。返回 false = 中止脚本。
+/// 覆盖：`tests/node/vm.rs` 超时黑盒（逐行为单位）。
+unsafe extern "C" fn vm_timeout_cb(cx: *mut mozjs::jsapi::JSContext) -> bool {
+    let now = now_ms();
+    let live = VM_TIMEOUT_LIVE.get().and_then(|m| m.try_lock().ok());
+    let Some(live) = live else { return true };
+    let key = cx as usize;
+    let mut earliest: Option<(u64, u64)> = None;
+    for ((c, _), (dl, ms)) in live.iter() {
+        if *c != key {
+            continue;
+        }
+        if earliest.map(|(d, _)| *dl < d).unwrap_or(true) {
+            earliest = Some((*dl, *ms));
+        }
+    }
+    match earliest {
+        Some((dl, ms)) if now >= dl => {
+            VM_TIMEOUT_FIRED_MS.with(|f| f.set(ms));
+            false
+        }
+        _ => true,
+    }
+}
+
+/// 本线程装钩子（幂等；调用处于 JS 执行中）。
+fn vm_timeout_install(raw_cx: *mut mozjs::jsapi::JSContext) {
+    VM_TIMEOUT_INSTALLED.with(|f| {
+        if !f.get() {
+            // SAFETY: JS 线程；回调仅读表/TLS（见 vm_timeout_cb）
+            unsafe {
+                mozjs::jsapi::JS_AddInterruptCallback(raw_cx, Some(vm_timeout_cb));
+            }
+            f.set(true);
+        }
+    });
+}
+
+/// 超时入栈：返回世代；0/ms=0 即无超时（None）。看门线程只读表 + 请求中断。
+pub(super) fn vm_timeout_enter(raw_cx: *mut mozjs::jsapi::JSContext, ms: u64) -> Option<u64> {
+    if ms == 0 {
+        return None;
+    }
+    vm_timeout_install(raw_cx);
+    let generation = VM_TIMEOUT_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dl = now_ms().saturating_add(ms);
+    if let Ok(mut live) = vm_timeout_live().lock() {
+        live.insert((raw_cx as usize, generation), (dl, ms));
+    }
+    let cx_key = raw_cx as usize;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        // 中断请求一次一耗（同步段命中即清）：到点后每 5ms 补发，直到表项
+        // 摘除（守卫 drop）——微任务段长循环同样武装（escape-promise 口径：
+        // 同步 `loop()` 命中消耗首发后，排空的 `.then(loop)` 仍须中断）。
+        loop {
+            let live = vm_timeout_live()
+                .lock()
+                .ok()
+                .and_then(|v| v.get(&(cx_key, generation)).copied())
+                .is_some();
+            if !live {
+                break;
+            }
+            // SAFETY: cx 经 §4.8 泄漏保活终身有效；RequestInterruptCallback
+            // 线程安全（Interrupt.h: any thread；只置请求旗）。
+            unsafe {
+                mozjs::jsapi::JS_RequestInterruptCallback(cx_key as *mut mozjs::jsapi::JSContext);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+    Some(generation)
+}
+
+/// 中断补请求（同步段已消耗请求时，排空孤儿任务前补发，微任务段确定性武装；
+/// 看门 5ms 粒度兜底，本函数消竞态窗）。无到期表项即无操作。
+pub(super) fn vm_timeout_rearm(raw_cx: *mut mozjs::jsapi::JSContext) {
+    let key = raw_cx as usize;
+    let now = now_ms();
+    let armed = vm_timeout_live()
+        .try_lock()
+        .map(|live| {
+            live.iter()
+                .any(|((c, _), (dl, _))| *c == key && now >= *dl)
+        })
+        .unwrap_or(false);
+    if armed {
+        // SAFETY: JS 线程自身；仅置请求旗（Interrupt.h）。
+        unsafe {
+            mozjs::jsapi::JS_RequestInterruptCallback(raw_cx);
+        }
+    }
+}
+
+/// 超时出栈（成功/失败路径必调；看门线程据此判定过期）。
+pub(super) fn vm_timeout_exit(raw_cx: *mut mozjs::jsapi::JSContext, generation: u64) {
+    if let Ok(mut live) = vm_timeout_live().lock() {
+        live.remove(&(raw_cx as usize, generation));
+    }
+}
+
+/// 取并清命中标记（中断回调置位；报错文案用命中 ms）。
+pub(super) fn vm_timeout_fired_ms() -> Option<u64> {
+    VM_TIMEOUT_FIRED_MS.try_with(|f| {
+        let ms = f.get();
+        f.set(0);
+        (ms != 0).then_some(ms)
+    })
+    .unwrap_or(None)
+}
+
+/// 只读命中标记（不清；native 报错路径决策用，消费权归 JS 壳）。
+pub(super) fn vm_timeout_peek_ms() -> Option<u64> {
+    VM_TIMEOUT_FIRED_MS.try_with(|f| {
+        let ms = f.get();
+        (ms != 0).then_some(ms)
+    })
+    .unwrap_or(None)
+}
+
+/// 超时命中查询（`__wjs2_vm_timeout_fired()` → 命中 ms，无即 0；消费标记）。
+/// UNSAFE-BOUNDARY: 只读 TLS Cell，无 JSAPI。覆盖 tests/node/vm.rs。
+pub unsafe extern "C" fn timeout_fired(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 vm_create（本函数不用 cx，仅占位签名）
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let _ = &mut cx;
+    let ms = vm_timeout_fired_ms().unwrap_or(0);
+    frame.set_rval(mozjs::jsval::Int32Value(ms as i32));
+    true
+}
+
+/// 超时守卫（RAII 出栈；成功/失败路径全覆盖）。
+pub(super) struct VmTimeoutGuard {
+    raw: *mut mozjs::jsapi::JSContext,
+    generation: Option<u64>,
+}
+
+impl VmTimeoutGuard {
+    pub(super) fn enter(raw_cx: *mut mozjs::jsapi::JSContext, ms: u64) -> Self {
+        Self {
+            raw: raw_cx,
+            generation: vm_timeout_enter(raw_cx, ms),
+        }
+    }
+}
+
+impl Drop for VmTimeoutGuard {
+    fn drop(&mut self) {
+        if let Some(generation) = self.generation {
+            vm_timeout_exit(self.raw, generation);
+        }
+    }
+}
+
+/// 第 `ti` 个实参读超时毫秒（缺席/非法即 0=无超时）。
+pub(super) fn vm_timeout_arg(
+    cx: &mut mozjs::context::JSContext,
+    frame: &Frame,
+    ti: u32,
+) -> u64 {
+    if frame.argc() <= ti {
+        return 0;
+    }
+    value_to_string(cx, frame.arg(ti)).parse::<u64>().unwrap_or(0)
+}
+
+/// 命中即报超时错（清 pending 残留，真机文案逐字），返回 true；未命中 false。
+/// 前置：realm 已进入（§4.1 求值失败路径同）。标记不清，消费权归 JS 壳
+///（`__wjs2_vm_timeout_fired`），避免 native/壳双读竞态。
+pub(super) fn vm_timeout_report(realm: &mut AutoRealm, fallback_ms: u64) -> bool {
+    match vm_timeout_peek_ms() {
+        Some(hit_ms) => {
+            let _ = crate::jsapi_glue::take_pending_exception(realm);
+            let ms = if hit_ms != 0 { hit_ms } else { fallback_ms };
+            crate::jsapi_glue::report_error(
+                realm,
+                &format!(
+                    "ERR_SCRIPT_EXECUTION_TIMEOUT: Script execution timed out after {ms}ms"
+                ),
+            );
+            true
+        }
+        None => false,
     }
 }
 
@@ -175,7 +401,7 @@ pub unsafe extern "C" fn vm_compile(
 }
 
 /// 在指定上下文求值（`evaluate_script` 自进目标 realm；成功后同步排空一轮 microtask）。
-/// `__wjs2_vm_run(id, code, filename)` → completion；失败抛包络错。
+/// `__wjs2_vm_run(id, code, filename, timeoutMs?)` → completion；失败抛包络错。
 pub unsafe extern "C" fn vm_run(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -193,6 +419,8 @@ pub unsafe extern "C" fn vm_run(
         None => return false,
     };
     let filename = arg_string(&mut cx, &frame, 2, "vm run").unwrap_or_default();
+    let timeout_ms = vm_timeout_arg(&mut cx, &frame, 3);
+    let _timeout_guard = VmTimeoutGuard::enter(cx_raw, timeout_ms);
     let ptr = match lookup_global(&mut cx, id) {
         Some(p) => p,
         None => return false,
@@ -205,6 +433,19 @@ pub unsafe extern "C" fn vm_run(
     if mozjs::rust::evaluate_script(&mut cx, global.handle(), &code, rval.handle_mut(), options).is_err() {
         // §4.1：evaluate 返回后已出 realm，重进目标 realm 再读异常
         let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        // 超时命中优先（中断残留不清，直接报真机口径错）。
+        if vm_timeout_peek_ms().is_some() {
+            // 孤儿微任务排空（真机 afterEvaluate 口径：逃逸 promise 不得存活；
+            // 同步段已消耗中断请求，此处补发 + 看门 5ms 续发，长循环同样中止；
+            // 实测中断中的 job 以 uncatchable 中止、promise 永不落定 → 无
+            // unhandled 报告，真机"双杀瞬落"口径一致）。
+            vm_timeout_rearm(cx_raw);
+            // SAFETY: realm 内排空（主循环同款）
+            unsafe { RunJobs((&mut realm).raw_cx()) };
+        }
+        if vm_timeout_report(&mut realm, timeout_ms) {
+            return false;
+        }
         // 先取原始异常对象暂存（take 即清 pending），再恢复 pending 供 error_info
         // 读 name/message/位置（读完再清）——__vmCall 优先取原物（保 vm realm
         // 身份/原型/栈，跨域 instanceof 点名），信封重建只作兜底。
@@ -227,18 +468,23 @@ pub unsafe extern "C" fn vm_run(
         throw_vm(&mut realm, &name, &message);
         return false;
     }
-    // Node afterEvaluate 等效：当轮排空 vm 内 promise 反应（同一 JobQueue）
+    // Node afterEvaluate 等效：当轮排空 vm 内 promise 反应（同一 JobQueue）；
+    // 排空后命中检查（微任务逃逸 loop：escape-2 口径）。
     {
         let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
         // SAFETY: realm 内排空内部 job queue（主循环同款）
         unsafe { RunJobs((&mut realm).raw_cx()) };
+        // 微任务期命中的超时：求值本身已返回，此处改报。
+        if vm_timeout_report(&mut realm, timeout_ms) {
+            return false;
+        }
     }
     frame.set_rval(rval.get());
     true
 }
 
 /// 主 global 求值（`runInThisContext`；inspector_eval 同款嵌套求值）。
-/// `__wjs2_vm_run_this(code, filename)` → completion；失败抛包络错。
+/// `__wjs2_vm_run_this(code, filename, timeoutMs?)` → completion；失败抛包络错。
 pub unsafe extern "C" fn vm_run_this(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -252,6 +498,8 @@ pub unsafe extern "C" fn vm_run_this(
         None => return false,
     };
     let filename = arg_string(&mut cx, &frame, 1, "vm run").unwrap_or_default();
+    let timeout_ms = vm_timeout_arg(&mut cx, &frame, 2);
+    let _timeout_guard = VmTimeoutGuard::enter(cx_raw, timeout_ms);
     rooted!(&in(cx) let global = state::global());
     rooted!(&in(cx) let mut rval = UndefinedValue());
     let filename_c =
@@ -259,6 +507,15 @@ pub unsafe extern "C" fn vm_run_this(
     let options = CompileOptionsWrapper::new(&cx, filename_c, 1);
     if mozjs::rust::evaluate_script(&mut cx, global.handle(), &code, rval.handle_mut(), options).is_err() {
         let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+        // 超时命中优先（同 vm_run：先补发中断再排空孤儿任务）。
+        if vm_timeout_peek_ms().is_some() {
+            vm_timeout_rearm(cx_raw);
+            // SAFETY: realm 内排空（主循环同款）
+            unsafe { RunJobs((&mut realm).raw_cx()) };
+        }
+        if vm_timeout_report(&mut realm, timeout_ms) {
+            return false;
+        }
         // 同 vm_run：取原物暂存 + 恢复 pending。
         if let Some(v) = crate::jsapi_glue::take_pending_exception(&mut realm) {
             rooted!(&in(&mut realm) let orig_root: JSVal = v);
@@ -283,6 +540,10 @@ pub unsafe extern "C" fn vm_run_this(
         let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
         // SAFETY: realm 内排空（主循环同款）
         unsafe { RunJobs((&mut realm).raw_cx()) };
+        // 微任务期命中的超时（同 vm_run）。
+        if vm_timeout_report(&mut realm, timeout_ms) {
+            return false;
+        }
     }
     frame.set_rval(rval.get());
     true
@@ -638,322 +899,10 @@ pub unsafe extern "C" fn vm_take_error(
     true
 }
 
-// ── 9i-1 模块系（SourceTextModule；SyntheticModule 纯 JS，见 SOURCE）─────────
-//
-// 落法：`compile` 在目标 compartment 内 `load_js` 转译（含 TS）+ `CompileModule1`
-// （filename=identifier，使 `referrer_base` 天然分流）；`link` 走
-// `load_dependencies` + `ModuleLink`（零导入恒过；`has_imports` 者 v1 拒绝——
-// 进程级 load hook 按主 global/主注册表工作，vm 记录带入即 compartment 错配，
-// linker 切片后续做）；`evaluate` 走 `ModuleEvaluate` + 一轮 `RunJobs`
-// （afterEvaluate 等效）；namespace 经 `GetModuleNamespace` 以 CCW 回主域。
-// 记录以 `Box<Heap>` 入 `state::vm_mods`（§4.40 定址），状态位防重复 link/evaluate。
-
-/// 编译模块：`__wjs2_vm_compile_mod(ctxId, identifier, code)` → modId 字符串。
-/// 失败抛包络 SyntaxError（转译错/编译错，含行列信息）。
-pub unsafe extern "C" fn vm_mod_compile(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    use mozjs::rust::wrappers2::CompileModule1;
-    // SAFETY: 同 vm_create
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let ctx = match arg_id(&mut cx, &frame, 0) {
-        Some(id) => id,
-        None => return false,
-    };
-    let identifier = match arg_string(&mut cx, &frame, 1, "vm SourceTextModule") {
-        Some(s) => s,
-        None => return false,
-    };
-    let code = match arg_string(&mut cx, &frame, 2, "vm SourceTextModule") {
-        Some(s) => s,
-        None => return false,
-    };
-    let ptr = match lookup_global(&mut cx, ctx) {
-        Some(p) => p,
-        None => return false,
-    };
-    rooted!(&in(cx) let global = ptr);
-    // 转译（TS 免费；ext 从 identifier 点后缀取，无点按 js）。
-    let ext = identifier.rsplit('.').next().filter(|e| {
-        identifier.contains('.')
-            && e.len() <= 5
-            && !e.is_empty()
-            && e.chars().all(|c| c.is_ascii_alphanumeric())
-    });
-    let fake_path = std::path::PathBuf::from(format!("vm_mod.{}", ext.unwrap_or("js")));
-    let loaded = match crate::loader::load_js(&code, &identifier, &fake_path) {
-        Ok(l) => l,
-        Err(e) => {
-            throw_vm(&mut cx, "SyntaxError", &e.to_string());
-            return false;
-        }
-    };
-    let has_imports = !loaded.imports.is_empty();
-    let c_filename =
-        std::ffi::CString::new(identifier.as_str()).unwrap_or_else(|_| c"vm_module.js".to_owned());
-    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
-    let options = CompileOptionsWrapper::new(&realm, c_filename, 1);
-    let mut src = transform_str_to_source_text(&loaded.js);
-    // SAFETY: realm 内；options/src 存活到调用返回；null 即编译失败
-    let record = unsafe { CompileModule1(&mut realm, options.ptr, &mut src) };
-    if record.is_null() {
-        rooted!(&in(&mut realm) let mut exc = UndefinedValue());
-        let msg = match mozjs::rust::error_info_from_exception_stack(&mut realm, exc.handle_mut()) {
-            Some(info) => format!("{}:{}:{}: {}", identifier, info.line.max(1), info.col.max(1), info.message),
-            None => format!("{identifier}: invalid module"),
-        };
-        throw_vm(&mut realm, "SyntaxError", &msg);
-        return false;
-    }
-    let id = state::vm_mod_add(ctx, identifier, record, has_imports, loaded.imports);
-    id.to_string().to_jsval(&mut realm, frame.rval_mut());
-    true
-}
-
-/// 取静态依赖表：`__wjs2_vm_mod_deps(modId)` → JSON 数组串。
-pub unsafe extern "C" fn vm_mod_deps(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同 vm_create
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
-        Some(s) => s,
-        None => return false,
-    };
-    let Ok(id) = s.parse::<u64>() else {
-        report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
-        return false;
-    };
-    let Some(json) = state::vm_mod_deps_json(id) else {
-        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
-        return false;
-    };
-    json.to_jsval(&mut cx, frame.rval_mut());
-    true
-}
-
-/// 链接模块：`__wjs2_vm_link(modId)` → undefined。
-/// 零导入恒过；带导入 v1 报 `ERR_VM_MODULE_LINK_FAILURE`（linker 切片后续）。
-pub unsafe extern "C" fn vm_mod_link(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    use mozjs::rust::wrappers2::ModuleLink;
-    // SAFETY: 同 vm_create
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
-        Some(s) => s,
-        None => return false,
-    };
-    let id = match s.parse::<u64>() {
-        Ok(id) => id,
-        Err(_) => {
-            report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
-            return false;
-        }
-    };
-    let Some((record, ctx, has_imports, _linked, _evaluated)) = state::vm_mod_get(id) else {
-        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
-        return false;
-    };
-    if has_imports {
-        let ident = state::vm_mod_identifier(id).unwrap_or_default();
-        report_error(
-            &mut cx,
-            &format!(
-                "ERR_VM_MODULE_LINK_FAILURE: module '{ident}' has imports but no linker was provided (v1: zero-import only)"
-            ),
-        );
-        return false;
-    }
-    let Some(ptr) = state::vm_global(ctx) else {
-        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
-        return false;
-    };
-    rooted!(&in(cx) let global = ptr);
-    rooted!(&in(cx) let record_root: *mut JSObject = record);
-    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
-    if let Err(e) = crate::modules::load_dependencies(&mut realm, record_root.get()) {
-        throw_vm(&mut realm, "Error", &e.to_string());
-        return false;
-    }
-    // SAFETY: record 有效 rooted；加载态已就绪，realm 内同步 link
-    if !unsafe { ModuleLink(&mut realm, record_root.handle()) } {
-        let msg = crate::modules::module_error(&mut realm, "vm_module").to_string();
-        throw_vm(&mut realm, "Error", &msg);
-        return false;
-    }
-    state::vm_mod_set_linked(id);
-    frame.set_rval(UndefinedValue());
-    true
-}
-
-/// 求值模块：`__wjs2_vm_evaluate(modId)` → completion（promise 照常回调用方）。
-/// 未 link 即报 `ERR_VM_MODULE_STATUS`（Node 口径：先 link 后 evaluate）。
-pub unsafe extern "C" fn vm_mod_evaluate(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    use mozjs::rust::wrappers2::ModuleEvaluate;
-    // SAFETY: 同 vm_create
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
-        Some(s) => s,
-        None => return false,
-    };
-    let id = match s.parse::<u64>() {
-        Ok(id) => id,
-        Err(_) => {
-            report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
-            return false;
-        }
-    };
-    let Some((record, ctx, _has_imports, linked, _evaluated)) = state::vm_mod_get(id) else {
-        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
-        return false;
-    };
-    if !linked {
-        report_error(&mut cx, "ERR_VM_MODULE_STATUS: module must be linked before evaluate");
-        return false;
-    }
-    let Some(ptr) = state::vm_global(ctx) else {
-        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
-        return false;
-    };
-    rooted!(&in(cx) let global = ptr);
-    rooted!(&in(cx) let record_root: *mut JSObject = record);
-    rooted!(&in(cx) let mut rval = UndefinedValue());
-    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
-    // SAFETY: record 有效 rooted；realm 内同步求值
-    if !unsafe { ModuleEvaluate(&mut realm, record_root.handle(), rval.handle_mut()) } {
-        let msg = crate::modules::module_error(&mut realm, "vm_module").to_string();
-        throw_vm(&mut realm, "Error", &msg);
-        return false;
-    }
-    // Node afterEvaluate 等效：当轮排空 vm 内 promise 反应（同一 JobQueue）
-    {
-        // SAFETY: realm 内排空内部 job queue（主循环同款）
-        unsafe { RunJobs(realm.raw_cx()) };
-    }
-    // 跨域求值恒异步（见 §4.57）：rval 为 promise 时结算未定，不置 evaluated 位，
-    // 由 JS 壳在 promise 落定后经 `__wjs2_vm_mod_settled` 补记；同步完成值才即置。
-    let is_promise = if rval.is_object() {
-        rooted!(&in(&mut realm) let rval_obj: *mut JSObject = rval.to_object());
-        // SAFETY: rval_obj 为有效 rooted 对象
-        unsafe { mozjs::jsapi::IsPromiseObject(crate::jsapi_glue::raw_handle(rval_obj.as_ptr())) }
-    } else {
-        false
-    };
-    if !is_promise {
-        state::vm_mod_set_evaluated(id);
-    }
-    frame.set_rval(rval.get());
-    true
-}
-
-/// 取模块 namespace：`__wjs2_vm_mod_ns(modId)` → namespace 对象（CCW 回主域）。
-pub unsafe extern "C" fn vm_mod_ns(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    use mozjs::rust::wrappers2::GetModuleNamespace;
-    // SAFETY: 同 vm_create
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
-        Some(s) => s,
-        None => return false,
-    };
-    let id = match s.parse::<u64>() {
-        Ok(id) => id,
-        Err(_) => {
-            report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
-            return false;
-        }
-    };
-    let Some((record, ctx, _has_imports, _linked, evaluated)) = state::vm_mod_get(id) else {
-        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
-        return false;
-    };
-    if !evaluated {
-        report_error(&mut cx, "ERR_VM_MODULE_STATUS: module must be evaluated before reading namespace");
-        return false;
-    }
-    let Some(ptr) = state::vm_global(ctx) else {
-        report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm context has been released");
-        return false;
-    };
-    rooted!(&in(cx) let global = ptr);
-    rooted!(&in(cx) let record_root: *mut JSObject = record);
-    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
-    // SAFETY: record 有效；返回的 namespace 由记录保活（引擎内边）
-    let ns = unsafe { GetModuleNamespace(&mut realm, record_root.handle()) };
-    if ns.is_null() {
-        throw_vm(&mut realm, "Error", "vm could not read module namespace");
-        return false;
-    }
-    rooted!(&in(&mut realm) let ns_root: *mut JSObject = ns);
-    frame.set_rval(mozjs::jsval::ObjectValue(ns_root.get()));
-    true
-}
-
-/// 摘除模块：`__wjs2_vm_mod_release(modId)` → boolean。
-pub unsafe extern "C" fn vm_mod_release(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同 vm_create
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
-        Some(s) => s,
-        None => return false,
-    };
-    let Ok(id) = s.parse::<u64>() else {
-        report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
-        return false;
-    };
-    let _ = &mut cx;
-    frame.set_rval(BooleanValue(state::vm_mod_release(id)));
-    true
-}
-
-/// 异步落定补记：`__wjs2_vm_mod_settled(modId)` → undefined。
-/// 跨域求值恒异步（§4.57），promise 路径的 evaluated 位由 JS 壳在落定后补记。
-pub unsafe extern "C" fn vm_mod_settled(
-    cx_raw: *mut mozjs::jsapi::JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    // SAFETY: 同 vm_create
-    let mut cx = unsafe { wrap_cx(cx_raw) };
-    let frame = unsafe { Frame::from_raw(vp, argc) };
-    let s = match arg_string(&mut cx, &frame, 0, "vm Module") {
-        Some(s) => s,
-        None => return false,
-    };
-    let Ok(id) = s.parse::<u64>() else {
-        report_error(&mut cx, "ERR_INVALID_ARG_TYPE: vm Module id must be a module id string");
-        return false;
-    };
-    state::vm_mod_set_evaluated(id);
-    frame.set_rval(UndefinedValue());
-    true
-}
-
 /// 内嵌 ESM 源（`node:vm`）。
 
 /// 内嵌 ESM 源（`node:vm`；§0.9 按域分块：`vm.js` 全量，concat 字节恒等）。
-pub const SOURCE: &str = include_str!("vm.js");
+pub const SOURCE: &str = concat!(
+    include_str!("vm.js"),
+    include_str!("vm_modules.js"),
+);

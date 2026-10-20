@@ -8,7 +8,8 @@
 //! - `inspect` 为务实重写（非 3000 行逐字）：支持 depth/circular/customInspect/
 //!   getters/maxArrayLength/maxStringLength/类型形状（数组洞/Map/Set/TypedArray/
 //!   Date/RegExp/Error/函数/类名/`[Symbol]` 键），**不做 breakLength 换行**
-//!   （恒单行）、Promise 恒 `<pending>`（无 JS 内态 API）、ArrayBuffer 不打
+//!   （恒单行）、Promise 结算态经 `__wjs2_promise_state/result` 展开（fulfilled
+//!   展值、rejected 标 `<rejected>`、pending 保形）、ArrayBuffer 不打
 //!   `[Uint8Contents]`、numericSeparator 恒关、showProxy/showHidden 忽略。
 //! - 颜色支持仅存接口（`stylizeNoColor` 恒等；colors 选项忽略），错误消息路径
 //!   全部无色，与 9a 断言无交。
@@ -431,7 +432,14 @@ function inspect2(value, ctx, depth, seen) {
       }
       return `[${getFunctionPrefix(value)}${name}]`;
     }
-    if (value instanceof Promise) return 'Promise { <pending> }'; // 偏差：无内态 API
+    if (value instanceof Promise) return formatSettledPromise(value, ctx, depth, seen); // 结算态经 native 内态 API
+    if (typeof globalThis.__wjs2_promise_state === 'function') {
+      // 跨 compartment 的 CCW promise（`instanceof` 恒 false，§4.57）：按
+      // toStringTag 认领后读内态（vm evaluate 跨域 completion 显示用）。
+      let isP = false;
+      try { isP = Object.prototype.toString.call(value) === '[object Promise]'; } catch { isP = false; }
+      if (isP) return formatSettledPromise(value, ctx, depth, seen);
+    }
     if (value instanceof Map) {
       const entries = [];
       let i = 0;
@@ -522,6 +530,21 @@ function inspect2(value, ctx, depth, seen) {
   } finally {
     seen.pop();
   }
+}
+
+// Promise 显示（真机 26.8.1：fulfilled 展值 `Promise { v }`、rejected 标
+// `<rejected>`、pending 保形；内态经 `__wjs2_promise_state/result`，失败回落 pending）。
+function formatSettledPromise(value, ctx, depth, seen) {
+  let st = -1;
+  try { st = globalThis.__wjs2_promise_state(value); } catch { st = -1; }
+  if (st === 1) {
+    try {
+      const r = globalThis.__wjs2_promise_result(value);
+      return `Promise { ${inspect2(r, ctx, depth - 1, seen)} }`;
+    } catch { return 'Promise { <pending> }'; }
+  }
+  if (st === 2) return 'Promise { <rejected> }';
+  return 'Promise { <pending> }';
 }
 
 function inspect(value, options) {

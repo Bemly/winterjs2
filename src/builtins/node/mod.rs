@@ -80,6 +80,7 @@ pub mod util_types;
 pub mod url;
 pub mod v8;
 pub mod vm;
+pub mod vm_module;
 mod vm_error;
 pub mod worker;
 mod worker_messaging;

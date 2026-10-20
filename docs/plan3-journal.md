@@ -1519,3 +1519,11 @@ G1/G2/G3/G9 已收官。）
 - 机器：12 核/16G/盘 76G 余；lane target 实测 ~8G（master 24G 含 test/bench 工件）；首编 6 分钟。lane 上限：磁盘约 5 道 + 主仓。
 - 拓扑：lane/https-verify（tls SNI/校验簇，复用 WIP）+ lane/http2-c2（compat 壳）+ lane/https-misc（https 散件）+ lane/vm-triage（vm 49 件 triage）+ lane/whatwg（whatwg 40 + 小域）+ 主仓（合流/协调/B bound 落字）。
 - 铁律增补（§4.142 禁令用户特批解除）：worktree per lane 独立 target；file-set 互斥（https.rs 归 L1 Agent 面、L4 只读）；plan3/journal 只主仓写；lane 只 commit 不 push 不合流；首编错峰（CARGO_BUILD_JOBS=3 + 随机 jitter）；禁全量 test/sweep（只域套件 + 自家黑盒）。
+
+## 2026-10-20 wave-1 五道合流（+51 件）
+
+- lane/whatwg（19 件转绿）：USP 品牌/缺参/lone-surrogate FFFD/双问号/迭代器品牌+tag；URL 无参/品牌文案/toStringTag/属性可枚举/host:port 切分；Events null-flatten/被动门/signal 校验/handleEager；TextDecoder fatal 文案/ASCII-trim/NUL 安全/大写规范；MIME parse+全 fixture 952 对拍；TES/TDS 缺失补齐；structuredClone 遇 stream 即 DataCloneError(25)；BYOB coded 错误/start 竞速/pull 续进/close 后可用；fs file-URL 中央校验。另：mime.js 按方法边界拆分（1000 行门，字节恒等）。
+- lane/https-verify（checkServerIdentity 转绿 + servername/sni `''` 形）：裁决先于冲刷（预连写在 base `__ev` 前执行 CSI，失败即销毁弃置 srv 字节）；服务端无 SNI 即 `servername=false`；补回 WIP 误删的 wrap 面 verifyErr。sni.N 系 webpki 拒全数字尾标签（rustls 无 raw-SNI，引擎墙）；create-connection 系并发抢跑（framing 域另案）；additional-options 系 node 自挂 + agent 级 free 未转发。
+- lane/http2-c2（compat 壳 10/18）：客户端 destroy 语义三修 + 服务端 expect/CONNECT 路由两修 + 校验面（link/socket 背书）+ Rust 头到即 response/增量 data/Close 清任务。余 8 件三类 bound：interim 系×4（hyper 单 HEADERS 无 interim API）、serverresponse-end HEAD 块（`NetCmd::H2Respond.end_stream` 一字段，net.rs）、early-hints×2（码形已 exact，卡 `__ev` 抛错到 uncaughtException 的 runtime 投递）、createpushresponse 成功路（push bound，错误双路径已 exact）。
+- lane/https-misc（close-idle/host-headers/keep-alive-drop/client-get-url 转绿 + http close-idle 附带）：setHost Boolean 归一；超额管线 503 走正常响应管线；半截头连接非空闲；已关 server 再 close 回 `ERR_SERVER_NOT_RUNNING`；`NODE_TLS_REJECT_UNAUTHORIZED=0` 缺省 + Host→servername 归一。N1-N4 移交 wave-2（见下）。
+- 合流验证：builtins 40/40、events 10/10、stream 12/12、util 9/9、worker 17/17、tls 8/8、http2 12/12、https 6/6、http 36/36；W1/USP/H1 回归抽查绿；worker:: 一次 flaky（4.275 家族，复跑绿，记一笔）。

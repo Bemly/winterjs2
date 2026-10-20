@@ -195,3 +195,17 @@
 - 根因：直投只认目标 inbox，不认派生链（node 系全线程直达主）。
 - 修法：dest 标签 + 派生链上转（worker→worker 直投保留，主 0 号走 `worker_main_inbox`）。
 - 推广铁律：**树形路由带 dest 标签**——中转节点只认标签不认亲缘。
+
+### 4.288 `defineProperty` 部分描述符保留可枚举性（2026-10-20，whatwg lane）
+
+- 症状：for-in 顺序/可枚举断言红——已删后重建仍不可枚举。
+- 根因：`{...oldDesc, enumerable: true}` 写法只在记得传时才对；部分调用漏传即沿用旧值。
+- 修法：凡重建必显式 `enumerable: false/true`，禁依赖展开继承。
+- 推广铁律：**描述符重建逐项显式**——展开即默认沿用，审计时按"缺项即 bug"查。
+
+### 4.289 跨 compartment 取 `this.href` 走原型链误品牌（2026-10-20，whatwg lane）
+
+- 症状：`toString` 内读 `this.href` 未触发品牌门（undefined 接收者漏检）。
+- 根因：访问器经原型链命中，`this` 合法即过，绕过自有槽检查。
+- 修法：品牌门读内部槽（`__wjs2_urlBrandRecv`），不用派生属性。
+- 推广铁律：**品牌检查认槽不认链**——凡 `Object.create` 派生可达的面（§4.23 家族），门必须直读内部槽。

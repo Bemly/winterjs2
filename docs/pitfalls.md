@@ -250,6 +250,8 @@
 - 4.285 真机 `close()` 语义三态（2026-10-20，W1）
 - 4.286 转移端口自匹配 `Route::Local` 成环（2026-10-20，worker-messaging lane）
 - 4.287 孙线程发主误投父线程（2026-10-20，worker-messaging lane）
+- 4.288 `defineProperty` 部分描述符保留可枚举性（2026-10-20，whatwg lane）
+- 4.289 跨 compartment 取 `this.href` 走原型链误品牌（2026-10-20，whatwg lane）
 
 ## 条目
 

@@ -147,9 +147,11 @@ console.log("bufcase", (() => { try { g.getPrime("BUFFER"); return false; } catc
 try { generateKeyPairSync("dh"); console.log("dhnoopt", false); } catch (e) { console.log("dhnoopt", e.code === "ERR_INVALID_ARG_TYPE"); }
 try { generateKeyPairSync("dh", { group: "nope" }); console.log("dhgrp", false); } catch (e) { console.log("dhgrp", e.code === "ERR_CRYPTO_UNKNOWN_DH_GROUP" && e.message === "Unknown DH group"); }
 try { generateKeyPairSync("dh", {}); console.log("dhmiss", false); } catch (e) { console.log("dhmiss", e.code === "ERR_MISSING_OPTION"); }
+const dhkp = generateKeyPairSync("dh", { group: "modp14" });
+console.log("dhdet", JSON.stringify(dhkp.publicKey.asymmetricKeyDetails) === "{}");
 "#,
     );
-    for tag in ["consts", "f17", "f23g23", "f23g2", "badgen", "gverr", "small", "large", "keyenc", "bufcase", "dhnoopt", "dhgrp", "dhmiss"] {
+    for tag in ["consts", "f17", "f23g23", "f23g2", "badgen", "gverr", "small", "large", "keyenc", "bufcase", "dhnoopt", "dhgrp", "dhmiss", "dhdet"] {
         assert!(out.contains(&format!("{tag} true")), "out: {out}");
     }
     dir.close().unwrap();

@@ -112,6 +112,40 @@ function __legacyCert(b64) {
     return { raw };
   }
 }
+// node getPeerCertificate(true)：issuerCertificate 链含信任锚——末级签发者落本端 ca 集即补齐，根自链。
+// （DN 比较经 X509Certificate 字符串形；toLegacyObject 的 subject/issuer 在本实现为对象，不可直比。）
+function __linkTrustAnchor(certs, mo) {
+  const last = certs[certs.length - 1];
+  if (!last || !last.raw) return;
+  try {
+    const { X509Certificate } = globalThis.require("node:crypto");
+    const lastX = new X509Certificate(last.raw);
+    if (typeof lastX.issuer !== "string" || typeof lastX.subject !== "string") return;
+    if (lastX.issuer === lastX.subject) return; // 自签即末级
+    for (const c of certs) {
+      if (c === last || !c.raw) continue;
+      try {
+        if (new X509Certificate(c.raw).subject === lastX.issuer) return; // 链内已有
+      } catch { /* 坏块跳过 */ }
+    }
+    const sc = mo.secureContext?.context ?? null;
+    const caPem = sc !== null
+      ? __pemOf(sc.ca)
+      : (__pemOf(mo.ca) ?? (__defaultCA !== null ? __defaultCA.join("\n") : undefined));
+    if (caPem === undefined) return;
+    for (const p of String(caPem).split(/(?=-----BEGIN CERTIFICATE-----)/)) {
+      if (!p.trim()) continue;
+      let x;
+      try { x = new X509Certificate(p); } catch { continue; }
+      if (x.subject === lastX.issuer) {
+        const leg = x.toLegacyObject();
+        leg.raw = Buffer.from(x.raw);
+        certs.push(leg);
+        return;
+      }
+    }
+  } catch { /* 解析失败即维持自链 */ }
+}
 
 class TLSSocket extends Socket {
   constructor(socket, options) {
@@ -385,7 +419,9 @@ class TLSSocket extends Socket {
       }
       if (sc === undefined) sc = this._sharedCreds?.context ?? {};
       const key = __pemOf(sc.key);
-      const cert = __pemOf(sc.cert);
+      // node：服务端出示链 = cert + ca（extra chain；中间证书经 ca 送达客户端）。
+      const cert0 = __pemOf(sc.cert), extra0 = __pemOf(sc.ca);
+      const cert = cert0 !== undefined && extra0 !== undefined ? cert0 + "\n" + extra0 : cert0;
       if (key !== undefined) wire.key = key;
       if (cert !== undefined) wire.cert = cert;
       if (typeof mo.SNICallback === "function") this.__SNICB = mo.SNICallback;
@@ -572,6 +608,7 @@ class TLSSocket extends Socket {
     if (chain.length === 0) return {};
     const certs = chain.map(__legacyCert);
     if (detailed) {
+      __linkTrustAnchor(certs, this.__wrapOpts ?? this.__tlsOpts ?? {});
       for (let i = 0; i < certs.length; i++) certs[i].issuerCertificate = certs[i + 1] ?? certs[i];
     }
     return certs[0];
@@ -821,9 +858,11 @@ class Server extends EventEmitter {
     });
     const sc = options.secureContext?.context ?? this._sharedCreds.context;
     const key = __pemOf(sc.key);
-    const cert = __pemOf(sc.cert);
+    // node：服务端出示链 = cert + ca（extra chain；中间证书经 ca 送达客户端）。
+    const cert0 = __pemOf(sc.cert), extra = __pemOf(sc.ca);
+    const cert = cert0 !== undefined && extra !== undefined ? cert0 + "\n" + extra : cert0;
     // node：key/cert 可缺（握手时无证书可出示 → tlsClientError）。
-    this.__tlsOpts = key !== undefined && cert !== undefined ? { key, cert } : {};
+    this.__tlsOpts = key !== undefined && cert0 !== undefined ? { key, cert } : {};
   }
   getTicketKeys() { return this._sharedCreds.context.getTicketKeys(); }
   setTicketKeys(keys) {

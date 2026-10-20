@@ -924,3 +924,35 @@ class Http2Session extends EventEmitter {
     }
   }
 }
+
+// ── Duplex 通道桥（proxy-over-h2：会话跑在用户 Duplex 上）──────────────────
+// node createConnection/connectionListener-stream 口径：duplex data →
+// native_data(id, b64)；duplex end/close → native_close(id)；native 侧
+// adoptData 事件经调用方 __ev 落 writeOut。隧道归用户所有，会话终结不碰
+// duplex（显式收尾/会话关负责）。全事件驱动，无轮询。
+function __h2BridgeDuplex(target, duplex, id, toNative, nativeClose, writeOut) {
+  const bridge = {
+    write(b64) {
+      if (!duplex || duplex.destroyed) return;
+      try {
+        // 隧道字节绕过流写门（CONNECT 应答后 duplex.write 即 WRITE_AFTER_END）：
+        // 调用方直传 writeOut（native data 直发外层流）。
+        if (typeof writeOut === "function") writeOut(b64);
+        else duplex.write(Buffer.from(__b64dec(b64)));
+      } catch {}
+    },
+  };
+  try {
+    duplex.on("data", (chunk) => {
+      try {
+        // isView 跨 compartment 安全（§4.57）。
+        const u8 = ArrayBuffer.isView(chunk) ? chunk : Buffer.from(String(chunk));
+        toNative(id, __b64enc(u8));
+      } catch {}
+    });
+    const bye = () => { try { nativeClose(id); } catch {} };
+    duplex.once("close", bye);
+    duplex.once("end", bye);
+  } catch {}
+  return bridge;
+}

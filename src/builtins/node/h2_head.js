@@ -416,6 +416,8 @@ function __mkSessionSocket(session, peerObj, localObj) {
     sock.destroyed = true;
     if (err) sock.emit("error", err);
     session.destroy();
+    // node：会话销毁后 socket 发 'close'（server-socket-destroy 套件点名）。
+    queueMicrotask(() => sock.emit("close"));
   };
   sock.end = () => { session.close(); return sock; };
   sock.write = () => true;
@@ -573,6 +575,9 @@ class Http2Session extends EventEmitter {
       deflateDynamicTableSize: 4096,
       inflateDynamicTableSize: 4096,
     };
+    // node core.js：会话构造即绑 kSocket（server-socket-destroy 套件直探
+    // session[kSocket]，懒 getter 在直接访问时给 undefined）。
+    this[kSocket] = __mkSessionSocket(this, this.__peer, server.__listening);
     this.__ev = this.__ev.bind(this);
   }
   get socket() {
@@ -791,7 +796,14 @@ class Http2Session extends EventEmitter {
     if (typeof cb === "function") this.once("close", cb);
     if (this.destroyed) return this;
     this.destroyed = true;
-    this.close();
+    // 不经 close() 委派——close 在 destroyed 置位后直接返回，
+    // 连接永不拆除（server-socket-destroy 套件：destroy 即无声）。
+    this.closed = true;
+    if (this.__conn) {
+      __wjs2_net_destroy(this.__conn);
+    } else {
+      setImmediate(() => this.__finish());
+    }
     return this;
   }
   __finish() {

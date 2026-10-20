@@ -1,7 +1,6 @@
 const kPendingOptions = Symbol("options");
 
 // ── 客户端 ──────────────────────────────────────────────────────────────
-const __DEFERRED_METHODS = new Set(["POST", "PUT", "PATCH"]);
 class ClientHttp2Stream extends Duplex {
   constructor(session, id, headers, options) {
     super();
@@ -13,7 +12,6 @@ class ClientHttp2Stream extends Duplex {
     this.__ended = false;
     this.aborted = false;
     this.__opened = false;
-    this.__deferred = __DEFERRED_METHODS.has(String(headers[":method"]));
     this.__waitTrailers = !!(options && options.waitForTrailers);
     this.__pendingBody = [];
     this.endAfterHeaders = false;
@@ -46,8 +44,7 @@ class ClientHttp2Stream extends Duplex {
     __clientOpenNow(this, extraBody, streaming);
   }
   _write(chunk, encoding, cb) {
-    // 流式上传（cancel-while-client-reading）：首 write 微任务后开流
-    // （同 tick 内 end() 即仍走单发，避免回归）；已开流即直发块。
+    // 已开流直发块；悬置期缓冲（connect 冲刷）；单发流写即错。
     if (this.__ended || (!this.__streaming && this.__opened)) {
       cb(__code("ERR_STREAM_WRITE_AFTER_END"));
       return;
@@ -63,29 +60,33 @@ class ClientHttp2Stream extends Duplex {
       return;
     }
     this.__pendingBody.push(u8);
-    if (!this.__openScheduled) {
-      this.__openScheduled = true;
-      queueMicrotask(() => {
-        this.__openScheduled = false;
-        // end() 同 tick 已开单发（__opened）或已销毁：此分支空转。
-        if (!this.__opened && !this.destroyed) this.__openNow(null, true);
-      });
-    }
     queueMicrotask(cb);
   }
   _final(cb) {
-    this.__openScheduled = false;
     this.__ended = true;
     if (!this.__opened) {
       this.__openNow(null);
-    } else if (this.__streaming && this.__session?.__id && !this.__waitTrailers) {
-      // 流式上传收尾：END_STREAM 出线（空 trailers 即干净 END）。
-      // waitForTrailers 不在此收：sendTrailers 经 H2OpenTrailers 收尾，
-      // 先 End 会把 trailers 锁在门外（trailers 套件）。
-      try {
-        __wjs2_h2_end(this.__session.__id, this.id, "[]");
-      } catch {
-        this.__detachFromSession();
+    } else if (this.__streaming) {
+      // 流式收尾：余块刷出 + END（waitTrailers 由 sendTrailers 收尾，此处跳过）。
+      if (this.__pendingBody.length > 0) {
+        let total = 0;
+        for (const b of this.__pendingBody) total += b.length;
+        const flat = new Uint8Array(total);
+        let off = 0;
+        for (const b of this.__pendingBody) { flat.set(b, off); off += b.length; }
+        this.__pendingBody = [];
+        try {
+          __wjs2_h2_data(this.__session.__id, this.id, __b64enc(flat));
+        } catch {
+          this.__detachFromSession();
+        }
+      }
+      if (!this.__waitTrailers && this.__session?.__id) {
+        try {
+          __wjs2_h2_end(this.__session.__id, this.id, "[]");
+        } catch {
+          this.__detachFromSession();
+        }
       }
     }
     cb();
@@ -124,19 +125,19 @@ class ClientHttp2Stream extends Duplex {
   }
   __onAborted(rstCode) {
     if (this.aborted) return;
-    // node：session destroy 路径的流 'aborted' 事件发出但 aborted 属性
-    // 保持 false（aborted 属性 = 对端 RST 中断语义；client-destroy 套件）；
-    // 对端 RST 则 aborted 置 true。
+    // node：会话销毁只发 aborted 不带 error（destroy 探针：aborted + close）；
+    // aborted 属性仅对端 RST 中断置 true（client-destroy 套件）；带码按码错误。
     const n = Number(rstCode);
     const hasCode = Number.isInteger(n) && (rstCode !== undefined && rstCode !== null && rstCode !== "");
-    if (hasCode) this.aborted = true;
+    const err = hasCode ? __h2RstError(n) : undefined;
+    if (hasCode && n !== 0) {
+      this.aborted = true;
+      this.rstCode = n;
+    }
     this.emit("aborted");
     this.push(null);
-    // 对端 RST 带码（wire 窥探）→ 按码错误；会话收尾（空码）→ 沿用 CANCEL。
-    const err = (hasCode ? __h2RstError(n) : undefined) ??
-      __code("ERR_HTTP2_STREAM_CANCEL");
-    if (hasCode && n !== 0) this.rstCode = n;
-    this.destroy(err);
+    if (err !== undefined) this.destroy(err);
+    else this.destroy();
   }
   priority(options) {
     __h2PriorityDeprecate();
@@ -166,8 +167,7 @@ class ClientHttp2Stream extends Duplex {
       this.__ended = true;
       const rstErr = __h2RstError(code);
       if (rstErr !== undefined) {
-        // node：非零非 CANCEL 的 close 码即本地流错误（error 先于 close；
-        // stream-destroy-event-order 真机：close(2) → error + close）。
+        // 非零非 CANCEL 的 close 码即本地流错误（error 先于 close）。
         this.rstCode = code;
         this.emit("error", rstErr);
       } else if ((code ?? 0) !== 0) {
@@ -230,6 +230,9 @@ class ClientHttp2Session extends EventEmitter {
     this.__id = 0;
     this.__seq = 1;
     this.__streams = new Map();
+    // 已终结流 tombstone：迟到重复终点静默丢弃，禁回落会话 error
+    //（server-socket-destroy：conn 收尾与任务错误乱序致会话级 fatal）。
+    this.__goneStreams = new Set();
     this.__authority = authority;
     this.__options = options ?? {};
     this.destroyed = false;
@@ -470,7 +473,7 @@ class ClientHttp2Session extends EventEmitter {
           this[kSocket].connecting = false;
           queueMicrotask(() => this[kSocket].emit("connect"));
         }
-        for (const pst of this.__pendingOpens.splice(0)) pst.__openNow(null);
+        for (const pst of this.__pendingOpens.splice(0)) pst.__openNow(null, !pst.__endStream);
         this.emit("connect", this, null);
         break;
       case "remoteSettings": {
@@ -522,6 +525,7 @@ class ClientHttp2Session extends EventEmitter {
         if (!st) break;
         st.__onEnd();
         this.__streams.delete(sid);
+        this.__goneStreams.add(sid);
         break;
       }
       case "aborted": {
@@ -531,6 +535,7 @@ class ClientHttp2Session extends EventEmitter {
         if (!st) break;
         st.__onAborted(o.payload);
         this.__streams.delete(sid);
+        this.__goneStreams.add(sid);
         break;
       }
       case "error": {
@@ -546,9 +551,18 @@ class ClientHttp2Session extends EventEmitter {
           // 否则 close 永不到，fd-invalid 类套件挂死）。无监听器回落会话
           //（旧口径保留，error-order 系套件依赖）。
           if (inner.rst !== undefined && inner.rst !== null) st.rstCode = Number(inner.rst);
+          // 传输层死亡先 'aborted' 后 error（server-socket-destroy 探针序）。
+          if (inner.code === "ECONNRESET" && !st.aborted) {
+            st.aborted = true;
+            st.emit("aborted");
+          }
           if (st.listenerCount("error") > 0) st.emit("error", err);
           else this.emit("error", err);
           st.destroy();
+          this.__goneStreams.add(sid);
+        } else if (sid !== undefined && this.__goneStreams.has(sid)) {
+          // 迟到重复终点：静默丢弃（见 aborted 注）。
+          break;
         } else {
           this.emit("error", err);
         }
@@ -647,18 +661,16 @@ class ClientHttp2Session extends EventEmitter {
         st.once("close", () => disposable[Symbol.dispose]());
       }
     }
-    if (!st.__deferred) {
-      // node isPayloadMeaningless：GET/HEAD/DELETE 缺省 endStream=true → 可写侧即尽，
-      // 收完应答流即 'close'（修前可写侧悬着，req 'close' 永不到）。
-      // 意图记流上，open 时带给 native 定 HEADERS 是否带 END_STREAM
-      //（endafterheaders 套件：GET 随头 fin，POST 分开）——先记再开。
-      const m = String(st.sentHeaders[":method"]);
-      const endStream = options?.endStream ?? (m === "GET" || m === "HEAD" || m === "DELETE");
-      st.__endStream = endStream;
-      if (this.connecting && !this.closed) this.__pendingOpens.push(st);
-      else st.__openNow(null);
-      if (endStream) st.end();
-    }
+    // node：request 即开流（HEADERS 即时出线；POST 等体随写随走、
+    // 收尾随 end）。endStream（GET/HEAD/DELETE 缺省、显式选项）单发
+    // 随头 fin；余者流式（首块随头、后块增量、END 随 end）。
+    //（旧 deferred 攒包到 end 才开流，无 end 的上传永不开——server-socket-destroy。）
+    const m = String(st.sentHeaders[":method"]);
+    const endStream = options?.endStream ?? (m === "GET" || m === "HEAD" || m === "DELETE");
+    st.__endStream = endStream;
+    if (this.connecting && !this.closed) this.__pendingOpens.push(st);
+    else st.__openNow(null, !endStream);
+    if (endStream) st.end();
     return st;
   }
   // node：client.close() 优雅关（GOAWAY）：新流被拒、已收到应答的流继续、

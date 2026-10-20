@@ -364,7 +364,10 @@ async fn drive_session<S>(
                                             open2.lock().unwrap().insert(stream_id, true);
                                         }
                                         Some((e, rst)) => {
-                                            // NO_ERROR 干净收尾按子串判，其余按流错误上报
+                                            // NO_ERROR 干净收尾按子串判；h2 原因码按流错误上报；
+                                            // 无原因码的传输层死亡（server socket destroy 等）→
+                                            // node 口径 ECONNRESET（server-socket-destroy
+                                            // 套件：ECONNRESET 或无错，二者皆允）。
                                             if e.contains("NO_ERROR") {
                                                 let _ = ev2.send(NetEvent {
                                                     id,
@@ -375,7 +378,7 @@ async fn drive_session<S>(
                                                     },
                                                 });
                                                 open2.lock().unwrap().insert(stream_id, true);
-                                            } else {
+                                            } else if rst.is_some() {
                                                 let _ = ev2.send(NetEvent {
                                                     id,
                                                     kind: NetKind::H2Stream {
@@ -385,6 +388,20 @@ async fn drive_session<S>(
                                                             "code": "ERR_HTTP2_STREAM_ERROR",
                                                             "msg": e,
                                                             "rst": rst,
+                                                        })
+                                                        .to_string(),
+                                                    },
+                                                });
+                                                open2.lock().unwrap().insert(stream_id, true);
+                                            } else {
+                                                let _ = ev2.send(NetEvent {
+                                                    id,
+                                                    kind: NetKind::H2Stream {
+                                                        stream_id,
+                                                        what: "error".into(),
+                                                        payload: serde_json::json!({
+                                                            "code": "ECONNRESET",
+                                                            "msg": "connection reset by peer",
                                                         })
                                                         .to_string(),
                                                     },

@@ -2803,3 +2803,19 @@ G1/G2/G3/G9 已收官。）
   双守门绿（含 `split-js` 切 net_socket_ev.js 280 行 + OnceLock 退 struct 字段）。
 
 
+
+## 2026-10-21 crypto 41 件探针定级（base19b 口径，lane/console；只探针不定码）
+
+> 范围：base19b 非 SAME1 的 test-crypto* 41 件（40 DIFF/TIMEOUT + webcrypto-aes 一件）。
+> 真机 node 26.8.1 逐件实测：37 绿、3 自红（aes-wrap/getcipherinfo/hmac）、
+> x509 真机 SIGSEGV（-11，node 自崩，语义取 lib 原文）。
+> 我方（二进制=bcce48e）：5 绿（上 3 + keygen-async-dsa×2 本地快过，sweep 侧 TIMEOUT 系环境抖动，标观察），36 红。
+> 铁律先行：4.43（lock：digest 0.10.7+0.11.3 双轨、sha2 0.10.9+0.11.0、rsa 0.9.10、hmac 0.13；argon2 0.6/ml-kem 0.3/ml-dsa 0.1.1 均已入库，用户已点头——PQC/argon2 走接线不算新依赖；仅 slh-dsa 与 p224/p192 缺件）、4.54（试解看 OID，交叉必双向）、4.135（手组密码学双向真机交叉，自交绿不算数）。
+>
+> 定级（修/偏离/维持）：
+> - 维持（node 自红，我方按套件绿，不跟）：aes-wrap、getcipherinfo、hmac。
+> - 观察（本地绿、sweep 抖）：keygen-async-dsa×2（慢 keygen，base19c 复验）。
+> - 修小（校验码/文案/小面，预计一批）：oneshot-hash（outputEncoding 码）、pbkdf2/prime（长度码）、keygen/random（invalidArgTypeHelper 文案）、dh.js（encoding buffer）、dh-curves（verifyError 形）、webcrypto-aes-tag（OperationError 名）、ecdh-setpublickey-deprecation（DEP0031）、sign-verify（library getter 读取序）、sec-level（internal/crypto/util 常量面）。
+> - 修中（需动手 + 双向交叉钉向量）：dh-generate-keys（重生成语义）、dh-padding（值）、dh-classic/keygen-dh（classic DH）、ecdh-convert-key（缺 API）、eddsa-variants（向量+导入；先对 RFC8032 逐字节）、psychic-signatures（长度门，4.55 姊妹）、keygen-bit-length（DSA-1024，node 实测支持）、certificate（verifySpkac）、x509（internal/crypto/x509 类面；x509 底座已有）、keyobject-clone-transfer（clone 语义待查）、publicDecrypt（PBES2 密码名映射）、crypto-stream 等 4 件 pipe（Hash/Cipher 接 Stream）、domain（BAM 透传）、subtle-cross-realm（跨域 brand 按 isView + assert.partialDeepStrictEqual 补件）、argon2（binding 接线，crate 已有）、pqc 三件（ml-dsa/ml-kem crate 已有；仅 slh 除外）、keygen-raw（除 slh 部分）、worker-thread c-4（先查 c-4 缺口大小再定批）。
+> - 偏离（不动）：slh-dsa 两件（需新 crate，§0.5 先问）、key-objects:1154（非 NIST 曲线能力，4.135 坑七已记，需 p224/p192 轮子）。
+> - 备注：41 件全在 Bun 范围内；Bun 直跑仍被 common global-leak 守卫挡（沿用 readline 轮结论）。

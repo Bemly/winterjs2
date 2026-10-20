@@ -252,6 +252,17 @@
 - 4.287 孙线程发主误投父线程（2026-10-20，worker-messaging lane）
 - 4.288 `defineProperty` 部分描述符保留可枚举性（2026-10-20，whatwg lane）
 - 4.289 跨 compartment 取 `this.href` 走原型链误品牌（2026-10-20，whatwg lane）
+- 4.300 超时孤儿排空原地 rearm 全杀兄弟 job（2026-10-20，vm lane）
+- 4.301 跨 compartment 恒等必须统一包装（2026-10-20，vm lane）
+- 4.302 global 免包装（2026-10-20，vm lane）
+- 4.303 `Rooted<Vec<T>>::as_ptr` 拿到的是 Vec 头（2026-10-20，vm lane）
+- 4.304 引擎 cast 不做类型守卫（2026-10-20，vm lane）
+- 4.305 引擎清模块 ScriptSlot（2026-10-20，vm lane）
+- 4.306 动态 import hook 行列恒 0（2026-10-20，vm lane）
+- 4.307 vm 模块求值缺 sandbox 同步（2026-10-20，vm lane）
+- 4.308 import `with` 非 `type` 键 SM 直接拒收（2026-10-20，vm lane）
+- 4.309 prelude 块级 function 经 Annex B 漏全局（2026-10-20，vm lane）
+- 4.310 unhandledRejection 投递形状（2026-10-20，vm lane）
 
 ## 条目
 
@@ -263,7 +274,7 @@
 - `docs/pitfalls-03.md`：4.125–4.169（45 条）
 - `docs/pitfalls-04.md`：4.170–4.205（36 条）
 - `docs/pitfalls-05.md`：4.206–4.264（60 条）
-- `docs/pitfalls-06.md`：4.265–4.277（13 条）
+- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310（24 条）
 
 > 新坑：主索引追一行 + 正文追到末卷（当前 `docs/pitfalls-06.md`）末尾。
 

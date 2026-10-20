@@ -95,8 +95,8 @@ setTimeout(() => console.log("end-ok"), 1500);
         ),
     );
     assert!(out.contains("badkey ERR_OSSL_UNSUPPORTED error:1E08010C:DECODER routines::unsupported"), "out: {out}");
-    // 真机为 DEPTH_ZERO_SELF_SIGNED_CERT（rustls 统报 UnknownIssuer，自签/缺签发者不分——记档）。
-    assert!(out.contains("selfsign UNABLE_TO_VERIFY_LEAF_SIGNATURE true"), "out: {out}");
+    // 真机 DEPTH_ZERO_SELF_SIGNED_CERT（自签 depth-0 终结；真机对拍 strict-probe QB/QC）。
+    assert!(out.contains("selfsign DEPTH_ZERO_SELF_SIGNED_CERT true"), "out: {out}");
     assert!(out.contains("refused string true"), "out: {out}");
     assert!(out.contains("srv-close"), "out: {out}");
     assert!(out.contains("end-ok"), "out: {out}");
@@ -420,11 +420,146 @@ setTimeout(() => console.log("end-ok"), 2500);
 "#
         ),
     );
-    assert!(out.contains("untrusted UNABLE_TO_VERIFY_LEAF_SIGNATURE srvbytes 0"), "out: {out}");
+    assert!(out.contains("untrusted DEPTH_ZERO_SELF_SIGNED_CERT srvbytes 0"), "out: {out}");
     assert!(out.contains("csi-pass true null"), "out: {out}");
     assert!(out.contains("echo echo:hi srvbytes 2"), "out: {out}");
     assert!(out.contains("csi-fail nope false srvbytes 2 delta 0"), "out: {out}");
     assert!(out.contains("srv-close"), "out: {out}");
     assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+/// rcgen CA 双套 + 无 SAN 终端证书（CN=leaf.test，node agent1 形）+ 自签证书（hermetic）。
+fn write_ca_no_san_leaf(dir: &assert_fs::TempDir) -> (String, String, String, String, String, String) {
+    fn mk_ca(cn: &str) -> rcgen::CertifiedIssuer<'static, rcgen::KeyPair> {
+        let mut p = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        p.distinguished_name.push(rcgen::DnType::CommonName, cn);
+        let k = rcgen::KeyPair::generate().unwrap();
+        rcgen::CertifiedIssuer::self_signed(p, k).unwrap()
+    }
+    fn put(dir: &assert_fs::TempDir, name: &str, content: &str) -> String {
+        let p = dir.path().join(name);
+        std::fs::write(&p, content).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+    let ca = mk_ca("wjs-verify-ca");
+    let ca2 = mk_ca("wjs-verify-ca2");
+    let mut leaf_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    leaf_params.distinguished_name.push(rcgen::DnType::CommonName, "leaf.test");
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let leaf_key_pem = leaf_key.serialize_pem();
+    let leaf = rcgen::CertifiedIssuer::signed_by(leaf_params, leaf_key, &ca).unwrap();
+    let ss = rcgen::generate_simple_self_signed(vec!["leaf.test".to_string()]).unwrap();
+    (
+        put(dir, "ca.pem", &ca.pem()),
+        put(dir, "ca2.pem", &ca2.pem()),
+        put(dir, "leaf-key.pem", &leaf_key_pem),
+        put(dir, "leaf-cert.pem", &leaf.pem()),
+        put(dir, "ss-key.pem", &ss.signing_key.serialize_pem()),
+        put(dir, "ss-cert.pem", &ss.cert.pem()),
+    )
+}
+
+#[test]
+fn tls_cert_verify_names_and_self_signed() {
+    // node 校验三码（真机 test-https-strict 全断言 + strict-probe QA/QB/QC2 对拍）：
+    // v3 无 SAN 证书 CN 回落（对上放行/错位 ALTNAME）、错 CA 链错 UNABLE、
+    // 自签 depth-0 终结 DEPTH_ZERO（名对错/存活硬失败皆此码）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (ca_p, ca2_p, lk_p, lc_p, sk_p, sc_p) = write_ca_no_san_leaf(&dir);
+    let out = run_fs_file(
+        &dir,
+        "v.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const ca = fs.readFileSync("{ca_p}", "utf8");
+const ca2 = fs.readFileSync("{ca2_p}", "utf8");
+const leafKey = fs.readFileSync("{lk_p}", "utf8");
+const leafCert = fs.readFileSync("{lc_p}", "utf8");
+const ssKey = fs.readFileSync("{sk_p}", "utf8");
+const ssCert = fs.readFileSync("{sc_p}", "utf8");
+const srv = tls.createServer({{ key: leafKey, cert: leafCert }}, (s) => {{
+  s.on("data", (c) => s.write("ok:" + c));
+  s.on("error", () => {{}});
+}});
+srv.listen(0, "127.0.0.1", () => {{
+  const port = srv.address().port;
+  // 正常：无 SAN + CN 对上 → 授权通过（真机 val1 形）。
+  const a = tls.connect({{ port, host: "127.0.0.1", servername: "leaf.test", ca, rejectUnauthorized: false }}, () => {{
+    console.log("match", a.authorized, a.authorizationError);
+    a.end();
+  }});
+  a.on("error", () => {{}});
+  a.on("close", () => {{
+    // 报错：名错位 → ALTNAME（连接存活，reject=false；真机 inv1 形）。
+    const b = tls.connect({{ port, host: "127.0.0.1", servername: "other.test", ca, rejectUnauthorized: false }}, () => {{
+      console.log("mismatch", b.authorized, b.authorizationError);
+      b.end();
+    }});
+    b.on("error", () => {{}});
+    b.on("close", () => {{
+      // 报错：错 CA → UNABLE（真机 inv1-ca2 形）。
+      const c = tls.connect({{ port, host: "127.0.0.1", servername: "leaf.test", ca: ca2, rejectUnauthorized: false }}, () => {{
+        console.log("wrongca", c.authorized, c.authorizationError);
+        c.end();
+      }});
+      c.on("error", () => {{}});
+      c.on("close", () => {{
+        // 报错：缺省 reject + 名错位 → 硬失败 ALTNAME（真机 inv1-ca1 硬失败形）。
+        const d = tls.connect({{ port, host: "127.0.0.1", servername: "other.test", ca }});
+        d.on("error", (e) => {{
+          console.log("strict-name", e.code);
+          stepSelfSigned();
+        }});
+      }});
+    }});
+  }});
+}});
+const stepSelfSigned = () => {{
+  const srv2 = tls.createServer({{ key: ssKey, cert: ssCert }}, (s) => {{
+    s.on("error", () => {{}});
+    s.write("hi");
+  }});
+  srv2.listen(0, "127.0.0.1", () => {{
+    const port2 = srv2.address().port;
+    // 正常/报错：自签 + reject=false → 存活但 DEPTH_ZERO（真机 QC2）。
+    const e = tls.connect({{ port: port2, host: "127.0.0.1", servername: "leaf.test", ca, rejectUnauthorized: false }}, () => {{
+      console.log("selfsigned-soft", e.authorized, e.authorizationError);
+      e.end();
+    }});
+    e.on("error", () => {{}});
+    e.on("close", () => {{
+      // 报错：缺省 reject → 硬失败 DEPTH_ZERO（真机 QB）。
+      const f = tls.connect({{ port: port2, host: "127.0.0.1", servername: "leaf.test", ca }});
+      f.on("error", (er) => {{
+        console.log("selfsigned-hard", er.code);
+        srv.close();
+        srv2.close();
+      }});
+    }});
+  }});
+  srv2.on("close", () => console.log("srv2-close"));
+}};
+srv.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#
+        ),
+    );
+    for line in [
+        "match true null",
+        "mismatch false ERR_TLS_CERT_ALTNAME_INVALID",
+        "wrongca false UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+        "strict-name ERR_TLS_CERT_ALTNAME_INVALID",
+        "selfsigned-soft false DEPTH_ZERO_SELF_SIGNED_CERT",
+        "selfsigned-hard DEPTH_ZERO_SELF_SIGNED_CERT",
+        "srv-close",
+        "srv2-close",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
     dir.close().unwrap();
 }

@@ -609,13 +609,13 @@ class TLSSocket extends Socket {
 
 function __handshakeErr(msg, host) {
   const map = [
-    // rustls "received corrupt message of type InvalidContentType"（对端发非 TLS 字节）
-    // → OpenSSL 同场景文案（SSL routines:...:wrong version number；node 套件断言形）。
+    // rustls InvalidContentType（对端非 TLS 字节）→ OpenSSL wrong version number（node 套件断言形）。
     [/InvalidContentType/, "ERR_SSL_HANDSHAKE_FAILURE", "SSL routines::wrong version number"],
-    // rustls 对端 fatal NoApplicationProtocol（ALPN 无交集）→ node 专用码
-    //（alpn-server-client 套件 TestFatalAlert 点名 code）。
+    // rustls 对端 fatal NoApplicationProtocol（ALPN 无交集）→ node 专用码（alpn 套件 TestFatalAlert 点名）。
     [/NoApplicationProtocol/, "ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL", "TLSv1 alert no application protocol"],
-    [/NotValidForName/, "ERR_TLS_CERT_ALTNAME_INVALID", `Hostname/IP does not match certificate's altnames: Host: ${host}. is not in the cert's altnames`],
+    // 名错：Debug 形 NotValidForName + webpki Display 形（NotValidForNameContext 定制 Display；捕获层存 Display）。
+    [/NotValidForName|not valid for (any names|name)/, "ERR_TLS_CERT_ALTNAME_INVALID", `Hostname/IP does not match certificate's altnames: Host: ${host}. is not in the cert's altnames`],
+    [/__wjs2_depth_zero_self_signed__/, "DEPTH_ZERO_SELF_SIGNED_CERT", "self-signed certificate; if the root CA is installed locally, try running Node.js with --use-system-ca"], // 自签哨兵（Rust SELF_SIGNED_SENTINEL；真机见 strict-probe）。
     [/UnknownIssuer/, "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "unable to verify the first certificate"],
     [/Expired/, "CERT_HAS_EXPIRED", "certificate has expired"],
     [/NotValidYet/, "CERT_NOT_YET_VALID", "certificate is not yet valid"],

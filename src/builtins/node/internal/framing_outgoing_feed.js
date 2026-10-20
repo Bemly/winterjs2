@@ -251,14 +251,17 @@
           res.__maxReq = this.maxRequestsPerSocket;
           if (this.uniqueHeaders !== undefined) res.__uniqueHeaders = this.uniqueHeaders;
           st.reqCount = (st.reqCount ?? 0) + 1;
-          // node 口径：超 maxRequestsPerSocket 的管线请求回 503 +
-          // 关连接（keep-alive-pipeline-max-requests 套件第 4 路），并派发
-          // 'dropRequest'（request, socket；drop-requests 套件点名类型）。
+          // node 口径（lib/internal/http/server.js parserOnIncoming）：超
+          // maxRequestsPerSocket 的管线请求走正常响应管线回 503
+          //（writeHead + end，经 ServerResponse 排在途响应之后——raw 直写会抢跑
+          // 首响并杀连接，keep-alive-drop-requests 套件实录）+ 关连接
+          //（maxReached → Connection: close，finish 后 destroySoon），并派发
+          // 'dropRequest'（request, socket；drop-requests 套件点名类型）；
+          // 'request' 不派发（handled）。
+          let __dropped = false;
           if (this.maxRequestsPerSocket > 0 && st.reqCount > this.maxRequestsPerSocket) {
             try { this.emit("dropRequest", req, sock); } catch { /* 监听抛错不阻 503 */ }
-            try { sock.write(new TextEncoder().encode("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")); } catch { /* gone */ }
-            try { sock.destroy(); } catch { /* gone */ }
-            return;
+            __dropped = true;
           }
           if (this.maxRequestsPerSocket > 0 && st.reqCount >= this.maxRequestsPerSocket) {
             // node 口径：达额请求的响应带 Connection: close（响应完关连接）。
@@ -363,7 +366,12 @@
           // 服务（pipeline-assertionerror-finish 套件 mustCall(10) 点名；
           // 原自创 503 路径会使后续响应写进已 end 的 socket）。
           st.buf = st.buf.slice(headEnd + 4);
-          if (__wired) {
+          if (__dropped) {
+            // 超额请求：正常管线 503（排队于在途响应之后；maxReached 已置位，
+            // Connection: close + finish 后关）。
+            res.writeHead(503);
+            res.end();
+          } else if (__wired) {
             // §4.35：先 emit("request")（监听器登记 data/end），再喂体。
             // 用户 handler throw 不进 400 通道（node：原样上抛到 uncaught——
             // handler-throw 真机 crash；旧"400+静默 hang"系伪语义）。

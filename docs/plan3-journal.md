@@ -2575,3 +2575,61 @@ G1/G2/G3/G9 已收官。）
 - Top10（base19b 差额）：http2-109、tls-89、crypto-41、net-39、http-39、
   fs-39、worker-34、child-29、vm-28、webcrypto-22。
 - base19b 为干净基线候选（§0.3 换表待用户确认；本任务只记账不改表）。
+## 2026-10-20 child_process 29件欠账定级（零构建探针，node真机全对照）
+
+- 范围：base19b child 红 29 件（DIFF 26 + TIMEOUT 3 中的 spawn-typeerror…
+  实为 node 侧抖，见下）。二进制沿用 base19b 构建（md5 788b9ff6 未变，
+  零新构建）；node v26.8.1 逐件对照（TEST_THREAD_ID 分槽 + perl alarm，
+  9 批）；Bun：child_process ✅/🟡IPC 缺口（bun-compat:66）+
+  parity handle 传递出局 + fork/IPC 另案（bun-parity:1052/1061）。
+- node 侧：27 件一次过；2 件抖动——send-keep-open（本次 node 亦 mustCall
+  未达 :46）/ spawn-typeerror（sweep 时 node=142，本次 node 绿）→ 口径差，
+  非我方欠账。exec-maxbuf 本次 wjs 复探 rc=0 → flake。
+- 定级（默认对齐 node+Bun，自主定级）：**修 17 / 另案 9 / 口径差 3**。
+
+### 修-small（校验/事件语义，P0 体量，8 件）
+
+- advanced-serialization（首半）：spawn `options.serialization` 非法值未抛
+  ERR_INVALID_ARG_VALUE（Missing expected exception；node 首段即断死）。
+- fork-timeout-kill-signal（:28）：`timeout:'badValue'/{}` 未抛 ARG_TYPE。
+- fork-stdio-string-variant（:16）：`stdio:'33'` 未抛 ARG_VALUE。
+- kill（:75）：stderr 'end' 发两次（actual 2；去重）。
+- spawnsync-non-string-args（:5）：args `toString` 调两次（validation 与
+  落盘各一次；只 stringify 一次）。
+- ipc（:47）：stdout 两 chunk 并成一次达（分块面；node 逐 write 分发）。
+- fork-close（:35）：close 早于 message/exit（`!gotClose` 翻转；收尾排序）。
+- fork-ref（:57）：disconnect 后 stdout '3' 丢失（silent 子 disconnect
+  处理）。
+
+### 修-medium（机械面，9 件）
+
+- internal 真路径 6 件（4.291 同构：`node:internal/child_process` 别名暴露
+  **同一份** live 对象）：bad-stdio / exec-kill-throws（mock
+  `ChildProcess.prototype.kill`）/ spawnsync-kill-signal（重赋值
+  `spawnSync`）/ validate-stdio（`getValidStdio`）/ windows-hide
+  （mock `prototype.spawn`）/ spawnsync-shell（同上 + shell 断言/DEP0190）。
+- parent-disconnect 2 件（同根）：ref2（:43）/ fork-url.mjs（:9）——子
+  `process.disconnect()` 后父 `disconnect` 事件不到。
+- detached 1 件：孙进程 detached 常驻语义（hang，child=1；unref/ detached 面）。
+
+### 另案 9（深水/Bun 同缺，书面记档不碰）
+
+- spawn-ipc 通道 2：stdin-ipc / stdout-ipc（spawn `stdio:'ipc'` 报
+  NotSupportedError；真进程 socketpair 通道另案，Bun 🟡同缺 bun-compat:66）。
+- 高级序列化往返：largebuffer / splitted-length-field（IPC 通道 stub
+  `ERR_NOT_SUPPORTED`；随 spawn-ipc 另案）+ advanced-serialization 后半
+  （validation 修后，roundtrip 归此案）。
+- handle 传递 2：fork-net-server / fork-net-socket
+  （`ERR_INVALID_HANDLE_TYPE`；parity:1052 出局面，Bun 同缺）。
+- ipc-next-tick：message 处理抛错→uncaughtException×10→disconnect
+  （hang 且零句柄；IPC 分发深水，parity:1061 fork/IPC 另案同族）。
+- closed-channel-segfault：`cluster.Worker.process` 不存在（cluster 底座，
+  Bun cluster 🟡同缺）。
+- fork-exec-path：`execPath` 换二进制 fork（线程底座做不到真换 binary；
+  记档，或 fork 遇 execPath 显式偏离）。
+
+### 口径差 3（非欠账）
+
+- send-keep-open（node 本次亦红）/ spawn-typeerror（sweep node=142，
+  本次 node 绿）/ exec-maxbuf（本次 wjs 绿）→ flake 队尾，复判另轮。
+- 校验：17+9+3=29 ✓。P0 开码另行确认分支（本任务只定级，未动代码）。

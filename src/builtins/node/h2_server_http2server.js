@@ -88,6 +88,21 @@ class Http2Server extends EventEmitter {
         if (this.__sessions.size === 0) this.__emitClose();
       });
     }
+    // node：server.close() 主动关闲置连接（无在途流的会话立即收尾；
+    // 有在途流的会话不受影响，自然排空后才收；busy 存活由 p7-closebusy 实测）。
+    // 递延 250ms 再杀：在途 HEADERS/END 先落盘且客户端自然收尾优先
+    //（blk1/3/4：finish 同 tick 即 close()，杀早了会抢在客户端泵机处理 END
+    // 之前断连，客户端无 'error' 监听即 fatal；自然收尾通常毫秒级，250ms
+    // 只杀真闲置。Rust 侧 graceful GOAWAY 是第二道网）。
+    const __idle = [...this.__sessions.values()].filter(
+      (s) => s.__streams.size === 0 && !s.closed && !s.destroyed);
+    if (__idle.length > 0) {
+      setTimeout(() => {
+        for (const s of __idle) {
+          if (s.__streams.size === 0 && !s.closed && !s.destroyed) s.close();
+        }
+      }, 250);
+    }
     return this;
   }
   __emitClose() {
@@ -161,6 +176,9 @@ class Http2Server extends EventEmitter {
               res.writeContinue();
               this.emit("stream", stream, req.headers, flags, req.rawHeaders);
               if (this.listenerCount("request") > 0) this.emit("request", req, res);
+              // node：会话侧 'stream' 在服务端 'stream'/'request' 之后
+              //（用户会话监听注册晚于 compat 内部接线，p9-stream-order 实测）。
+              session.emit("stream", stream, req.headers, flags, req.rawHeaders);
             }
           } else if (this.listenerCount("checkExpectation") > 0) {
             this.emit("checkExpectation", req, res);
@@ -177,10 +195,12 @@ class Http2Server extends EventEmitter {
             queueMicrotask(() => { if (!req.destroyed && !req.__userPaused) req.resume(); });
           }
         } else {
-          // node 顺序：'stream'（raw）先于 'request'（compat）
+          // node 顺序：'stream'（raw）先于 'request'（compat），会话侧 'stream' 最末
+          //（p9-stream-order 实测：server session → server stream → request → session stream）。
           this.emit("stream", stream, req.headers, flags, req.rawHeaders);
           const hasCompat = this.listenerCount("request") > 0;
           if (hasCompat) this.emit("request", req, res);
+          session.emit("stream", stream, req.headers, flags, req.rawHeaders);
           // 流式体：`body`/`reqEnd` 流事件逐块跟进（见下）；否则头即终。
           if (!streaming) {
             stream.__feedBody(o.body ?? "");

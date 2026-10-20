@@ -108,7 +108,10 @@ class Http2ServerStream extends Duplex {
   __abortDownstream() {
     if (this.__aborted) return;
     this.__aborted = true;
-    if (this.__req) this.__req.__onAborted();
+    // 整洁收尾（maybeAutoClose 置 __cleanClose）不 abort 下游——双向已尽，
+    // 中断级联会吞掉待消费的 req 'end'（blk6）；
+    // 真中断（对端 RST/destroy）无此旗，照旧级联（compat-aborted）。
+    if (this.__req && !this.__cleanClose) this.__req.__onAborted();
     if (this.__res && !this.__res.destroyed) this.__res.__destroySilent();
   }
   __implicitRespond() {
@@ -163,7 +166,8 @@ class Http2ServerStream extends Duplex {
     this.__headersSent = true;
     this.__sentHeaders = sent;
     this.__sentPseudoHeaders = sentPseudo;
-    __wjs2_h2_respond(this.__conn, this.id, status, JSON.stringify(entries));
+    __wjs2_h2_respond(this.__conn, this.id, status, JSON.stringify(entries),
+      (options.endStream || endStreamAuto) ? 1 : 0);
     if (options.endStream || endStreamAuto) {
       this.endAfterHeaders = true;
       this.__finishWritable();
@@ -407,8 +411,10 @@ class Http2ServerStream extends Duplex {
       this.__trailersSent = true;
       __wjs2_h2_end(this.__conn, this.id, JSON.stringify(t));
     }
-    this.__maybeAutoClose();
+    // node 序：'finish' 先于 'close'（close 断言常读 writableFinished；
+    // 先 destroy 会在 finished 置位前发 close，close-idle 套件现形）。
     cb();
+    this.__maybeAutoClose();
   }
   // 双向尽（应答 End 已发 + 请求体已尽）→ 本地收尾（node 流全关后 socket 解绑）。
   // close 单发：只置旗清表，派发交 Duplex autoDestroy（手动再派即 double，
@@ -417,9 +423,14 @@ class Http2ServerStream extends Duplex {
     if (this.__destroyed || this.__closed) return;
     if (!(this.__reqEnded && this.__trailersSent)) return;
     this.__closed = true;
-    this.__destroyed = true;
     this.__session?.__unregisterStream(this);
-    this.destroy();
+    // __destroyed 由 destroy()/_destroy() 置位：此处预置会使 destroy() 提前
+    // return 而吞掉 'close'（server-close-idle 套件：stream close 永不到）。
+    // destroy 递延一拍：dispatch 期排入的 req.resume 微任务先消费 EOF，
+    // 同 tick 直毁会抢在消费前断流，req 'end' 永不到（blk6）。
+    // __cleanClose：此 destroy 系整洁收尾，_destroy 中断级联跳过下游 abort。
+    this.__cleanClose = true;
+    queueMicrotask(() => { if (!this.__destroyed) this.destroy(); });
   }
   _destroy(err, cb) {
     // 应答未完成即销毁 → RST 对端（node：无错 RST 干净收尾，客户端仅 'close'；
@@ -757,7 +768,10 @@ class Http2ServerResponse extends Writable {
     }
     this.headersSent = true;
     this.__stream.__headersSent = true;
-    __wjs2_h2_respond(this.__conn, this.__id, this.statusCode, JSON.stringify(entries));
+    // HEAD 请求：END_STREAM 随头出线（node：writeHead 即发 flags=5 的 HEADERS，
+    // end(chunk) 仅账面收尾，体不上线；Rust 侧 end_stream 语义承接）。
+    __wjs2_h2_respond(this.__conn, this.__id, this.statusCode, JSON.stringify(entries),
+      this.__stream.__headRequest === true ? 1 : 0);
   }
   write(chunk, encoding, cb) {
     // node：response.destroy() 后 write 静默 false、回调不触发（write block3 真机 p1）；

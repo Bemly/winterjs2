@@ -154,9 +154,11 @@ fn parse_headers(json: &str) -> Vec<(String, String)> {
 }
 
 /// 服务端应答头（oneshot 负载；10f 流式化：体与头分离）。
+/// end_stream：END_STREAM 随头出线（HEAD/204 等；C3）。
 pub(crate) struct H2Resp {
     status: u16,
     headers: Vec<(String, String)>,
+    end_stream: bool,
 }
 
 /// 体通道消息（10f 流式应答/上传共用）。
@@ -469,8 +471,10 @@ pub(crate) async fn serve_conn<IO>(
                     }
                 };
                 let (btx, brx) = tokio::sync::mpsc::unbounded_channel::<BodyMsg>();
-                bodies.lock().await.insert(stream_id, btx.clone());
-                // 回放早到的体块（data/end 在头前到达的竞态）
+                if !head.end_stream {
+                    bodies.lock().await.insert(stream_id, btx.clone());
+                }
+                // 回放早到的体块（data/end 在头前到达的竞态；END_STREAM 随头则已清账，跳过）
                 let early = pendings.lock().await.remove(&stream_id);
                 if let Some(msgs) = early {
                     for m in msgs {
@@ -482,7 +486,7 @@ pub(crate) async fn serve_conn<IO>(
                     builder = builder.header(k, v);
                 }
                 Ok(builder
-                    .body(ChanBody { rx: brx, done: false })
+                    .body(ChanBody { rx: brx, done: head.end_stream })
                     .unwrap_or_else(|_| {
                         http::Response::builder()
                             .status(500)
@@ -505,17 +509,29 @@ pub(crate) async fn serve_conn<IO>(
             }
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(NetCmd::H2Respond { stream_id, status, headers }) => {
+                    Some(NetCmd::H2Respond { stream_id, status, headers, end_stream }) => {
                         let sender = responders.lock().await.remove(&stream_id);
                         if let Some(tx) = sender {
-                            let _ = tx.send(H2Resp { status, headers: parse_headers(&headers) });
+                            let _ = tx.send(H2Resp { status, headers: parse_headers(&headers), end_stream });
+                        }
+                        if end_stream {
+                            // END_STREAM 随头：后到的 data/end 系 JS 账面收尾，直接丢弃不上线
+                            //（compat HEAD end(chunk) / native _final 尾包同形）。
+                            ended.lock().unwrap().insert(stream_id);
+                            pendings.lock().await.remove(&stream_id);
                         }
                     }
                     Some(NetCmd::H2RespondData { stream_id, data_b64 }) => {
+                        if ended.lock().unwrap().contains(&stream_id) {
+                            continue;
+                        }
                         let data = b64dec(&data_b64).unwrap_or_default();
                         feed_body(stream_id, BodyMsg::Data(bytes::Bytes::from(data)), &bodies, &pendings).await;
                     }
                     Some(NetCmd::H2RespondEnd { stream_id, trailers_json }) => {
+                        if ended.lock().unwrap().contains(&stream_id) {
+                            continue;
+                        }
                         let trailers: Vec<(String, String)> =
                             serde_json::from_str(&trailers_json).unwrap_or_default();
                         ended.lock().unwrap().insert(stream_id);
@@ -554,6 +570,16 @@ pub(crate) async fn serve_conn<IO>(
                     }
                     Some(NetCmd::Close) | None => {
                         tracing::debug!(target: "winterjs2::http2", conn_id, "serve_conn: Close cmd");
+                        // 优雅收尾优先：先 GOAWAY 让在途 HEADERS/END 落盘再断
+                        //（flushheaders 套件：server 'finish' 即调 close()，此时 END
+                        // 尚在 ChanBody 队列；直接 break 丢尾包，客户端报
+                        // ERR_HTTP2_STREAM_ERROR。排空至多 5s，超时硬断）。
+                        conn.as_mut().graceful_shutdown();
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            &mut conn,
+                        )
+                        .await;
                         break;
                     }
                     _ => {}
@@ -687,10 +713,12 @@ pub unsafe extern "C" fn h2_respond(
         return false;
     };
     let headers = value_to_string(&mut cx, frame.arg(3));
+    // 第 5 参 end_stream（缺省 0；HEAD/endStream 意图才置 1，见 h2_server.js）。
+    let end_stream = opt_num(&frame, 4).map(|n| n != 0.0).unwrap_or(false);
     // 连接已收尾即静默 true（竞态：客户端先走；Node 口径不抛）
     let _ = state::net_cmd(
         cid as u64,
-        NetCmd::H2Respond { stream_id: stid as u64, status: status as u16, headers },
+        NetCmd::H2Respond { stream_id: stid as u64, status: status as u16, headers, end_stream },
     );
     true
 }

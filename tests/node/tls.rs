@@ -359,6 +359,66 @@ setTimeout(() => console.log("end-ok"), 2500);
 }
 
 #[test]
+fn tls_client_absent_sni_is_false() {
+    // node _finishInit 口径：客户端无 SNI（IP 直连/显式 ''）即 servername=false（非 null，
+    // 更不回灌 host）；显式名原样；setServername 非串挂 Received 后缀、服务端禁签发。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "s.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = tls.createServer({{ key, cert }}, (sock) => {{
+  sock.on("data", () => sock.end());
+  sock.on("error", () => {{}});
+}});
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  // 正常：显式 servername 客户端自见原样。
+  const a = tls.connect({{ port, host: "127.0.0.1", servername: "example.com", rejectUnauthorized: false }}, () => {{
+    console.log("cli-sni", JSON.stringify(a.servername));
+    a.destroy();
+    // 边界：IP 直连无 SNI → false。
+    const b = tls.connect({{ port, host: "127.0.0.1", rejectUnauthorized: false }}, () => {{
+      console.log("cli-nosni", JSON.stringify(b.servername));
+      b.destroy();
+      // 边界：显式 '' 即缺席 → false。
+      const c = tls.connect({{ port, host: "127.0.0.1", servername: "", rejectUnauthorized: false }}, () => {{
+        console.log("cli-empty", JSON.stringify(c.servername));
+        c.destroy(); server.close();
+      }});
+      c.on("error", () => {{}});
+    }});
+    b.on("error", () => {{}});
+  }});
+  a.on("error", () => {{}});
+  // 报错：setServername 非串挂 Received 后缀；服务端禁签发。
+  const t = (f) => {{ try {{ f(); return "NO-THROW"; }} catch (e) {{ return e.code + "|" + e.message; }} }};
+  console.log("set-undef", t(() => a.setServername(undefined)));
+  console.log("set-num", t(() => a.setServername(1)));
+}});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#
+        ),
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines.contains(&"cli-sni \"example.com\""), "out: {out}");
+    assert!(lines.contains(&"cli-nosni false"), "out: {out}");
+    assert!(lines.contains(&"cli-empty false"), "out: {out}");
+    assert!(out.contains("set-undef ERR_INVALID_ARG_TYPE|The \"name\" argument must be of type string. Received undefined"), "out: {out}");
+    assert!(out.contains("set-num ERR_INVALID_ARG_TYPE|The \"name\" argument must be of type string. Received type number (1)"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
 fn tls_verify_verdict_precedes_flush() {
     // node onConnectSecure 口径：裁决（捕获错/身份校验）先于应用字节上网；
     // 须销毁即预连写随 socket 弃置——服务端零字节（checkServerIdentity 套件幻影请求根因）。

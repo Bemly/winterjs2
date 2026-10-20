@@ -75,6 +75,22 @@ function __tlsErr(code, msg) {
   e.code = code;
   return e;
 }
+// node invalidArgTypeHelper 口径（setServername 文案逐字：Received 后缀）。
+function __invalidArgReceived(v) {
+  if (v === null || v === undefined) return " Received " + v;
+  if (typeof v === "function") return " Received function " + (v.name || "");
+  if (typeof v === "object") {
+    const n = v.constructor?.name;
+    if (typeof n === "string" && n !== "") return " Received an instance of " + n;
+    return " Received " + JSON.stringify(v);
+  }
+  return " Received type " + typeof v + " (" + String(v) + ")";
+}
+// node：身份校验/报错 host 取 SNI 字符串，无 SNI（false/null/undefined）即回落连接目标。
+function __sniHost(t, dflt) {
+  if (typeof t.servername === "string" && t.servername !== "") return t.servername;
+  return t.__targetHost ?? dflt;
+}
 // rustls 名失配哨兵（链错原文捕获、名错记哨兵走 checkServerIdentity；见 tls_wrap.rs）。
 const __NAME_MISMATCH = "__wjs2_name_mismatch__";
 function __pemOf(v) {
@@ -245,6 +261,8 @@ class TLSSocket extends Socket {
     const wire = {};
     const servername = mo.servername || (host && !__isIP(host) ? host : undefined);
     if (servername !== undefined) wire.servername = String(servername);
+    // N2：SNI 实发旗（直拨面；无名/IP 即未发，finishInit 口径回 false 不回灌 host）。
+    this.__sniSent = (servername !== undefined);
     // node：显式 secureContext 在场即整体采用（ca 等选项不再读）；否则读 ca 选项。
     const ca = mo.secureContext !== undefined
       ? __pemOf(sc.ca)
@@ -282,7 +300,7 @@ class TLSSocket extends Socket {
   __nameCheck() { // 名失配哨兵 → checkServerIdentity 定夺（node onConnectSecure 口径；过放行，错落位）。
     const mo = this.__wrapOpts ?? this.__tlsOpts ?? {};
     let r = null;
-    try { r = (mo.checkServerIdentity ?? checkServerIdentity)(this.servername ?? this.__targetHost ?? "localhost", this.getPeerCertificate(true)) || null; } catch (e) { r = e; }
+    try { r = (mo.checkServerIdentity ?? checkServerIdentity)(__sniHost(this) ?? "localhost", this.getPeerCertificate(true)) || null; } catch (e) { r = e; }
     this.__nameChecked = true;
     if (r !== null) { this.__verifyErr = r; this.authorized = false; this.authorizationError = r.code ?? r.message; }
     return r;
@@ -290,13 +308,15 @@ class TLSSocket extends Socket {
   __applyTlsInfo(info) {
     this.__tls = info;
     this.alpnProtocol = info.alpn ?? false;
-    if (info.servername) this.servername = info.servername;
-    // node：服务端无 SNI 即 servername=false（非 null；sni 套件 '' 形点名）。
+    // node _finishInit 口径：SNI 以实发为准——服务端收即 servername（'' 亦收），
+    // 无收即 false；客户端仅实发（wire 置名）才收，回落 host 冒充即 N2 偏差。
+    if (info.servername && (this.__tlsServer || this.__isServer || this.__sniSent)) this.servername = info.servername;
     else if (this.__tlsServer || this.__isServer) this.servername = false;
+    else if (this.__sniSent === false) this.servername = false;
     // 捕获式校验错：哨兵走身份校验（通过即放行）；链错原文映射（reject 面由连接事件收口）。
     if (info.verifyErr && this.__verifyErr === null) {
       if (String(info.verifyErr) === __NAME_MISMATCH) { this.__nameCheck(); return; }
-      this.__verifyErr = __handshakeErr(String(info.verifyErr), this.servername ?? this.__targetHost);
+      this.__verifyErr = __handshakeErr(String(info.verifyErr), __sniHost(this));
       this.authorized = false;
       this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
     }
@@ -306,7 +326,7 @@ class TLSSocket extends Socket {
     let verifyError = this.__verifyErr;
     if (!verifyError && !this.__nameChecked) {
       const csi = typeof mo.checkServerIdentity === "function" ? mo.checkServerIdentity : checkServerIdentity;
-      try { verifyError = csi(this.servername ?? this.__targetHost, this.getPeerCertificate(true)) || null; } catch (e) { verifyError = e; }
+      try { verifyError = csi(__sniHost(this), this.getPeerCertificate(true)) || null; } catch (e) { verifyError = e; }
     }
     this.__verdictDone = true;
     if (verifyError) {
@@ -338,7 +358,7 @@ class TLSSocket extends Socket {
       let o = {};
       try { o = JSON.parse(payload); } catch { /* 非 JSON 即原样 */ }
       if (o.code === "ERR_TLS_HANDSHAKE") {
-        this.destroy(__handshakeErr(String(o.msg ?? ""), this.servername ?? this.__targetHost));
+        this.destroy(__handshakeErr(String(o.msg ?? ""), __sniHost(this)));
         return;
       }
     }
@@ -436,6 +456,8 @@ class TLSSocket extends Socket {
         wire.servername = String(servername);
         this.servername = String(servername);
       }
+      // N2：SNI 实发旗（包裹面；空串/IP 回落即未发）。
+      this.__sniSent = (servername !== undefined && servername !== null && servername !== "");
       const ca = mo.secureContext !== undefined
         ? __pemOf(mo.secureContext?.context?.ca)
         : (__pemOf(mo.ca) ?? (__defaultCA !== null ? __defaultCA.join("\n") : undefined));
@@ -469,7 +491,7 @@ class TLSSocket extends Socket {
     if (!r) return;
     if (r.err !== undefined && r.err !== null) {
       // rustls 协议错 → node/OpenSSL 码映射（复用直拨面映射表）。
-      this.destroy(__handshakeErr(String(r.err), this.servername ?? this.__targetHost));
+      this.destroy(__handshakeErr(String(r.err), __sniHost(this)));
       return;
     }
     if (r.out) this.__wrapped.write(Buffer.from(r.out, "base64"));
@@ -478,7 +500,7 @@ class TLSSocket extends Socket {
     if (r.verifyErr !== undefined && r.verifyErr !== null && this.__verifyErr === null) {
       if (String(r.verifyErr) === __NAME_MISMATCH) { this.__nameCheck(); }
       else {
-        this.__verifyErr = __handshakeErr(String(r.verifyErr), this.servername ?? this.__targetHost);
+        this.__verifyErr = __handshakeErr(String(r.verifyErr), __sniHost(this));
         this.authorized = false;
         this.authorizationError = this.__verifyErr.code ?? this.__verifyErr.message;
       }
@@ -573,7 +595,7 @@ class TLSSocket extends Socket {
     try { r = JSON.parse(__wjs2_tls_wrap_write(this.__tlsId, u8)); }
     catch { this.destroy(); return; }
     if (r.err !== undefined && r.err !== null) {
-      this.destroy(__handshakeErr(String(r.err), this.servername ?? this.__targetHost));
+      this.destroy(__handshakeErr(String(r.err), __sniHost(this)));
       return;
     }
     if (r.out) this.__wrapped.write(Buffer.from(r.out, "base64"));
@@ -629,7 +651,9 @@ class TLSSocket extends Socket {
   getEphemeralKeyInfo() { return this.__tls?.protocol ? {} : null; }
   getSharedSigalgs() { return []; }
   setServername(name) {
-    if (typeof name !== "string") throw __tlsErr("ERR_INVALID_ARG_TYPE", `The "name" argument must be of type string.`);
+    // node wrap.js 口径：先校验 string 形（含 Received 后缀），再禁服务端签发。
+    if (typeof name !== "string") throw __tlsErr("ERR_INVALID_ARG_TYPE", `The "name" argument must be of type string.${__invalidArgReceived(name)}`);
+    if (this.__isServer || this.__tlsServer) throw __tlsErr("ERR_TLS_SNI_FROM_SERVER", "Cannot issue SNI from a TLS server-side socket");
     this.servername = name;
   }
   setMaxSendFragment(size) { return size >= 512 && size <= 16384; }

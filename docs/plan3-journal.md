@@ -2075,5 +2075,25 @@ G1/G2/G3/G9 已收官。）
   cert-chains-concat 系 ×2 / handshake/secure-session/interleave 等散件，
   按“单件 run1.sh 复判 → 版本墙即归 B”逐件销账，不在下簇内。
 
+## 2026-10-20 N2 无SNI→false 落地（JS 小修，零新轮子）
+
+- 根因（node `lib/internal/tls/wrap.js:649/1064-65/1201-1203`）：`servername` 初值 null，
+  仅显式选项经 `setServername` 置名；finishInit 时 null 即取 `handle.getServername()`，
+  未发 SNI 即 false（C++ 无名回 false），永不回灌 host。旧码直拨面 Rust 回落
+  host 致客户端 IP 直连自见 `"127.0.0.1"`（P5 探针）。
+- 修法（`src/builtins/node/tls.js`，纯 JS）：`__sniSent` 实发旗（直拨/包裹双路 wire
+  置名点）+ `__applyTlsInfo` 仅实发才收 info 名、无收客户端亦置 false（服务端行为不动）+
+  `__sniHost` 回落 helper（7 处 CSI/报错 host 由 `??` 改串形判定，false 不再透入 CSI）+
+  `setServername` 补 Received 后缀（invalidArgTypeHelper 口径）+ 服务端禁签发
+  `ERR_TLS_SNI_FROM_SERVER`（wrap.js:1239-1246 口径）。
+- 切片先行：`tls.js` 恰 1000 行，`split-js.py` 纯搬移尾 64 行 → 新片
+  `tls_defaultecdhcurve.js`（`cmp` 字节恒等；脚本 rs 改写错位已手工扶正多行 concat），
+  搬移提交与 N2 提交分离（`git diff -w` 仅路径）。
+- 验证：P5 `nosni-servername=false` ✓；node 套件 `test-tls-error-servername` 转绿；
+  黑盒 `tls_client_absent_sni_is_false`（显式/IP-缺席/''/setServername×2）绿；
+  `--test node tls_` 13/13；冒烟 5/5；`check-lines/naming` 双绿。
+  余红（sni-option/servername/server-client/empty-sni）皆服务端选链
+  （`no server certificate chain resolved`）即 addContext 未下沉 bound，不在 N2 内。
+
 
 

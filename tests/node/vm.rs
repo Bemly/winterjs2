@@ -648,6 +648,44 @@ console.log("df-err", bad(() => new vm.SourceTextModule("1", { context: "x" })),
 }
 
 #[test]
+fn vm_module_this_and_link_guards() {
+    // 借调守卫（原型/非实例一律 ERR_INVALID_THIS TypeError；函数 options 拒收）
+    // + 链接失败落 errored（status/error 记账；后继求值拒因）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+const bad = (f) => { try { f(); return "NO"; } catch (e) { return `${e.constructor.name}:${e.code || ""}`; } };
+console.log("guard-proto", bad(() => vm.Module.prototype.link()), bad(() => vm.Module.prototype.status));
+console.log("guard-stm", bad(() => vm.SourceTextModule.prototype.namespace));
+console.log("guard-fn", bad(() => new vm.SourceTextModule("", () => {})));
+const m = new vm.SourceTextModule("import 'x';");
+try { await m.link(() => ({})); } catch {}
+console.log("link-err", m.status === "errored", m.error && m.error.code);
+await m.evaluate().then(() => console.log("ev", "RES"), (e) => console.log("ev", e.code || "(nocode)"));
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "guard-proto TypeError:ERR_INVALID_THIS TypeError:ERR_INVALID_THIS",
+        "guard-stm TypeError:ERR_INVALID_THIS",
+        "guard-fn TypeError:ERR_INVALID_ARG_TYPE",
+        "link-err true ERR_VM_MODULE_LINK_FAILURE",
+        "ev ERR_VM_MODULE_LINK_FAILURE",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn vm_module_linking_surface() {
     // linkRequests/instantiate/moduleRequests/标识按 context 独立 + cachedData 存根。
     let dir = assert_fs::TempDir::new().unwrap();

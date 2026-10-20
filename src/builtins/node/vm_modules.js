@@ -22,6 +22,10 @@ function __recvArg(v) {
   return `type ${t} (${String(v)})`;
 }
 
+// 存活模块实例集合（__assertThis 凭据：原型对象/`Object.create` 产物虽
+// instanceof 通过但非构造实例，真机照样 ERR_INVALID_THIS）。
+const __vmModLive = new WeakSet();
+
 // 源码内容哈希（模块 cachedData 存根的匹配标记；V8 真缓存另案，记档）。
 function __vmHashStr(s) {
   let h = 0x811c9dc5;
@@ -57,14 +61,23 @@ export class Module {
     if (new.target === Module) {
       throw new TypeError("Module is not a constructor");
     }
+    __vmModLive.add(this);
   }
   __assertThis() {
-    if (!(this instanceof Module)) {
+    // 凭据式（真机口径）：原型对象/`Object.create` 产物、`Module.prototype`
+    // 方法借调一律 ERR_INVALID_THIS（instanceof 不足为凭）。
+    if ((typeof this !== "object" && typeof this !== "function") || this === null || !__vmModLive.has(this)) {
       const err = new TypeError('Value of "this" must be of type Module');
       err.code = "ERR_INVALID_THIS";
       throw err;
     }
   }
+  // 基类访问器（真机基类即带；实例走子类覆写，此处仅作借调守卫）。
+  get status() { this.__assertThis(); }
+  get identifier() { this.__assertThis(); }
+  get context() { this.__assertThis(); }
+  get namespace() { this.__assertThis(); }
+  get error() { this.__assertThis(); }
   link(linker) {
     this.__assertThis();
     if (typeof linker !== "function") {
@@ -97,8 +110,9 @@ export class SourceTextModule extends Module {
     if (typeof code !== "string") {
       __modErr("ERR_INVALID_ARG_TYPE", `The "code" argument must be of type string. Received type ${typeof code}`);
     }
-    if (options === null || (typeof options !== "object" && typeof options !== "function")) {
-      __modErr("ERR_INVALID_ARG_TYPE", `The "options" argument must be of type object. Received ${options === null ? "null" : typeof options}`);
+    // 模块 options 真机用严格对象校验（函数不收；run 系宽松口径另案）。
+    if (options === null || typeof options !== "object") {
+      __modErr("ERR_INVALID_ARG_TYPE", `The "options" argument must be of type object. Received ${options === null ? "null" : `type ${typeof options}`}`);
     }
     let ctxKey = "";
     let ctxId;
@@ -219,7 +233,14 @@ export class SourceTextModule extends Module {
     this.__status = "linking";
     void linker;
     return Promise.resolve().then(() => {
-      __vmCall(() => __wjs2_vm_link(this.__id));
+      try {
+        __vmCall(() => __wjs2_vm_link(this.__id));
+      } catch (e) {
+        // 链接失败即 errored（真机口径；v1 零导入外请求同样落 errored）。
+        this.__status = "errored";
+        this.__error = e;
+        throw e;
+      }
       this.__status = "linked";
     });
   }

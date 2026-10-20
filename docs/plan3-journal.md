@@ -2543,3 +2543,47 @@ G1/G2/G3/G9 已收官。）
 - 守门触发拆分：`require.rs` 被顶到 1061 行 → `REQUIRE_PRELUDE` 纯字符串整体
   搬入 `require_prelude.rs`（原位 `pub use` 重导出；require.rs 784/新文件 282，
   纯搬移先行一提交）。
+
+## 2026-10-20 net42 零构建探针+定级（P0/P1 分道）
+
+> 基线 base19b net 43 = DIFF 42 + SAME1 1（internal 系双红，非欠账）。
+> Bun：net 🟢（`bun-compat.md:72` 回环+allowHalfOpen/destroy 全对；`bun-parity.md:781` net 节），
+> 42 件无 Bun 同缺，皆真欠账。node 对照：base19b DIFF 即 node 绿 + 本段逐件 wjs 实跑取断言差。
+> 范围 `bun-scope.txt` net 141 + socket 5 行。
+
+### P0 报文/校验形（13 件，小步直修）
+
+- address-null ×5（immediate-destroy/reset-before-connected/destroy-twice/
+  reset-twice/timeout-unref）：`server.address()` 关后即 null，真机关完前仍有效
+  （`connect-immediate-destroy.js:7` 取 `.port` 炸）。修到：close 事件前 address 有效。
+- better-error ×2（listen-path/listen）：listen 失败错缺 `address`（`undefined !==
+  '/blah/fadfa'/'1.1.1.1'`）。修到：错体带 address/port。
+- validation ×4（socket-address/socket-options-invalid 缺抛 + custom-lookup
+  错码 `FAMILY≠IP_ADDRESS` + autoselect-attempt-timeout-cli-option `2500≠615`
+  缺省值）：修到文案/码/缺省逐字。
+- legacy ×2（socket-connecting `_connecting` undefined≠true + no-halfopen-enforcer
+  listenerCount 0≠1）：修到：`_connecting` 品牌透传 + 非半开 end 门装配。
+
+### P1 时序/竞速/深水（23 件，按簇开轮）
+
+- reset/destroy/nodelay 事件序 ×12（connect-destroy/nodelay/paused-connection/
+  reset-after-destroy/reset-until-connected/reset/dns-error/dns-lookup/
+  server-nodelay/server-reset/end-callback/setnodelay）：MUSTCALL 未达，多为
+  destroy 竞速 + nodelay 回调 + DNS 错路由。逐件 run1 复判再修。
+- shutdown 建模 ×3（write-after-fin `er undefined` + connect-destroy MUSTCALL +
+  write-cb-on-destroy-before-connect）：P2 结转 net=5 收尾建模（FIN 后写错面）。
+- timeout/水位 ×3（socket-timeout `100` + buffersize `9≠0` + stream 混接）：
+  超时门 + bufferSize 记账 + stream 互操作。
+- dns-custom-lookup HANG + perf_hooks + listen-handle-cluster HANG：lookup 透传/
+  perf 钩 + cluster 句柄（跨线程面，随 cluster 另案）。
+
+### 另案/范围外（6 件，不进 P0/P1）
+
+- normalize-args（`internal/net` 缺失）→ 范围外（internal 树既定）。
+- child-process-connect-reset（ipc spawn）/ server-close-before-ipc（HANG）→ infra 另案。
+- server-async-dispose（`Symbol.asyncDispose` 新 API）→ 另轮（显式 using 面）。
+- server-call-listen-multiple-times（本段空跑待编码期复判）/ server-capture-rejection
+  （kaboom 透传面，`__ev` 抛错到 uncaughtException 投递，http2 early-hints 同族）→
+  编码期首件复判定去留。
+- allow-half-open（本段空跑，MUSTCALL:22 未现）→ 编码期复判。
+

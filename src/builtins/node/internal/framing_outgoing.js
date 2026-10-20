@@ -469,6 +469,13 @@ export function withHttpServer(Base) {
       });
       self.on("connection", (sock) => {
         self.__sockets.add(sock);
+        // node 口径（lib/_http_server.js：http 系 server 经 allowHalfOpen:true
+        // 的 net 层收链，真机 req.socket.allowHalfOpen === true）：收 FIN
+        // 不自动回 FIN；自动回 FIN 会抢跑在途响应落盘之前（create-connection
+        // 并发实录：同拍 data+FIN，net 自动 FIN 先行，响应丢字节）。
+        // 半关收口由 end 处理器的 socket.end() 承担（httpAllowHalfOpen 仍
+        // false 不变；客户端 agent 池 socket 不受影响）。
+        try { sock.allowHalfOpen = true; } catch { /* gone */ }
         // HTTP 服务端 socket 标记（socket-encoding-error 套件：禁 setEncoding）。
         try { sock.__httpServerSocket = true; } catch { /* gone */ }
         const st = { buf: new Uint8Array(0), req: null, framing: null, res: null, __hdT: null, __rqT: null, __kaT: null };
@@ -673,7 +680,41 @@ export function withHttpServer(Base) {
           if (sock.__connectHijacked) return;
           sock.__finReceived = true;
           if (!self.httpAllowHalfOpen) {
-            try { sock.destroy(); } catch { /* gone */ }
+            // 上传截断：FIN 时未收完的请求体即夭折（node parser EOF 口径；
+            // 原 close 处理器 __abortReq 的 end 期前移——teardown 递延后
+            // close 不再即达，中断管线收不到 PREMATURE_CLOSE 即悬挂）。
+            // 判定走真机 _destroy 口径（!readableEnded || !complete）。
+            const __abortReq = (r) => {
+              if (r === null || r === undefined || r.destroyed) return;
+              if (!(!r.readableEnded || !r.complete)) return;
+              if (typeof r.__abortWithError === "function") {
+                try { r.__abortWithError(); } catch { /* 监听抛错不阻收尾 */ }
+              }
+              r.destroy();
+            };
+            __abortReq(st.req);
+            if (st.res !== null && st.res !== undefined) __abortReq(st.res.req);
+            // node socketOnEnd 口径（lib/_http_server.js）：客户端 FIN 后
+            // socket.end()（排空落盘再 FIN），禁 destroy（即毁即丢在途响应
+            // 字节——create-connection 并发实录）。但本仓 res 落盘经流机构
+            // 异步（_final 微任务），end 事件与落盘同拍时写在 end() 之后即
+            // 撞 net EPIPE 门（peerFin+已 end），故有未完结响应时递延——
+            // res.__onDone 收尾见 __finReceived 即 end()；无在途响应照旧
+            // 即调 end()（close 处理器收尾；res 永不完结 + 对端已逝的悬空
+            // 由 close() 回收，见该处）。服务端已在关闭中则不递延、直接
+            // 销毁——去向已定（close 先于 FIN 到达的竞速形，递延即与 close()
+            // 回收失之交臂而悬空；对端已 FIN 无后续可收，destroy-midflight
+            // 套件）。
+            const __r = st.res;
+            if (__r !== null && __r !== undefined && !__r.destroyed && __r.writableFinished !== true &&
+                self.__closing !== true) {
+              return;
+            }
+            if (self.__closing === true) {
+              try { sock.destroy(); } catch { /* gone */ }
+              return;
+            }
+            try { sock.end(); } catch { /* gone */ }
           } else {
             if (st.req !== null && !st.req.complete && !st.req.destroyed) {
               st.req.destroy();

@@ -9,6 +9,7 @@
 /// 内嵌 ESM 源（`node:https`；tls 底座 + 共享帧层）。
 pub const SOURCE: &str = r#"
 import * as tls from "node:tls";
+import { codes } from "node:internal/errors";
 import {
   STATUS_CODES, METHODS, maxHeaderSize, IncomingMessage, ServerResponse,
   OutgoingMessage, Agent as BaseAgent, withHttpServer, withClientRequest,
@@ -18,12 +19,22 @@ import {
 
 const FLAVOR = { protocol: "https:", defaultPort: 443, other: "node:http" };
 const __HttpServerBase = withHttpServer(tls.Server);
+// options 类型门（node https.js Server 构造口径，mirror http.rs __serverOptions：
+// 'foo'/42/true/[] → ERR_INVALID_ARG_TYPE；undefined/null 缺省、函数=监听器）。
+function __serverOptions(args) {
+  const first = args[0];
+  if (first === undefined || first === null) return undefined;
+  if (typeof first === "function") return undefined;
+  if (first !== null && typeof first === "object" && !Array.isArray(first)) return first;
+  throw new codes.ERR_INVALID_ARG_TYPE("options", "object", first);
+}
 // Server（node https.js Server 原文口径）：ALPNProtocols 缺省 ['http/1.1']（经
 // tls.Server 构造器 convertALPNProtocols 落 wire 形）——opts 显式给了
 // ALPNProtocols/ALPNCallback 才不注缺省；其余选项原样透传。
 function Server(...args) {
   let ALPNProtocols = ["http/1.1"];
-  let opts = args[0] !== null && typeof args[0] === "object" && !Array.isArray(args[0]) ? args[0] : undefined;
+  const checked = __serverOptions(args);
+  let opts = checked;
   if (typeof args[0] === "function") opts = {};
   else if (opts === undefined) opts = {};
   else if (opts.ALPNProtocols || opts.ALPNCallback) ALPNProtocols = undefined;
@@ -39,9 +50,17 @@ Server.prototype = __HttpServerBase.prototype;
 const ClientRequest = withClientRequest(
   (host, port, extra) => tls.connect({
     port, host,
+    // node 口径：socketPath 在场即 UDS（unix-socket 套件；http 侧 openSocket
+    // 同款，tls.connect 读 .path 面）。
+    ...(extra.socketPath !== undefined ? { path: extra.socketPath } : {}),
+    // node 口径（getAllowUnauthorized）：NODE_TLS_REJECT_UNAUTHORIZED=0 即
+    // 缺省 false（显式值恒赢；警告由帧层统一发一次）。此处回落——键位只收
+    // 显式值（override-global-agent 套件）。
+    ...(extra.rejectUnauthorized !== undefined ? { rejectUnauthorized: extra.rejectUnauthorized }
+      : ((typeof process === "object" && process !== null && process.env !== undefined &&
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") ? { rejectUnauthorized: false } : {})),
     servername: extra.servername,
     ca: extra.ca,
-    rejectUnauthorized: extra.rejectUnauthorized,
     // node 口径：显式 undefined 即缺席（connect 内有缺省；显式传 undefined 反而触校验门）。
     ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
   }),
@@ -56,9 +75,14 @@ Object.setPrototypeOf(Agent.prototype, BaseAgent.prototype);
 Object.setPrototypeOf(Agent, BaseAgent);
 Agent.prototype.__openSocket = (host, port, extra) => tls.connect({
   port, host,
+  // 同上：socketPath→path（unix-socket 套件经 Agent 面 createConnection）。
+  ...(extra.socketPath !== undefined ? { path: extra.socketPath } : {}),
+  // 同上：env 缺省回落（键位只收显式值）。
+  ...(extra.rejectUnauthorized !== undefined ? { rejectUnauthorized: extra.rejectUnauthorized }
+    : ((typeof process === "object" && process !== null && process.env !== undefined &&
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") ? { rejectUnauthorized: false } : {})),
   servername: extra.servername,
   ca: extra.ca,
-  rejectUnauthorized: extra.rejectUnauthorized,
   ...(extra.checkServerIdentity !== undefined ? { checkServerIdentity: extra.checkServerIdentity } : {}),
 });
 // node internal/http/agent.js normalizeServerName 口径：显式 servername（含 '')
@@ -152,6 +176,11 @@ function __pfxAgentKey(pfx, passphrase) {
 }
 const globalAgent = new Agent({ keepAlive: true, scheduling: "lifo" });
 FLAVOR.defaultAgent = globalAgent;
+// node 口径：`https.globalAgent = agent` 可整体替换（override-global-agent 套件，
+// mirror http.rs：require 回的是 __api 对象，在其上挂 accessor 劫持赋值；
+// 内部经 FLAVOR.__getDefaultAgent 读活值，具名 ESM 导入仍绑旧 const，记档）。
+let __liveGlobalAgent = globalAgent;
+FLAVOR.__getDefaultAgent = () => __liveGlobalAgent;
 
 export function request(a, b, c) {
   const [options, cb] = normalizeRequestArgs(a, b, c, FLAVOR);
@@ -174,7 +203,9 @@ export {
   validateHeaderName, validateHeaderValue,
 };
 const __api = {
-  STATUS_CODES, METHODS, maxHeaderSize, request, get, Agent, globalAgent,
+  STATUS_CODES, METHODS, maxHeaderSize, request, get, Agent,
+  get globalAgent() { return __liveGlobalAgent; },
+  set globalAgent(v) { __liveGlobalAgent = v; },
   Server, ServerResponse, IncomingMessage, ClientRequest, OutgoingMessage, createServer,
   validateHeaderName, validateHeaderValue,
 };

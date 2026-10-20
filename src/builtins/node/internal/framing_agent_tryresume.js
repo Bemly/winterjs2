@@ -132,6 +132,8 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
   req.__poolKey = name;
   req.__queued = false;
   const opts = { ...options, host: options.hostname ?? options.host ?? "localhost", port: options.port ?? this.__defaultPort ?? 80 };
+  // 建连选项随 req 走（'free' 转发 agent 侧用，node installListeners 口径 options）。
+  req.__connOpts = opts;
   let done = false;
   const oncreate = (err, s) => {
     if (done) return;

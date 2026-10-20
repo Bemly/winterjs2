@@ -424,6 +424,14 @@
         }
         this.agent.__release(sock, this.__key, this, poolable);
         try { sock.emit("free"); } catch { /* gone */ }
+        // node installListeners/onFree 口径：socket 'free' 即转 agent 'free'
+        //（additional-options 套件 globalAgent.once('free') 推进轮次；handler
+        // 内 freeSockets 已有键——__release 先行与 node agent 'free' 处理器
+        // 内建池同序）。真入池路才发（__release 内置 __inPool 旗；销毁路
+        // __release 已直毁，node 侧亦由 agent 处理器销毁，不补发）。
+        if (poolable && sock.__inPool === true && !sock.destroyed) {
+          try { this.agent.emit("free", sock, this.__connOpts ?? {}); } catch { /* gone */ }
+        }
       } else {
         try { sock.end(); } catch { /* closed meanwhile */ }
       }
@@ -686,6 +694,8 @@ Agent.prototype.createConnection = function (options, cb) {
 Agent.prototype.createSocket = function (req, options, cb) {
   // servername 归一（上式；strict 套件 Host 头进 SNI/校验名）。
   __normalizeServerName(options, req);
+  // 建连选项随 req 走（'free' 转发 agent 侧用，node installListeners 口径 options）。
+  req.__connOpts = options;
   let settled = false;
   const oncreate = (err, s) => {
     settled = true;
@@ -838,6 +848,8 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   // servername 归一须在键算前（node createSocket 口径：键含归一后 servername，
   // Host 头不同即分池；strict 套件 agent1 两路分池）。
   if (extra !== null && extra !== undefined) __normalizeServerName(extra, req);
+  // 建连选项随 req 走（复用路不经 createSocket，'free' 转发 agent 侧用）。
+  req.__connOpts = { ...(extra ?? {}), host, port };
   const key = this.getName({ host, port, ...(extra ?? {}) });
   // node 口径：freeSockets 键只在真入池后存在——取用不得侧效应建空数组
   //（agent.freeSockets[name] === undefined 断言，agent-keepalive 套件）。

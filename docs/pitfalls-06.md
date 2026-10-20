@@ -482,3 +482,17 @@
 - 修法：无（本轮止损；候选是先给 Path B 补齐 error+close 使双路径皆满足套件，再设码，另案）。
 - 复现：A/B/A 对照（加码即翻、去码即回）；ab 系列复现（改 emit 监听即扰动）。
 - 推广铁律：**剃刀竞态先加边距再加料**——事件/调用开销会翻转 µs 级确定性竞速；先让双路径各自正确，再补观测。
+
+### 4.326 pump 整批排空 + 端口同步连发丢 once 后继（2026-10-21，vm lane）
+
+- 症状：message-before-close（transfer 端口连发 two + close，双 once 收）在小轮次偶过、
+  200 轮必挂（第二条 5s 超时）；同会话 transfer 200 轮全过、parentPort 30 轮全过。
+- 根因：pump 逐轮 `while try_recv` 整批排空 worker inbox、无 microtask 间隙——两条
+  PortMsg 同批到达后单次 queueMicrotask flush 同步连发两条；第一条触发 once 摘除，
+  第二条射进零监听虚空。node 逐 task 派发、microtask 间隙重挂监听，故 10000 轮全过。
+- 修法：`__portFlushQueue` 循环内复查 `listenerCount("message")`，零即停刷留队、
+  新监听经 newListener 续刷（node paused-queue 语义）；`on` 常驻/close-while-receiving
+  不受影响（close 不摘监听）。200 轮 0.7s 全过。
+- 复现：once 竞速探针（5s 超时版首轮即丢）vs 修复后 30/30；`git show` 前必跑同构黑盒。
+- 推广铁律：**整批派发配同步发射即埋 once 陷阱**——凡"排队+延迟刷"管线，发射循环内
+  必须复查监听存活，无人即停，禁连发进虚空；修泵粒度不如修队列语义（影响面小）。

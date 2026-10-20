@@ -95,5 +95,7 @@ mod vm_dyn;
 mod worker;
 #[path = "node/worker_argv.rs"]
 mod worker_argv;
+#[path = "node/worker_medium.rs"]
+mod worker_medium;
 #[path = "node/zlib.rs"]
 mod zlib;

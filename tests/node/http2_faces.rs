@@ -748,3 +748,74 @@ netServer.listen(0, "127.0.0.1", () => {{
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_socket_destroy_delayed_flush() {
+    // destroy-delayed 套件行为面：res.end 紧接 setImmediate 杀 socket，
+    // 应答字节必须落盘（优雅排空收尾命令），客户端收 response+end+close。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "d.mjs",
+        r#"
+import http2 from "node:http2";
+const app = http2.createServer((req, res) => {
+  res.end("hello");
+  setImmediate(() => req.socket.destroy());
+});
+app.listen(0, () => {
+  const session = http2.connect(`http://localhost:${app.address().port}`);
+  const request = session.request({ ":path": "/", ":method": "get" });
+  request.once("response", (h) => console.log("status", h[":status"]));
+  request.on("data", () => {});
+  request.on("end", () => console.log("end"));
+  request.on("error", () => console.log("req-error"));
+  request.on("close", () => {
+    console.log("close");
+    session.close();
+    app.close();
+  });
+  request.end();
+});
+"#,
+    );
+    for line in ["status 200", "end", "close"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(!out.lines().any(|l| l == "req-error"), "unexpected error; out: {out}");
+    dir.close().unwrap();
+}
+
+#[test]
+fn http2_session_close_flush() {
+    // session.close 紧接应答的优雅对照面：同上不断链，保证优雅排空语义。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        r#"
+import http2 from "node:http2";
+const app = http2.createServer((req, res) => {
+  res.end("hello");
+  setImmediate(() => req.stream.session.close());
+});
+app.listen(0, () => {
+  const session = http2.connect(`http://localhost:${app.address().port}`);
+  const request = session.request({ ":path": "/", ":method": "get" });
+  request.once("response", (h) => console.log("status", h[":status"]));
+  request.on("data", () => {});
+  request.on("end", () => console.log("end"));
+  request.on("close", () => {
+    console.log("close");
+    session.close();
+    app.close();
+  });
+  request.end();
+});
+"#,
+    );
+    for line in ["status 200", "end", "close"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

@@ -273,6 +273,10 @@
 - 4.308 import `with` 非 `type` 键 SM 直接拒收（2026-10-20，vm lane）
 - 4.309 prelude 块级 function 经 Annex B 漏全局（2026-10-20，vm lane）
 - 4.310 unhandledRejection 投递形状（2026-10-20，vm lane）
+- 4.311 Close 先于 End 进队即丢尾包（2026-10-20，http2 lane）
+- 4.312 conn 收尾与流任务唤醒竞态（2026-10-20，http2 lane）
+- 4.313 hyper CONNECT-upgrade 接管双向隧道（2026-10-20，http2 lane）
+- 4.314 kill -9 丢 println 缓冲（2026-10-20，http2 lane）
 
 ## 条目
 

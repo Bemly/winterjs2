@@ -369,3 +369,34 @@
 - 修法：`runtime/unhandled.rs`：落定时 `promise_settled_value` 直读 reason 原值；有监听即 `emit`（reason, promise）后清表续跑；无监听按 `--unhandled-rejections` 模式（throw/strict fatal；warn 警告+bounded 排空继续；none 静默；warn-with-error-code 警告+exit 1）。旧捕获 natives（on_fulfilled/on_rejected/rejection_reasons）删除。
 - 缺口（promise 域另案）：warn 双警告（reason + 出处注记）/lic `rejectionHandled` 事件/node 式 `UnhandledPromiseRejection` fatal 形状未对齐。
 - 推广铁律：**运行时先投递后定去留**——检查点只看"有没有"会误杀已监听；事件投递是检查点的前置动作，不是收尾动作。
+
+### 4.311 Close 先于 End 进队即丢尾包（2026-10-20，http2 lane）
+
+- 症状：socket-destroy-delayed（res.end 紧接 setImmediate 杀 socket）TIMEOUT；应答字节零落线。
+- 根因：本仓 Duplex 将 `_final` 递延到 setImmediate 之后，Close 命令先于 H2RespondEnd 进队；旧 serve_conn 到 Close 即 break，尾包烂在通道里，优雅关超时后 FIN，客户端有应无收。
+- 修法：Close 转优雅模式（GOAWAY 后主循环继续收应答命令，至 conn 结束或 5s deadline；None 通道关沿旧语义）。
+- 复现：s1c（去 resume/去 end 版必挂）、s10（close 版亦挂）、s14/s15（延迟 teardown 即绿）。
+- 推广铁律：**收尾命令与终结命令同道时，终结只转模式不退出**——优雅期必须继续排空，deadline 兜底。
+
+### 4.312 conn 收尾与流任务唤醒竞态（2026-10-20，http2 lane）
+
+- 症状：同上：send_request 已决议（GOTRESP）而驱动先退，response/data/end 因 H2SessionClose 的 purge 被丢弃，客户端有 end 无 response。
+- 根因：驱动任务与流任务分属不同 tokio 任务，退出与唤醒无序；purge 一到，迟到事件全丢。
+- 修法：conn 结束处先等流任务落定（AbortHandle→JoinHandle，2s 上限防真挂死），再发 aborted/close，保证"应答先于终结"。
+- 复现：GOTRESP 在 CLI-DONE 之后（时序铁证）。
+- 推广铁律：**退出前等消费者落定**——生产者退出与消费者唤醒之间必须有 join（带超时），否则 purge 即丢数。
+
+### 4.313 hyper CONNECT-upgrade 接管双向隧道（2026-10-20，http2 lane）
+
+- 症状：proxy-over-h2 / connect-method 隧道字节双向全丢（线字节取证：握手外无 DATA 帧）；外层 200 后自发空 DATA-EOS + RST(0)。
+- 根因：hyper 1.x 对 CONNECT-2xx 自动升级为隧道：后续 DATA 只进 upgrade 句柄（常规 Incoming 恒空、body 通道收发皆死），应用须经 `hyper::upgrade::on` 泵接；旧移植全走常规通道，两端互等挂死。node（nghttp2）无此接管。
+- 修法（另案设计，未落地）：服务端读 upgrade 句柄→体事件泵 + 抑制常规空泵 + 写侧改走 upgrade 句柄；客户端镜像；隧道生命周期与 h2 流事件解耦。约 200 行 + 新竞态，超 C 轮 time-box。
+- 复现：px11（隧道 DATA 服务端无感）；px7/px12（200 后自发 EOS+RST）；node 全绿对照。
+- 推广铁律：**底座升级语义先读源码**——轮子对特殊方法（CONNECT/Upgrade）常有接管行为，不读源码即误判为己方 bug。
+
+### 4.314 kill -9 丢 println 缓冲（2026-10-20，http2 lane）
+
+- 症状： contiguous 日志时序自相矛盾（End 已处理又未处理），误导根因定位 1 小时。
+- 根因：`println!` 到文件是块缓冲，`kill -9` 丢弃未刷新的尾巴；`eprintln!` 无缓冲才保序。多线程下 eprintln 交错亦不可信，本轮单线程（LocalSet）才可用。
+- 修法：调试日志一律 `eprintln!`；JS 侧 console.log/error 跨流不比序。
+- 推广铁律：**取证先对齐时钟**——混合流日志先统一到无缓冲单流，否则时序全是幻觉。

@@ -2718,3 +2718,23 @@ G1/G2/G3/G9 已收官。）
 - 回归核销：`function-declaration/getters/global-define-property` 三件 base18 绿→本轮初红（rval/同步包装漏 global 豁免），已修绿；`basic` sweep DIFF 系并行负载抖动（单跑/单件 sweep 绿，见 vm-basic1 tag）；`set_immediate_not_clamped` 计时抖动系已知负载 flake（journal 2026-09-28 有案，单跑 2/3 过）。
 - 余 20 DIFF 定性：synthetic 作依赖（引擎墙，记档）；referrer-realm（主 loader 静态回落，linker 另案）；after-evaluate×2/hasasyncgraph/hastoplevelawait（linker 求值语义另案）；其余 12（context-async/global 系/proxies/symbols/sigint×2/cached-data/low-stack 等）皆 base18 预存红（非本轮引入，见 comm 差集：仅上三件新增且已修）。
 - 构建：lane 独立 worktree（`lane/vm`，基线 707a929）+ worktree-local target；`LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib`（brew llvm 缺失，主仓 AGENTS 路径此机不可用）；错峰 -j2（load 386 时停编，降后复工，已报 parent）。
+## P0 真回归2件（lane/http2）：destroy-delayed 修绿 + proxy-over-h2 另案
+
+- 基线：node 双绿；base18 双绿（proxy 系 DIFF）；base19 双 TIMEOUT；复判挂。
+- destroy-delayed ✅ 转绿（commit 862eaca，已合入 master）：根因两件——
+  ① Close 常先于 H2RespondEnd 进队（本仓 Duplex `_final` 递延到 setImmediate 之后），
+  旧到 Close 即 break 丢尾包致零字节 → 改优雅模式（GOAWAY 后继续收应答命令至
+  conn 结束或 5s deadline）；② 客户端 conn 收尾与流任务唤醒竞态（GOTRESP 在
+  CLI-DONE 之后，purge 丢事件）→ conn 结束处等 JoinHandle 落定（2s 上限）。
+  黑盒 `http2_socket_destroy_delayed_flush` + `http2_session_close_flush`。
+  回归面：close-idle/flushheaders/session-destroy/propagate/finished/socket 系绿；
+  goaway-cleanup 系 base18/19 双红（同错，非回归）。
+- proxy-over-h2 ⏭️ 另案（hyper CONNECT-upgrade 接管，见 4.313）：
+  线字节铁证——握手外隧道方向零 DATA 帧；外层 200 后 hyper 自发空 DATA-EOS +
+  RST(0)；常规 Incoming 恒空、body 通道收发皆死，应用须经 `hyper::upgrade::on`
+  泵接。node（nghttp2）无此接管故绿。修法设计：服务端读泵 + 写改道 + 客户端镜像
+  + 生命周期解耦（约 200 行），超 C 轮 time-box，下轮专项。连带：connect-method
+  同根因 DIFF（base19 同错，非回归）；proxy 套件行为 TIMEOUT→EXIT=1 系 dial
+  example.com 环境所致（隧道未通前即 protocol 错）。
+- 过程：单流定序（eprintln）+ 方向归属（evid）+ 帧解码三板斧；`println!` 块缓冲
+  坑（4.314）；`git checkout` 回退 proxy 半截活保 lane 可合。

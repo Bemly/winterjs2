@@ -135,13 +135,28 @@ async fn drive_session<S>(
     // 上传体通道（waitTrailers 悬置流；trailer 命令回注）。
     let uploads: BodyFeeds = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     // 在途请求任务句柄（H2RespondReset → abort → hyper RST(CANCEL)）
-    let stream_tasks: Arc<std::sync::Mutex<HashMap<u64, tokio::task::AbortHandle>>> =
+    let stream_tasks: Arc<std::sync::Mutex<HashMap<u64, tokio::task::JoinHandle<()>>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));
     tokio::pin!(conn);
     loop {
         tokio::select! {
             r = &mut conn => {
                 let _ = r;
+                // conn 收尾与流任务唤醒竞态（socket-destroy-delayed 根因）：
+                // 流任务（send_request 已决议、事件待发）若排在驱动退出之后，
+                // 其 response/data/end 将因 H2SessionClose 的 purge 而被丢弃。
+                // 此处先等流任务落定（2s 上限防真挂死），再发 aborted/close，
+                // 保证"应答先于终结"的 node 序。
+                let pending: Vec<tokio::task::JoinHandle<()>> =
+                    stream_tasks.lock().unwrap().drain().map(|(_, h)| h).collect();
+                if !pending.is_empty() {
+                    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                        for h in pending {
+                            let _ = h.await;
+                        }
+                    })
+                    .await;
+                }
                 if state::net_close_once(id) {
                     for (stream_id, done) in open.lock().unwrap().iter() {
                         if !*done {
@@ -413,7 +428,7 @@ async fn drive_session<S>(
                                 }
                             }
                         });
-                        stream_tasks.lock().unwrap().insert(stream_id, task.abort_handle());
+                        stream_tasks.lock().unwrap().insert(stream_id, task);
                     }
                     Some(NetCmd::H2RespondReset { stream_id, code }) => {
                         // 客户端流取消：abort 在途请求任务 + 精确 RST 码线注

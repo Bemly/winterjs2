@@ -348,3 +348,28 @@ fn mod_dir(files: &[(&str, &str)], entry: &str) -> (assert_fs::TempDir, std::pat
     let path = dir.child(entry).path().to_path_buf();
     (dir, path)
 }
+
+#[test]
+fn import_meta_filename_dirname() {
+    // 正常：file: 模块 import.meta.filename 为解码路径、dirname 为其父目录；
+    // 边界：data: 模块无此二键（undefined）；file: 嵌套子目录路径正确。
+    let (_dir, entry) = mod_dir(
+        &[
+            (
+                "app.mjs",
+                "console.log(JSON.stringify([import.meta.filename, import.meta.dirname]));\n\
+                 console.log(import.meta.filename.endsWith(\"/app.mjs\"));\n\
+                 console.log(import.meta.dirname === import.meta.filename.slice(0, -\"/app.mjs\".length));\n\
+                 import(\"data:text/javascript,console.log(JSON.stringify([import.meta.filename,import.meta.dirname]))\");\n",
+            ),
+        ],
+        "app.mjs",
+    );
+    let out = stdout_of(&mut winterjs2().arg("--run").arg(&entry));
+    let mut lines = out.lines();
+    let first: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert!(first[0].as_str().unwrap().ends_with("/app.mjs"), "out: {out}");
+    assert_eq!(first[1].as_str().unwrap().len() + "/app.mjs".len(), first[0].as_str().unwrap().len(), "out: {out}");
+    assert!(lines.any(|l| l == "true"), "out: {out}");
+    assert!(out.contains("[null,null]"), "out: {out}");
+}

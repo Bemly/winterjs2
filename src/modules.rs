@@ -574,6 +574,28 @@ unsafe extern "C" fn load_hook(
     }
 }
 
+/// import.meta 字符串属性定义（metadata_hook 内用）。
+/// SAFETY: cx/meta 在调用期内有效；name 无 NUL。
+unsafe fn define_meta_str(
+    cx: &mut JSContext,
+    meta: *mut JSObject,
+    name: &std::ffi::CStr,
+    value: &str,
+) -> bool {
+    rooted!(&in(cx) let mut v = UndefinedValue());
+    value.to_jsval(cx, v.handle_mut());
+    // SAFETY: cx/meta/v 均有效；name 无 NUL（调用方保证）
+    unsafe {
+        JS_DefineProperty(
+            cx.raw_cx(),
+            raw_handle(&meta),
+            name.as_ptr(),
+            raw_handle(v.as_ptr()),
+            JSPROP_ENUMERATE as u32,
+        )
+    }
+}
+
 /// SAFETY: 由引擎以有效参数回调（ModuleMetadataHook 约定）。
 unsafe extern "C" fn metadata_hook(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -631,7 +653,24 @@ unsafe extern "C" fn metadata_hook(
             )
         }
     })();
-    url_ok && resolve_ok
+    // import.meta.filename/dirname（file: URL 限定；data:/http(s) 无此二键，
+    // 真机口径）。NARROW：仅此钩子，不动解析/加载管线。
+    let mut names_ok = true;
+    if url.starts_with("file:") {
+        if let Ok(u) = Url::parse(&url) {
+            if let Ok(p) = u.to_file_path() {
+                let filename = p.to_string_lossy().into_owned();
+                let dirname = p
+                    .parent()
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                // SAFETY: cx/meta 有效；c"filename"/c"dirname" 无 NUL
+                names_ok = unsafe { define_meta_str(cx, meta, c"filename", &filename) }
+                    && unsafe { define_meta_str(cx, meta, c"dirname", &dirname) };
+            }
+        }
+    }
+    url_ok && resolve_ok && names_ok
 }
 
 /// 安装模块 hooks（`install` 同款进程级一次性语义；操作对象是 rt，realm 内外皆可）。

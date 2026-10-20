@@ -157,3 +157,69 @@ setTimeout(() => console.log("exit-ev", JSON.stringify(seen.sort())), 800);
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_stdio_faces() {
+    // 正常：缺省共享（子输出进管道 + 父终端双可见）；stdout:true 管道独占
+    //（父终端不可见，管道必达）；--require 预加载输出先行（'A\nB\n'）。
+    // 报错：--require/-r/--import 缺值三形拒（文案 "<flag> requires an argument"）；
+    // 边界：-r 禁 =形；分离空串消费后运行时炸（校验放行）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("printA.js").write_str("console.log(\"A\");").unwrap();
+    let preload = dir.child("printA.js").path().to_string_lossy().into_owned();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        &format!(
+            r#"
+import {{ Worker }} from "node:worker_threads";
+// 共享：缺省子输出父终端可见。
+const s = new Worker("console.log('SHARED-KID');", {{ eval: true }});
+s.on("exit", () => {{}});
+// 独占：stdout:true 父终端不可见、管道必达。
+const x = new Worker("console.log('EXCL-KID');", {{ eval: true, stdout: true }});
+let xseen = "";
+x.stdout.setEncoding("utf8");
+x.stdout.on("data", (c) => {{ xseen += c; }});
+x.on("exit", () => setTimeout(() => console.log("excl-pipe", xseen.includes("EXCL-KID")), 50));
+// 预加载：--require 输出先行。
+const p = new Worker('console.log("B");', {{ execArgv: ["--require", {preload:?}], eval: true, stdout: true }});
+p.on("exit", () => setTimeout(() => console.log("preload", JSON.stringify(p.stdout.read(p.stdout.readableLength)?.toString())), 50));
+// 带值旗矩阵。
+const t = (tag, argv, code, msg) => {{ try {{ const w = new Worker("1", {{ eval: true, execArgv: argv }}); w.on("exit", () => {{}}); w.on("error", () => {{}}); console.log(tag, "ALLOWED"); }} catch (e) {{ console.log(tag, e.code === code && (msg === undefined || e.message.includes(msg))); }} }};
+t("req-bare", ["--require"], "ERR_WORKER_INVALID_EXEC_ARGV", "--require requires an argument");
+t("req-empty", ["--require="], "ERR_WORKER_INVALID_EXEC_ARGV", "--require= requires an argument");
+t("req-dash", ["--require", "--foo"], "ERR_WORKER_INVALID_EXEC_ARGV", "--require requires an argument");
+t("r-bare", ["-r"], "ERR_WORKER_INVALID_EXEC_ARGV", "-r requires an argument");
+t("r-eq", ["-r=x"], "ERR_WORKER_INVALID_EXEC_ARGV");
+t("imp-bare", ["--import"], "ERR_WORKER_INVALID_EXEC_ARGV", "--import requires an argument");
+t("req-sep", ["--require", {preload:?}], undefined);
+t("req-eq", [`--require={preload}`], undefined);
+"#
+        ),
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "excl-pipe true",
+        "preload \"A\\nB\\n\"",
+        "req-bare true",
+        "req-empty true",
+        "req-dash true",
+        "r-bare true",
+        "r-eq true",
+        "imp-bare true",
+        "req-sep ALLOWED",
+        "req-eq ALLOWED",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing line: {line}\nout: {stdout}");
+    }
+    // 共享可见 + 独占不可见（父终端捕获断言）。
+    assert!(stdout.lines().any(|l| l.contains("SHARED-KID")), "shared missing:\n{stdout}");
+    assert!(!stdout.lines().any(|l| l == "EXCL-KID"), "exclusive leaked:\n{stdout}");
+    dir.close().unwrap();
+}

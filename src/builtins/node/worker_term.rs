@@ -120,6 +120,10 @@ pub struct WorkerBoot {
     /// 构造 `options.argv` 已串化数组（JSON 串；空即缺省；worker 侧 process.argv
     /// 透传，eval 形补 '[worker eval]'——process-argv 套件）。
     pub argv_user: Vec<String>,
+    /// stdio 管道独占位（bit0 stdout/bit1 stderr；stdio 套件）。
+    pub stdio_pipe: u8,
+    /// `--require` 预加载清单（按序；stdio-from-preload 套件）。
+    pub preload: Vec<String>,
     pub main_inbox: tokio::sync::mpsc::UnboundedSender<WorkerEvent>,
     pub rendezvous: std::sync::mpsc::Sender<(
         tokio::sync::mpsc::UnboundedSender<WorkerEvent>,
@@ -133,6 +137,9 @@ pub fn worker_boot_from_slot(boot: WorkerBoot) {
     let parent = state::port_alloc_cross(boot.worker_id, boot.main_inbox.clone());
     state::worker_boot(boot.thread_id, boot.data_json, boot.env_json, boot.name, boot.is_fork, parent);
     state::with_plain(|p| {
+        p.worker_self_id = Some(boot.worker_id);
+        p.worker_stdio_pipe = boot.stdio_pipe;
+        p.worker_preload = boot.preload;
         p.worker_main_inbox = Some(boot.main_inbox);
         p.worker_rendezvous = Some(boot.rendezvous);
     });
@@ -216,6 +223,26 @@ pub unsafe extern "C" fn worker_spawn(
     } else {
         Vec::new()
     };
+    // 第 8 参：stdio 管道独占位（"1"=stdout 独占、"2"=stderr 独占，可并"12"；
+    // 缺位/空即缺省 TEE——stdio 套件）。
+    let stdio_pipe: u8 = if frame.argc() >= 8 {
+        let v = value_to_string(&mut cx, frame.arg(7));
+        (v.contains('1') as u8) | ((v.contains('2') as u8) << 1)
+    } else {
+        0
+    };
+    // 第 9 参：`--require` 预加载清单（JSON 数组，按序；缺位/空/非法即无——
+    // stdio-from-preload 套件）。
+    let preload: Vec<String> = if frame.argc() >= 9 {
+        let v = value_to_string(&mut cx, frame.arg(8));
+        if v.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&v).unwrap_or_default()
+        }
+    } else {
+        Vec::new()
+    };
     let main_inbox = match state::with_plain(|p| p.worker_tx.clone()) {
         Some(tx) => tx,
         None => {
@@ -238,6 +265,8 @@ pub unsafe extern "C" fn worker_spawn(
         name,
         is_fork,
         argv_user,
+        stdio_pipe,
+        preload,
         main_inbox: main_inbox.clone(),
         rendezvous: rendezvous_tx,
     };

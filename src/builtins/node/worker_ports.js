@@ -371,11 +371,47 @@ export class Worker extends EventEmitter {
       "report-signal", "heapsnapshot-signal", "trace-event-categories",
       "trace-event-file-pattern",
     ]);
+    // 预加载收集器（execArgv 校验期收集 --require/-r 值；NODE_OPTIONS 期置空）。
+    let __preload = [];
     const __workerBadExecArgv = (list) => {
       const bad = [];
-      for (const entry of list) {
+      // --require/-r/--import 带值旗（node 真机口径：长形支持 =值（须非空）与
+      // 分离值（下个条目非 -开头即消费，空串亦消费、运行时再炸）；短形 -r 仅
+      // 分离值（=形即拒）；缺值拒文案为 "<flag> requires an argument"）。
+      // 命中值即记入预加载清单（--require/-r 按序执行；--import 仅放行，ESM
+      // 预加载另案）。`__preload` 为共享收集器（execArgv + NODE_OPTIONS 同口径，
+      // 后者只校验不执行）。
+      const valueFlags = new Set(["--require", "-r", "--import"]);
+      const consume = (i, head, eq, entry) => {
+        if (eq !== -1 && head === "-r") { bad.push(entry); return i; }
+        let value = eq === -1 ? null : entry.slice(eq + 1);
+        if (value === null) {
+          const next = list[i + 1];
+          if (next === undefined || next.startsWith("-")) {
+            bad.push(`${head} requires an argument`);
+            return i;
+          }
+          value = next;
+          i++;
+        } else if (value === "") {
+          // =形空值拒文案为完整合成串（真机："--require= requires an argument"）。
+          bad.push(`${entry} requires an argument`);
+          return i;
+        }
+        if (__preload !== null && (head === "--require" || head === "-r")) {
+          __preload.push(value);
+        }
+        return i;
+      };
+      for (let i = 0; i < list.length; i++) {
+        const entry = list[i];
         const eq = entry.indexOf("=");
-        const base = (eq === -1 ? entry : entry.slice(0, eq)).replace(/^--/, "");
+        const head = eq === -1 ? entry : entry.slice(0, eq);
+        if (valueFlags.has(head)) {
+          i = consume(i, head, eq, entry);
+          continue;
+        }
+        const base = head.replace(/^--/, "");
         if (!__kWorkerExecArgvAllowed.has(base) || (eq === -1 && __kWorkerExecArgvDenyBare.has(base))) {
           bad.push(entry);
         }
@@ -386,7 +422,9 @@ export class Worker extends EventEmitter {
       const badExec = __workerBadExecArgv(options.execArgv);
       if (badExec.length > 0) throw new codes.ERR_WORKER_INVALID_EXEC_ARGV(badExec);
     }
-    // env 内 NODE_OPTIONS 同口径校验（空白切分近似；仅串形校验）。
+    const preloadJson = __preload.length > 0 ? JSON.stringify(__preload) : "";
+    __preload = null;
+    // env 内 NODE_OPTIONS 同口径校验（空白切分近似；仅串形校验，只校验不执行）。
     if (typeof envOpt === "object" && envOpt !== null && typeof envOpt.NODE_OPTIONS === "string" &&
         envOpt.NODE_OPTIONS !== "") {
       const badNodeOpts = __workerBadExecArgv(envOpt.NODE_OPTIONS.split(/\s+/).filter((s) => s !== ""));
@@ -408,7 +446,9 @@ export class Worker extends EventEmitter {
       dataJson = __toWire(options.workerData, options.transferList);
     }
     let ids;
-    ids = String(__wjs2_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs2_forkChild ? "1" : "0", envJson, argvJson)).split(" ");
+    // 第 8/9 位：stdio 管道独占位（"1"/"2"/"12"）+ --require 预加载清单（JSON）。
+    const stdioPipe = `${options.stdout ? "1" : ""}${options.stderr ? "2" : ""}`;
+    ids = String(__wjs2_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs2_forkChild ? "1" : "0", envJson, argvJson, stdioPipe, preloadJson)).split(" ");
     this.__id = ids[0];
     this.__tid = Number(ids[1]);
     this.__exited = null;
@@ -417,7 +457,8 @@ export class Worker extends EventEmitter {
     this.__termWaiters = [];
     this.__cpuWaiters = new Map();
     // 缺省双管（node 真机：stdout/stderr 恒 Readable，stdin 仅 stdin:true 才具现；
-    // 旧"恒 null"断言已随实测翻转，见黑盒）。
+    // 旧"恒 null"断言已随实测翻转，见黑盒；stdout:true/stderr:true 即管道独占、
+    // 本地不回显，独占位随 spawn 第 8 参进 worker 会话）。
     this.__stdin = options.stdin ? new __WorkerStdin(this.__id) : null;
     this.__stdout = new __WorkerStdio();
     this.__stderr = new __WorkerStdio();

@@ -363,8 +363,12 @@ pub const WORKER_STDIO_INIT: &str = r#"
     const wrapStream = (stream, fd) => {
       if (!stream || typeof stream.write !== "function" || stream.__wjs2_stdioWrapped) return;
       const orig = stream.write.bind(stream);
+      // 管道独占（stdout:true/stderr:true）：上报照常、本地不再回显（node 真机
+      // 口径；独占位经 `globalThis.__wjs2_stdio_pipe` 由 Rust 侧置入）。
+      const exclusive = (globalThis.__wjs2_stdio_pipe ?? "").includes(fd);
       const wrapped = function (chunk, ...rest) {
         try { __wjs2_worker_stdio(fd, encChunk(chunk)); } catch {}
+        if (exclusive) return true;
         return orig(chunk, ...rest);
       };
       wrapped.__wjs2_stdioWrapped = true;
@@ -453,6 +457,20 @@ pub const WORKER_STDIO_INIT: &str = r#"
     globalThis.__wjs2_stdin_push = (wire) => { try { stdin.__pushWire(wire); } catch {} };
     try { proc.stdin = stdin; } catch {}
   } catch {}
+})();
+"#;
+
+/// worker 会话 `--require` 预加载脚本（`runtime::init_session` 内 worker 分支、
+/// stdio 接线后求值）：`globalThis.__wjs2_preload_list`（JSON 数组，Rust 侧置入）
+/// 按序 require（stdio-from-preload 套件：预加载输出先于用户脚本进管道）。
+/// CJS 限定（ESM 预加载 `--import` 另案）；缺失模块即抛（worker 起不来，
+/// WError + exit 1，真机口径）。
+pub const WORKER_PRELOAD_RUN: &str = r#"
+(() => {
+  const list = globalThis.__wjs2_preload_list ?? [];
+  for (const f of list) {
+    require(String(f));
+  }
 })();
 "#;
 

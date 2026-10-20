@@ -587,6 +587,22 @@ export function withClientRequest(openSocket, flavor) {
         //（防 HTTP path 泄进 net.connect 误连错目标——ENOTSOCK 现场记录）。
         if (options.socketPath !== undefined) options.path = options.socketPath;
       }
+      // node 口径（lib/internal/options.js getAllowUnauthorized + tls/wrap.js
+      // connect 缺省）：NODE_TLS_REJECT_UNAUTHORIZED=0 即 rejectUnauthorized
+      // 缺省 false（显式值恒赢；警告全进程一次）。https 客户端恒经 tls.connect
+      // 同口径；http 无 TLS 面不碰（flavor 门）。
+      if (flavor.protocol === "https:" && extra.rejectUnauthorized === undefined &&
+          typeof process === "object" && process !== null && process.env !== undefined &&
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+        extra.rejectUnauthorized = false;
+        if (globalThis.__wjs2WarnedAllowUnauthorized !== true) {
+          globalThis.__wjs2WarnedAllowUnauthorized = true;
+          try {
+            process.emitWarning("Setting the NODE_TLS_REJECT_UNAUTHORIZED environment variable to '0' " +
+              "makes TLS connections and HTTPS requests insecure by disabling certificate verification.");
+          } catch { /* 警告永不阻建连 */ }
+        }
+      }
       // node lib/_http_client.js：path 控制字符/空格即 ERR_UNESCAPED_CHARACTERS。
       if (INVALID_PATH_REGEX.test(path)) {
         throw new codes.ERR_UNESCAPED_CHARACTERS("Request path");

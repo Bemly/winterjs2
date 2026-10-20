@@ -437,3 +437,72 @@ console.log('essence:' + new MIMEType('TEXT/HTML;Charset=GBK').essence);
     assert!(out.contains("essence:text/html"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn util_small_validations() {
+    // 正常：styleText 嵌套/hex/别名/none、convert-signal 取值、sleep 有效值
+    // no-op、pendingDeprecate length 保形、promisify custom 匿名回填原名；
+    // 报错：styleText 非法格式 ARG_VALUE + 非法 stream ARG_TYPE、signal 非法值
+    // ARG_VALUE、sleep 非数 ARG_TYPE/越界 OOR；边界：validateStream:false 跳
+    // 过 stream 校验、DEP0174 警告照发。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r##"
+import util, { styleText, convertProcessSignalToExitCode, deprecate, promisify } from "node:util";
+import internalUtil from "node:internal/util";
+const t = (f) => { try { f(); return "NO-THROW"; } catch (e) { return e.constructor.name + ":" + e.code; } };
+console.log("style-nest:" + JSON.stringify(styleText("red", "A" + styleText("blue", "B", { validateStream: false }) + "C", { validateStream: false })));
+console.log("style-hex:" + JSON.stringify(styleText("#ff0000", "T", { validateStream: false })));
+console.log("style-alias:" + (styleText("grey", "x", { validateStream: false }) === styleText("gray", "x", { validateStream: false })));
+console.log("style-none:" + JSON.stringify(styleText("none", "test", { validateStream: false })));
+console.log("style-badfmt:" + t(() => styleText("invalid", "text")));
+console.log("style-badstream:" + t(() => styleText("red", "text", { stream: {} })));
+console.log("style-novalidate:" + JSON.stringify(styleText("red", "text", { stream: {}, validateStream: false })));
+console.log("signal-ok:" + convertProcessSignalToExitCode("SIGTERM"));
+console.log("signal-bad:" + t(() => convertProcessSignalToExitCode("INVALID")));
+console.log("signal-badtype:" + t(() => convertProcessSignalToExitCode(123)));
+console.log("sleep-ok:" + (internalUtil.sleep(5), "no-op"));
+console.log("sleep-argtype:" + t(() => internalUtil.sleep("x")));
+console.log("sleep-oor:" + t(() => internalUtil.sleep(-1)));
+console.log("pending-len:" + (internalUtil.pendingDeprecate(function (a, b) {}).length === 2));
+function origFn() {}
+origFn[promisify.custom] = () => {};
+console.log("prom-name:" + promisify(origFn).name);
+let depCode = "";
+process.on("warning", (w) => { depCode = w.code; });
+const p = promisify(async () => 1);
+p().catch(() => {});
+await new Promise((r) => setTimeout(r, 50));
+console.log("dep0174:" + depCode);
+"##,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "style-nest:\"\\u001b[31mA\\u001b[34mB\\u001b[31mC\\u001b[39m\"",
+        "style-hex:\"\\u001b[38;2;255;0;0mT\\u001b[39m\"",
+        "style-alias:true",
+        "style-none:\"test\"",
+        "style-badfmt:TypeError:ERR_INVALID_ARG_VALUE",
+        "style-badstream:TypeError:ERR_INVALID_ARG_TYPE",
+        "style-novalidate:\"\\u001b[31mtext\\u001b[39m\"",
+        "signal-ok:143",
+        "signal-bad:TypeError:ERR_INVALID_ARG_VALUE",
+        "signal-badtype:TypeError:ERR_INVALID_ARG_VALUE",
+        "sleep-ok:no-op",
+        "sleep-argtype:TypeError:ERR_INVALID_ARG_TYPE",
+        "sleep-oor:RangeError:ERR_OUT_OF_RANGE",
+        "pending-len:true",
+        "prom-name:origFn",
+        "dep0174:DEP0174",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}

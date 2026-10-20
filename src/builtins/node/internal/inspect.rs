@@ -29,15 +29,31 @@ const inspectDefaultOptions = {
   compact: 3, sorted: false, getters: false, numericSeparator: false,
 };
 const stylizeNoColor = (str, _style) => str;
-// 颜色表（node inspect.colors 子集 + inspect.styles 子集；真机口径：
+// 颜色表（node inspect.colors 全表 + inspect.styles 子集；真机口径：
 // key 不上色、value 按类型上色；特殊标记走 special/cyan）。
+// `inspectColors` 另供 `node:util` styleText 复用（与真机 `inspect.colors` 同键）。
 const __ansiColors = {
   reset: [0, 0], bold: [1, 22], dim: [2, 22], italic: [3, 23],
-  underline: [4, 24], inverse: [7, 27], hidden: [8, 28],
+  underline: [4, 24], blink: [5, 25], inverse: [7, 27], hidden: [8, 28],
+  strikethrough: [9, 29], doubleunderline: [21, 24],
   black: [30, 39], red: [31, 39], green: [32, 39], yellow: [33, 39],
   blue: [34, 39], magenta: [35, 39], cyan: [36, 39], white: [37, 39],
-  gray: [90, 39], grey: [90, 39],
+  bgBlack: [40, 49], bgRed: [41, 49], bgGreen: [42, 49], bgYellow: [43, 49],
+  bgBlue: [44, 49], bgMagenta: [45, 49], bgCyan: [46, 49], bgWhite: [47, 49],
+  framed: [51, 54], overlined: [53, 55],
+  gray: [90, 39], redBright: [91, 39], greenBright: [92, 39],
+  yellowBright: [93, 39], blueBright: [94, 39], magentaBright: [95, 39],
+  cyanBright: [96, 39], whiteBright: [97, 39],
+  bgGray: [100, 49], bgRedBright: [101, 49], bgGreenBright: [102, 49],
+  bgYellowBright: [103, 49], bgBlueBright: [104, 49],
+  bgMagentaBright: [105, 49], bgCyanBright: [106, 49], bgWhiteBright: [107, 49],
+  // 别名（真机 defineColorAlias 静态等价；getter/setter 联动语义未移植——
+  // 用户改 `inspect.colors.gray` 不连带 `grey`，偏差记档）。
+  grey: [90, 39], blackBright: [90, 39], bgGrey: [100, 49], bgBlackBright: [100, 49],
+  faint: [2, 22], crossedout: [9, 29], strikeThrough: [9, 29], crossedOut: [9, 29],
+  conceal: [8, 28], swapColors: [7, 27], swapcolors: [7, 27], doubleUnderline: [21, 24],
 };
+const inspectColors = __ansiColors;
 const __ansiStyles = {
   special: 'cyan', number: 'yellow', bigint: 'yellow', boolean: 'yellow',
   undefined: 'gray', null: 'bold', string: 'green', symbol: 'green',
@@ -688,6 +704,7 @@ function inspect(value, options) {
 export {
   identicalSequenceRange,
   inspect,
+  inspectColors,
   inspectDefaultOptions,
   stylizeNoColor,
   format,
@@ -696,5 +713,5 @@ export {
   stripVTControlCharacters,
   isZeroWidthCodePoint,
 };
-export default { identicalSequenceRange, inspect, inspectDefaultOptions, stylizeNoColor, format, formatWithOptions, getStringWidth, stripVTControlCharacters, isZeroWidthCodePoint };
+export default { identicalSequenceRange, inspect, inspectColors, inspectDefaultOptions, stylizeNoColor, format, formatWithOptions, getStringWidth, stripVTControlCharacters, isZeroWidthCodePoint };
 "#;

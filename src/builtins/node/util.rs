@@ -15,8 +15,8 @@
 //! - `isDeepStrictEqual` 为务实重写（comparisons.js 引擎的严格面算法，含
 //!   循环引用 memo/无序 Map/Set/TypedArray 内容/原型同一性/Object.is 数值）；
 //!   宽松 `isDeepEqual` 非公开面未移植。
-//! - `styleText` 最小实现（内联 ANSI 表；NO_COLOR/isTTY 判色；inspect.colors
-//!   未暴露——本仓 inspect 无色）。
+//! - `styleText` 逐字移植（node lib/util.js：replaceCloseCode 嵌套语义、hex
+//!   24-bit 色、别名表、validateStream/stream 校验、FORCE_COLOR 优先矩阵）。
 //! - 未移植（后续切片按需）：`getCallSites`/`markPromiseAsHandled`/`aborted`/
 //!   transferable 系列（引擎绑定）。
 //! - `TextEncoder`/`TextDecoder` 直通全局（本仓 prelude 实现）。
@@ -33,6 +33,7 @@ import {
   validateBoolean,
   validateFunction,
   validateNumber,
+  validateObject,
   validateOneOf,
   validateString,
 } from 'node:internal/validators';
@@ -53,10 +54,13 @@ const {
   format,
   formatWithOptions,
   inspect,
+  inspectColors,
   stripVTControlCharacters,
 } = inspectModule;
 // 10f：`inspect.defaultOptions` 与内部默认表同引用（可变活对象，真机口径）。
 inspect.defaultOptions = inspectModule.inspectDefaultOptions;
+// `inspect.colors` 即内部颜色全表（styleText 与真机同源；别名静态展开）。
+inspect.colors = inspectModule.inspectColors;
 // 10f：`inspect.custom` 即 custom inspect 符号（custom-searchparams-inspect
 // 套件经 `sp[util.inspect.custom]` 取用；与 internal/inspect 的 kCustom 同源）。
 inspect.custom = Symbol.for('nodejs.util.inspect.custom');
@@ -166,6 +170,16 @@ function promisify(original) {
   if (original[kCustomPromisifiedSymbol]) {
     const fn = original[kCustomPromisifiedSymbol];
     validateFunction(fn, 'util.promisify.custom');
+    // 真机口径：custom 实现与原同名（node 各域 custom 均正名定义，如 fs.js
+    // `function exists`、child `assignFunctionName(orig.name, …)`）。
+    // 本仓个别 custom 为匿名函数表达式（fs.exists/child exec 系，他域文件，
+    // 本 lane 不碰），此处回填原名——已正名即 no-op，他域在定义处补正名后
+    // 此兜底恒不触发。
+    try {
+      if (fn.name !== original.name) {
+        Object.defineProperty(fn, 'name', { value: original.name, configurable: true });
+      }
+    } catch {}
     return Object.defineProperty(fn, kCustomPromisifiedSymbol, {
       __proto__: null, value: fn, enumerable: false, writable: false, configurable: true,
     });
@@ -423,9 +437,9 @@ const signalNumbers = {
 };
 
 function convertProcessSignalToExitCode(signal) {
-  validateString(signal, 'signal');
-  const num = signalNumbers[signal];
-  return num === undefined ? undefined : 128 + num;
+  // 真机口径（internal/util.js）：白名单校验，无效即 ARG_VALUE（非 ARG_TYPE）。
+  validateOneOf(signal, 'signalCode', Object.keys(signalNumbers));
+  return 128 + signalNumbers[signal];
 }
 
 // ── debuglog（NODE_DEBUG 最小面）─────────────────────────────────────────
@@ -445,49 +459,146 @@ function debuglog(set, cb) {
   return fn;
 }
 
-// ── styleText（最小 ANSI 表，偏差见模块头注）─────────────────────────────
-const ansiCodes = {
-  red: [31, 39], green: [32, 39], yellow: [33, 39], blue: [34, 39],
-  magenta: [35, 39], cyan: [36, 39], white: [37, 39], black: [30, 39],
-  gray: [90, 39], grey: [90, 39],
-  redBright: [91, 39], greenBright: [92, 39], yellowBright: [93, 39],
-  blueBright: [94, 39], magentaBright: [95, 39], cyanBright: [96, 39], whiteBright: [97, 39],
-  bgRed: [41, 49], bgGreen: [42, 49], bgYellow: [43, 49], bgBlue: [44, 49],
-  bgMagenta: [45, 49], bgCyan: [46, 49], bgWhite: [47, 49], bgGray: [100, 49],
-  bold: [1, 22], dim: [2, 22], italic: [3, 23], underline: [4, 24],
-  strikethrough: [9, 29], hidden: [8, 28], inverse: [7, 27],
-  reset: [0, 0], overline: [53, 55],
-};
+// ── styleText（node lib/util.js 逐字移植）────────────────────────────────
+// 预计算转义常量；dim/bold 共用 close 22（keepClose 保留嵌套）。
+const __styleEscape = '\u001b[';
+const __styleEscapeEnd = 'm';
+const __styleHexCloseSeq = `${__styleEscape}39${__styleEscapeEnd}`;
+function __codesToStyle(codes) {
+  const openNum = codes[0];
+  return {
+    openSeq: `${__styleEscape}${openNum}${__styleEscapeEnd}`,
+    closeSeq: `${__styleEscape}${codes[1]}${__styleEscapeEnd}`,
+    keepClose: openNum === 2 || openNum === 1,
+  };
+}
+// 嵌套同色 close 码回填外层 open（尾部 close 不动；真机逐字）。
+function __replaceCloseCode(str, closeSeq, openSeq, keepClose) {
+  const closeLen = closeSeq.length;
+  let index = str.indexOf(closeSeq);
+  if (index === -1) return str;
+  let result = '';
+  let lastIndex = 0;
+  const replacement = keepClose ? closeSeq + openSeq : openSeq;
+  do {
+    const afterClose = index + closeLen;
+    if (afterClose < str.length) {
+      result += str.slice(lastIndex, index) + replacement;
+      lastIndex = afterClose;
+    } else {
+      break;
+    }
+    index = str.indexOf(closeSeq, lastIndex);
+  } while (index !== -1);
+  return result + str.slice(lastIndex);
+}
+const __hexColorRegExp = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+function __hexToRgb(hex) {
+  let hexStr;
+  if (hex.length === 4) {
+    hexStr = hex[1] + hex[1] + hex[2] + hex[2] + hex[3] + hex[3];
+  } else if (hex.length === 7) {
+    hexStr = hex.slice(1);
+  } else {
+    throw new ERR_OUT_OF_RANGE('hex', '#RGB or #RRGGBB', hex);
+  }
+  return Buffer.from(hexStr, 'hex');
+}
+function __isNodeStream(obj) {
+  return obj && (obj._readableState || obj._writableState ||
+    (typeof obj.write === 'function' && typeof obj.on === 'function') ||
+    (typeof obj.pipe === 'function' && typeof obj.on === 'function'));
+}
+function __isReadableStream(obj) {
+  return !!(obj && !__isNodeStream(obj) && typeof obj.pipeThrough === 'function' &&
+    typeof obj.getReader === 'function' && typeof obj.cancel === 'function');
+}
+function __isWritableStream(obj) {
+  return !!(obj && !__isNodeStream(obj) && typeof obj.getWriter === 'function' &&
+    typeof obj.abort === 'function');
+}
+// 着色判定（colors.js shouldColorize + getColorDepth 的 NO_COLOR/TERM=dumb
+// 回落近似；FORCE_COLOR 优先，真机口径）。
+function __styleShouldColorize(stream) {
+  try {
+    if (typeof process !== 'undefined' && process.env &&
+        process.env.FORCE_COLOR !== undefined) {
+      try {
+        if (stream && typeof stream.getColorDepth === 'function') {
+          return stream.getColorDepth() > 2;
+        }
+      } catch {}
+      return true;
+    }
+    if (process.env.NODE_DISABLE_COLORS !== undefined ||
+        process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb') {
+      return false;
+    }
+  } catch {}
+  try {
+    if (!stream || !stream.isTTY) return false;
+    if (typeof stream.getColorDepth === 'function') {
+      try { return stream.getColorDepth() > 2; } catch { return false; }
+    }
+    return true;
+  } catch { return false; }
+}
 
 function styleText(formatArg, text, options) {
   const validateStream = options?.validateStream ?? true;
   validateString(text, 'text');
-  if (options !== undefined) validateObject(options, 'options');
+  if (options !== undefined) {
+    validateObject(options, 'options');
+  }
   validateBoolean(validateStream, 'options.validateStream');
 
-  let skipColorize = false;
+  let skipColorize;
   if (validateStream) {
     const stream = options?.stream ?? process.stdout;
-    const isTTY = stream === process.stdout ? process.stdout.isTTY :
-      stream === process.stderr ? process.stderr.isTTY : false;
-    skipColorize = !isTTY || process.env.NO_COLOR !== undefined;
+    if (!__isReadableStream(stream) && !__isWritableStream(stream) &&
+        !__isNodeStream(stream)) {
+      throw new ERR_INVALID_ARG_TYPE('stream', ['ReadableStream', 'WritableStream', 'Stream'], stream);
+    }
+    skipColorize = !__styleShouldColorize(stream);
   }
-  if (skipColorize) return text;
 
   const formatArray = Array.isArray(formatArg) ? formatArg : [formatArg];
-  let out = text;
-  let open = '';
-  let close = '';
+  const colors = inspectColors;
+
+  let openCodes = '';
+  let closeCodes = '';
+  let processedText = text;
+
   for (const key of formatArray) {
     if (key === 'none') continue;
-    const codes = ansiCodes[key];
-    if (!codes) {
-      validateOneOf(key, 'format', Object.getOwnPropertyNames(ansiCodes));
+
+    if (typeof key === 'string' && key[0] === '#') {
+      if (!__hexColorRegExp.test(key)) {
+        throw new ERR_INVALID_ARG_VALUE('format', key,
+          'must be a valid hex color (#RGB or #RRGGBB)');
+      }
+      if (skipColorize) continue;
+      const { 0: r, 1: g, 2: b } = __hexToRgb(key);
+      const hexOpenSeq = `${__styleEscape}38;2;${r};${g};${b}${__styleEscapeEnd}`;
+      openCodes += hexOpenSeq;
+      closeCodes = __styleHexCloseSeq + closeCodes;
+      processedText = __replaceCloseCode(processedText, __styleHexCloseSeq, hexOpenSeq, false);
+      continue;
     }
-    open += `\u001b[${codes[0]}m`;
-    close = `\u001b[${codes[1]}m${close}`;
+
+    const codes = colors[key];
+    if (!codes) {
+      validateOneOf(key, 'format', Object.getOwnPropertyNames(colors));
+    }
+    const { openSeq, closeSeq, keepClose } = __codesToStyle(codes);
+    openCodes += openSeq;
+    closeCodes = closeSeq + closeCodes;
+    processedText = __replaceCloseCode(processedText, closeSeq, openSeq, keepClose);
   }
-  return `${open}${out}${close}`;
+
+  if (skipColorize) return text;
+
+  return `${openCodes}${processedText}${closeCodes}`;
 }
 
 // ── legacy is* 判定（DEP0044-DEP0056 口径）────────────────────────────────

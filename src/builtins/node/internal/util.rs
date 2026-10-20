@@ -8,6 +8,8 @@
 pub const SOURCE: &str = r#"
 // Copyright Joyent, Inc. and other Node contributors. MIT.
 // Port of node:internal/util (pieces needed by Phase 9a modules).
+import { validateUint32 } from 'node:internal/validators';
+import { getOptionValue } from 'node:internal/options';
 function normalizeEncoding(enc) {
   if (enc == null || enc === 'utf8' || enc === 'utf-8') return 'utf8';
   return slowCases(enc);
@@ -98,7 +100,9 @@ function once(callback, { preserveReturnValue = false } = {}) {
 }
 
 // Node _sleep 的阻塞实现（Atomics.wait）；运行时主线程禁用，恒 no-op（记档）。
+// 校验先行（真机口径：validateUint32，非数 ARG_TYPE、非整数/越界 OOR）。
 function sleep(msec) {
+  validateUint32(msec, 'msec');
   // Sync sleep unavailable on main thread in winterjs2; no-op (deviation).
 }
 
@@ -139,6 +143,39 @@ function emitExperimentalWarning(feature, messagePrefix, code, ctor) {
 }
 const lazyDOMException = (message, name) => new DOMException(String(message), String(name));
 
-export { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName, isError, emitExperimentalWarning, lazyDOMException };
-export default { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName, isError, emitExperimentalWarning, lazyDOMException };
+// 内部废弃包装（node internal/util.pendingDeprecate 口径）：仅
+// `--pending-deprecation`（且非 `--no-deprecation`）下首调告警；length 保形。
+const __pendingCodesWarned = new Set();
+function __isPendingDeprecation() {
+  try {
+    return !!getOptionValue('--pending-deprecation') &&
+      !getOptionValue('--no-deprecation');
+  } catch { return false; }
+}
+function pendingDeprecate(fn, msg, code) {
+  let warned = false;
+  function deprecated(...args) {
+    if (!warned && __isPendingDeprecation()) {
+      warned = true;
+      if (code !== undefined) {
+        if (!__pendingCodesWarned.has(code)) {
+          __pendingCodesWarned.add(code);
+          process.emitWarning(msg, 'DeprecationWarning', code, deprecated);
+        }
+      } else {
+        process.emitWarning(msg, 'DeprecationWarning', deprecated);
+      }
+    }
+    return Reflect.apply(fn, this, args);
+  }
+  try {
+    Object.defineProperty(deprecated, 'length', {
+      ...Object.getOwnPropertyDescriptor(fn, 'length'),
+    });
+  } catch {}
+  return deprecated;
+}
+
+export { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName, isError, emitExperimentalWarning, lazyDOMException, pendingDeprecate };
+export default { normalizeEncoding, spliceOne, setOwnProperty, kEmptyObject, promisify, once, sleep, assignFunctionName, isError, emitExperimentalWarning, lazyDOMException, pendingDeprecate };
 "#;

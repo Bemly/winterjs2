@@ -217,26 +217,21 @@ class Socket extends EventEmitter {
       ? Number(options.readableHighWaterMark ?? options.highWaterMark) || 0 : 65536;
     this.__pendBytes = 0;
     // socket 写队列记账（Slice C：reuse-drained 套件要 socket.writableLength
-    // 可观测——同步落盘 + microtask 排空 + HWM 累计判定 + 背压后 'drain'；
-    // 原生写本身同步（内核缓冲），记账层只管可观测语义，传输不动）。
+    // 可观测——落盘回执（Rust write_all 完成发 Wrote）递减 + HWM 累计判定 +
+    // 背压后 'drain'；旧 microtask 清零系伪语义（大写恒 0），传输不动）。
     this.__sockQ = 0;
     this.__needSockDrain = false;
-    this.__sockQFlush = null;
     this.__sockQAdd = (n) => {
       this.__sockQ = (this.__sockQ ?? 0) + n;
       if (this.__sockQ > this._writableState.highWaterMark) this.__needSockDrain = true;
-      if (this.__sockQFlush === null || this.__sockQFlush === undefined) {
-        this.__sockQFlush = true;
-        queueMicrotask(() => {
-          this.__sockQFlush = null;
-          this.__sockQ = 0;
-          if (this.__needSockDrain) {
-            this.__needSockDrain = false;
-            if (!this.destroyed) { try { this.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
-          }
-        });
-      }
       return this.__sockQ < this._writableState.highWaterMark;
+    };
+    this.__sockQDrain = (n) => {
+      this.__sockQ = Math.max(0, (this.__sockQ ?? 0) - n);
+      if (this.__sockQ === 0 && this.__needSockDrain) {
+        this.__needSockDrain = false;
+        if (!this.destroyed) { try { this.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
+      }
     };
     // _writableState 最小桩：HWM 存储随套件可变（response-drain-cork 套件
     // `socket._writableState.highWaterMark = 1000` 后 res 侧经

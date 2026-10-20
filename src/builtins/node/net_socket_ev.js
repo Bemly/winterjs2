@@ -75,6 +75,12 @@
         this.__ingestData(u8);
         break;
       }
+      case "wrote": {
+        // 写落盘回执（reuse-drained：Rust write_all 完成即发；递减记账，
+        // 归零且有背压待发即 'drain'）。
+        this.__sockQDrain(Number(payload) || 0);
+        break;
+      }
       case "end": {
         this.readable = false;
         this.__peerFin = true;

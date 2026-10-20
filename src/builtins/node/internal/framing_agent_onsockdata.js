@@ -865,7 +865,14 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   if (free !== undefined) {
     while (free.length > 0) {
       const sock = this.scheduling === "fifo" ? free.shift() : free.pop();
-      if (!sock.destroyed) {
+      // 未排空跳过并销毁（复用门双保险；入池后又被写脏的病态形，真机同拒；
+      // 摘出即失池籍，不毁即泄漏）。
+      if (sock.destroyed) continue;
+      if (typeof sock.writableLength === "number" && sock.writableLength > 0) {
+        try { sock.destroy(); } catch { /* gone */ }
+        continue;
+      }
+      {
         this.__unpool(sock);
         this.__list(this.sockets, key).push(sock);
         req.__poolKey = key;

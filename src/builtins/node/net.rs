@@ -56,6 +56,9 @@ pub enum NetKind {
     DgramSendError { code: String, msg: String, seq: u64 },
     /// dgram：send 完成（回调 (null, bytes) 经此异步触发——uv_udp_send 完成回调同型）。
     DgramSendOk { seq: u64, bytes: usize },
+    /// socket 写落盘回执（reuse-drained 套件：writableLength 真实反映内核未接纳
+    /// 字节；write_all 完成即发，JS 侧递减记账 + drain，替代 microtask 清零）。
+    Wrote { n: usize },
     // ── http2（Phase 9d-7；与 net 共通道，零新 channel）─────────────────────
     /// h2 服务端收到请求头（ev.id = server id；体流式跟进见 `streaming`）。
     /// 10f：authority/trailers/peer 面（compat 伪头合成 + trailers 事件）。
@@ -429,6 +432,7 @@ pub fn dispatch(
             "sendok",
             serde_json::json!({ "seq": seq, "bytes": bytes }).to_string(),
         ),
+        NetKind::Wrote { n } => ("wrote", n.to_string()),
         NetKind::Listening { addr, port } => {
             ("listening", serde_json::json!({ "addr": addr, "port": port }).to_string())
         }

@@ -224,3 +224,21 @@
 - 根因：`normalize_internal` 只认 INTERNALS 表项，node 真路径 `internal/util/debuglog` 无条目。另：INTERNALS.len 断言在 HEAD 已 stale（表实 82，断言写 80——多 lane 加表不 bump 数）。
 - 修法：加 `("node:internal/util/debuglog", debuglog::SOURCE)` 同源别名（`node:inspector/promises` 同源先例）；len 按实测 83 落数并注记 stale 史。
 - 推广铁律：**内部模块 node 真路径优先**——自造短名必须配真路径别名（套件直引用真路径）；**注册表长度断言是谁加表谁 bump**，并发 lane 下先按实测落数再注记。
+
+### 4.292 sweep 基线构建只认干净树（2026-10-20，sweep lane）
+
+- 症状：base19 sweep fs 37 连红（`mode received function`/`invalid flag`），对
+  file-history（base18→db1152a 仅 811936c 动 fs 且只碰 URL 分支）完全无解，
+  险些误判为已合入回归让无辜 lane 背锅。
+- 根因：`cargo build` 编译的是**工作区**不是 HEAD；多 lane 并行时工作区常脏，
+  sweep-owner 未查 `git status` 即构建，把他 lane 未提交的 open 重写
+  （事后合入 22f2db2）bake 进基线二进制。取证：sweep-time 堆栈
+  `at open (node:fs:3048:22/3049:26)` + `m is not defined @ node:fs:3064:3`，
+  bundle 行号 2658（fs_base943+streams591+sync9c436+fdsync688）+406
+  （`void m;` 在 fs_async 行）=3064 精确命中新代码；旧包同行是 `read()` 体，
+  不可能报 `open` 帧——故旧二进制已含重写代码。
+- 修法：sweep-owner 构建前必 `git status --short`，非空即停（多 lane 下
+  stash 风险高，首选等干净窗口/让各 lane 先 commit+push）。
+- 复现：base19（旧二进制脏树构建；journal base19 节 + §0.3 mixed-binary 注）。
+- 推广铁律：**基线构建只认干净树**——status 非空不构建、不起 sweep；
+  混合二进制基线必须落盘标注切换点，冻结后重跑纯净版。

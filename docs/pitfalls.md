@@ -254,6 +254,7 @@
 - 4.289 跨 compartment 取 `this.href` 走原型链误品牌（2026-10-20，whatwg lane）
 - 4.290 promisify custom 改名 fallback 全局污染（2026-10-20，console lane）
 - 4.291 `node:` 内部真路径要显式别名 + 注册表长度断言并发 stale（2026-10-20，console lane）
+- 4.292 sweep 基线构建只认干净树（2026-10-20，sweep lane）
 
 ## 条目
 

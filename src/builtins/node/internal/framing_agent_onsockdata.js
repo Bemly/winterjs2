@@ -109,6 +109,7 @@
               if (__s.__lastTimeoutCb !== undefined) { try { __s.removeListener("timeout", __s.__lastTimeoutCb); } catch {} __s.__lastTimeoutCb = undefined; }
               if (__s.__agTimeoutSingleton !== undefined) { try { __s.removeListener("timeout", __s.__agTimeoutSingleton); } catch {} }
               if (__s.__freeSockErr !== undefined) { try { __s.removeListener("error", __s.__freeSockErr); } catch {} }
+              if (__s.__agOnFree !== undefined) { try { __s.removeListener("free", __s.__agOnFree); } catch {} __s.__agOnFree = undefined; }
               __s._httpMessage = null;
             } catch { /* 摘除失败不阻隧道 */ }
             // 摘池（101 升级同款：先摘后发；CONNECT 从不入 freeSockets，
@@ -363,6 +364,9 @@
         // 只正常完成才排（complete 门；abort/error 的 close 路径不排）。
         // 注意只排一次（gate 单发守卫）。
         if (this.__res !== null && this.__res !== undefined && this.__res.complete === true) {
+          // socket 'free'（node emitFreeNT 口径；nextTick 递延，用户 end 先行；
+          // agent.destroy()/socket.destroy() 不取消已排 free）。agent 级 'free'
+          // 由 agent 侧 onFree 转发（见 __trackSocket），此处不直发。
           const __fs = sock;
           process.nextTick(() => { try { __fs.emit("free"); } catch { /* gone */ } });
         }
@@ -451,15 +455,7 @@
           this.timeoutCb = null;
         }
         this.agent.__release(sock, this.__key, this, poolable);
-        try { sock.emit("free"); } catch { /* gone */ }
-        // node installListeners/onFree 口径：socket 'free' 即转 agent 'free'
-        //（additional-options 套件 globalAgent.once('free') 推进轮次；handler
-        // 内 freeSockets 已有键——__release 先行与 node agent 'free' 处理器
-        // 内建池同序）。真入池路才发（__release 内置 __inPool 旗；销毁路
-        // __release 已直毁，node 侧亦由 agent 处理器销毁，不补发）。
-        if (poolable && sock.__inPool === true && !sock.destroyed) {
-          try { this.agent.emit("free", sock, this.__connOpts ?? {}); } catch { /* gone */ }
-        }
+        // socket/agent 'free' 统一由 gate 递延双发（见上；此处直发即双发）。
       } else {
         try { sock.end(); } catch { /* closed meanwhile */ }
       }
@@ -752,7 +748,9 @@ Agent.prototype.__dropIfEmpty = function (map, key) {
   if (map[key] !== undefined && map[key].length === 0) delete map[key];
 };
 Agent.prototype.__liveCount = function (key) {
-  const all = this.__peek(this.sockets, key).filter((s) => !s.destroyed);
+  // node 口径：按表长计（含已 destroy 未 close——槽位留到 close 才释放，
+  // agent-destroyed-socket 套件 req2 排队形；destroyed 即剔除则配额提前空出）。
+  const all = this.__peek(this.sockets, key);
   return all.length;
 };
 // 全局活 socket 数（maxTotalSockets 帽的判定口径；agent-maxtotalsockets 套件
@@ -771,6 +769,16 @@ Agent.prototype.__trackSocket = function (sock, key) {
   // 池键随 socket 走（__noteClosed 按 sock.__poolKey 摘表；此前只记 req 侧，
   // 关闭后 sockets/freeSockets 残留——agent-keepalive 套件断言键消失）。
   sock.__poolKey = key;
+  // node installListeners 口径：agent 订阅 socket 'free' 再转 agent 'free'
+  //（additional-options/globalAgent 'free' 推进；agent-destroyed-socket 3 次）。
+  // 去重单挂；detach/close 时摘（见 __noteClosed/隧道 detach）。
+  if (!sock.__agOnFree) {
+    const __ag = this;
+    sock.__agOnFree = function onFree() {
+      try { __ag.emit("free", sock, sock.__connOpts ?? {}); } catch { /* gone */ }
+    };
+    try { sock.on("free", sock.__agOnFree); } catch { /* gone */ }
+  }
   // node 口径：agent 不另挂 end 监听（socket 自门 onReadableStreamEnd 足矣；
   // active 2 = 自门 + 请求门，池态/detach 1，见 agent-keepalive/cli-sock）。
   // FIN 后写 EPIPE 置换由自门内建（net_socket.js）。
@@ -917,6 +925,12 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
       return;
     }
     this.__trackSocket(sock, key);
+    // 替补连接 free 驱动（见 __resumeQueued）：建成就发 socket 'free'
+    //（node removeSocket 口径；分配经既有 onSocket 直调，free 纯可观测）。
+    if (req.__emitFreeOnConnect === true) {
+      req.__emitFreeOnConnect = false;
+      try { sock.emit("free"); } catch { /* gone */ }
+    }
     onSocket(sock, false);
   };
   this.createSocket(req, opts, oncreate);
@@ -939,6 +953,8 @@ Agent.prototype.__noteClosed = function (sock) {
   };
   drop(this.sockets);
   drop(this.freeSockets);
+  // agent 'free' 转发不随 close 摘除（排队中的 socket 'free' 仍须送达；
+  // 僵尸监听随 socket 本体 GC；隧道劫持另行摘除）。
   // 非池化关闭亦须续行排队请求（get-pipeline-problem 套件：maxSockets=1 下
   // 首连接关后排队请求永不到；此前仅回池路径续行）。
   this.__resumeQueued(key);

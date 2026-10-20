@@ -358,6 +358,14 @@
       const __once = () => {
         if (__fired) return;
         __fired = true;
+        // node emitFreeNT 口径：正常收齐即排 socket 'free'（nextTick，用户 end
+        // 先行；agent.destroy() 不取消已排 free——keepalive-free 套件）。
+        // 只正常完成才排（complete 门；abort/error 的 close 路径不排）。
+        // 注意只排一次（gate 单发守卫）。
+        if (this.__res !== null && this.__res !== undefined && this.__res.complete === true) {
+          const __fs = sock;
+          process.nextTick(() => { try { __fs.emit("free"); } catch { /* gone */ } });
+        }
         this.__finishSock(sock);
         if (!this.__closeEmitted) {
           this.__closeEmitted = true;

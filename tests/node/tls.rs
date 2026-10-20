@@ -563,3 +563,166 @@ setTimeout(() => console.log("end-ok"), 2500);
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn tls_check_server_identity_unfqdn_and_wildcards() {
+    // node lib/tls.js checkServerIdentity 原文移植面（unfqdn/RFC6125/IP 规范化）——
+    // 正常：尾点 CN 双向放行、部分通配（*b.a.com）、IPv6 展开形等价、CN 数组；
+    // 报错：双层通配解析（c.b.a.com vs *.a.com）、裸 TLD 通配、xn-- 逐字、空标签/坏字符；
+    // 边界：IDN 全角点分词、URI-only 无 DNS 名、非法 v4 SAN 空表、主机尾点消息归一。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "i.mjs",
+        r#"
+import tls from "node:tls";
+const t = (host, cert) => {
+  const e = tls.checkServerIdentity(host, cert);
+  return e === undefined ? "pass" : e.reason;
+};
+const rows = [
+  // 正常：CN 尾点双向等价。
+  ["a.com", { subject: { CN: "a.com." } }, "pass"],
+  ["a.com.", { subject: { CN: "a.com" } }, "pass"],
+  ["a.com.", { subject: { CN: "a.com." } }, "pass"],
+  // 正常：部分通配（非首段 * 形，node 逐字保留）。
+  ["b.a.com", { subjectaltname: "DNS:*b.a.com", subject: {} }, "pass"],
+  ["a-cb.a.com", { subjectaltname: "DNS:*b.a.com", subject: {} }, "pass"],
+  ["b.a.com", { subject: { CN: "*.a.com" } }, "pass"],
+  // 正常：IPv6 展开大写等价 + CN 数组。
+  ["2001:db8::1", { subject: {}, subjectaltname: "IP Address:2001:DB8:0:0:0:0:0:1" }, "pass"],
+  ["foo.com", { subject: { CN: ["foo.com", "bar.com"] } }, "pass"],
+  // 报错：跨层/裸 TLD/xn-- 内嵌通配/空标签/坏字符。
+  ["c.b.a.com", { subjectaltname: "DNS:*.a.com", subject: {} }, "Host: c.b.a.com. is not in the cert's altnames: DNS:*.a.com"],
+  ["a.com", { subjectaltname: "DNS:*.com", subject: { CN: "b.com" } }, "Host: a.com. is not in the cert's altnames: DNS:*.com"],
+  ["xn--bcher-kva.example.com", { subject: { CN: "xn--*.example.com" } }, "Host: xn--bcher-kva.example.com. is not cert's CN: xn--*.example.com"],
+  ["bad.x.example.com", { subject: { CN: "bad..example.com" } }, "Host: bad.x.example.com. is not cert's CN: bad..example.com"],
+  ["x.example.com", { subjectaltname: "DNS:bad label.com", subject: {} }, "Host: x.example.com. is not in the cert's altnames: DNS:bad label.com"],
+  // 报错：IDN 全角点按分隔符分词（4 段 vs 3 段失配）。
+  ["foo。bar.example.com", { subjectaltname: "DNS:*.example.com", subject: {} }, "Host: foo。bar.example.com. is not in the cert's altnames: DNS:*.example.com"],
+  // 边界：URI-only 即无 DNS 名；非法 v4 SAN 规范化为空表；主机尾点消息归一。
+  ["a.b.a.com", { subjectaltname: "URI:http://a.b.a.com/", subject: {} }, "Cert does not contain a DNS name"],
+  ["8.8.8.8", { subject: { CN: "8.8.8.8" }, subjectaltname: "IP Address:8.8.08.8" }, "IP: 8.8.8.8 is not in the cert's list: "],
+  ["a.com.", { subject: { CN: "b.com" } }, "Host: a.com. is not cert's CN: b.com"],
+];
+let bad = 0;
+for (const [h, c, want] of rows) {
+  const got = t(h, c);
+  if (got !== want) { console.log("MISMATCH", JSON.stringify(h), "got", JSON.stringify(got), "want", JSON.stringify(want)); bad++; }
+}
+console.log(bad === 0 ? "ident-ok" : "ident-bad " + bad);
+"#,
+    );
+    assert!(out.lines().any(|l| l == "ident-ok"), "out: {out}");
+    dir.close().unwrap();
+}
+
+/// rcgen 三级链（root→mid→leaf，CN 分别 wjs-root/mid/leaf；leaf SAN leaf.test）。
+fn write_three_level_chain(dir: &assert_fs::TempDir) -> (String, String, String, String) {
+    fn mk_ca(cn: &str) -> rcgen::CertifiedIssuer<'static, rcgen::KeyPair> {
+        let mut p = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        p.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        p.distinguished_name.push(rcgen::DnType::CommonName, cn);
+        let k = rcgen::KeyPair::generate().unwrap();
+        rcgen::CertifiedIssuer::self_signed(p, k).unwrap()
+    }
+    fn put(dir: &assert_fs::TempDir, name: &str, content: &str) -> String {
+        let p = dir.path().join(name);
+        std::fs::write(&p, content).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+    let root = mk_ca("wjs-root");
+    let mut mid_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    mid_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    mid_params.distinguished_name.push(rcgen::DnType::CommonName, "wjs-mid");
+    let mid = rcgen::CertifiedIssuer::signed_by(
+        mid_params,
+        rcgen::KeyPair::generate().unwrap(),
+        &root,
+    )
+    .unwrap();
+    let mut leaf_params = rcgen::CertificateParams::new(vec!["leaf.test".to_string()]).unwrap();
+    leaf_params.distinguished_name.push(rcgen::DnType::CommonName, "wjs-leaf");
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let leaf_key_pem = leaf_key.serialize_pem();
+    let leaf = rcgen::CertifiedIssuer::signed_by(leaf_params, leaf_key, &mid).unwrap();
+    (
+        put(dir, "root.pem", &root.pem()),
+        put(dir, "mid.pem", &mid.pem()),
+        put(dir, "leaf-key.pem", &leaf_key_pem),
+        put(dir, "leaf-cert.pem", &leaf.pem()),
+    )
+}
+
+#[test]
+fn tls_server_chain_extra_and_anchor() {
+    // node 服务端出示链口径（cert + ca 作 extra chain）+ getPeerCertificate(true) 信任锚补齐：
+    // 正常：三级链授信存活，issuerCertificate 逐级链接、根自链；
+    // 边界：无 ca 出示即末级自链（单证书形不崩）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (root_p, mid_p, lk_p, lc_p) = write_three_level_chain(&dir);
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const root = fs.readFileSync("{root_p}", "utf8");
+const mid = fs.readFileSync("{mid_p}", "utf8");
+const leafKey = fs.readFileSync("{lk_p}", "utf8");
+const leafCert = fs.readFileSync("{lc_p}", "utf8");
+const srv = tls.createServer({{ key: leafKey, cert: leafCert, ca: mid }}, (s) => {{
+  s.on("data", (c) => s.write("ok:" + c));
+  s.on("error", () => {{}});
+}});
+srv.listen(0, "127.0.0.1", () => {{
+  const port = srv.address().port;
+  // 正常：三级链完整，授权通过且锚链三级。
+  const a = tls.connect({{ port, host: "127.0.0.1", servername: "leaf.test", ca: root }}, () => {{
+    console.log("auth", a.authorized);
+    const full = a.getPeerCertificate(true);
+    const m = full.issuerCertificate, r = m.issuerCertificate;
+    console.log("leaf", full.subject.CN);
+    console.log("mid", m.subject.CN);
+    console.log("root", r.subject.CN, r.issuerCertificate === r);
+    console.log("flat", a.getPeerCertificate().subject.CN);
+    a.end();
+  }});
+  a.on("error", (e) => console.log("unexpected", e.code));
+  a.on("close", () => {{
+    // 边界：服务端无 ca 出示（单证书）：客户端 ca 仍可补锚，不崩。
+    const srv2 = tls.createServer({{ key: leafKey, cert: leafCert }}, (s) => s.on("error", () => {{}}));
+    srv2.listen(0, "127.0.0.1", () => {{
+      const b = tls.connect({{ port: srv2.address().port, host: "127.0.0.1", servername: "leaf.test",
+        ca: root + "\n" + mid, rejectUnauthorized: false }}, () => {{
+        const f = b.getPeerCertificate(true);
+        console.log("solo", f.subject.CN, f.issuerCertificate.subject.CN);
+        b.end();
+        srv.close();
+        srv2.close();
+      }});
+      b.on("error", () => {{}});
+    }});
+  }});
+}});
+srv.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#
+        ),
+    );
+    for line in [
+        "auth true",
+        "leaf wjs-leaf",
+        "mid wjs-mid",
+        "root wjs-root true",
+        "flat wjs-leaf",
+        "solo wjs-leaf wjs-mid",
+        "srv-close",
+        "end-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(!out.contains("unexpected"), "out: {out}");
+    dir.close().unwrap();
+}

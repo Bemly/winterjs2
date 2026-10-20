@@ -33,9 +33,11 @@
 //!   `moveMessagePortToContext` 恒返回自身。
 //! - worker eval 的 completion 值照脚本语义打印（Node 不打印；`void 0` 收尾即可）。
 //! - `terminate()` 只在事件循环检查点生效（同步死循环停不下来，与主线程同限）。
-//! - stdin/stdout/stderr 恒 null；execArgv/resourceLimits/stdin/out/err 管道/
-//!   trackUnmanagedFds/credentials 接受忽略；`threadName`/`markAsUntransferable`/
-//!   locks 不导出；`stderr/stdout` 不管道。
+//! - stdio 管道（stdio 套件）：stdout/stderr 恒 Readable（WStdio 事件进流 +
+//!   本地 TEE，双可见与真机同）；stdin 仅 stdin:true 具现 Writable（WStdin
+//!   事件进 worker fed-Readable）；exit 前保序冲刷。execArgv 内容门按真机矩阵
+//!   近似；resourceLimits/trackUnmanagedFds/credentials 接受忽略；`threadName`/
+//!   `markAsUntransferable`/locks 不导出。
 //! - 无 `error` 监听的 worker 错误即 fatal（Node 同款 unhandled 'error'）。
 
 use std::collections::HashMap;
@@ -71,6 +73,12 @@ pub enum WorkerEvent {
     WOnline { worker_id: u64 },
     /// 主→worker：终止（置 `worker_terminated` 旗，检查点退出）。
     WTerminate,
+    /// worker→主：子输出块（1 stdout/2 stderr；wire JSON {s}/{b}，exit 前保序；
+    /// stdio 套件；父 `__ev("stdout"|"stderr")` 进流）。
+    WStdio { worker_id: u64, stream: u8, data: String },
+    /// 主→worker：子输入块（wire JSON {s}/{b}/{end}；stdio 套件；worker 全局
+    /// `__wjs2_stdin_push` 进流，缺失即丢）。
+    WStdin { data: String },
     /// 跨线程直投（`postMessageToThread`）：目标会话 `workerMessage` 派发 + 回执。
     /// dest 0（主线程）非主会话收到即沿派生链上转（worker 的 `worker_main_inbox`
     /// 恒为直接派生者，主线程无注册表——node 全线程直连主端口的等价实现）。
@@ -257,6 +265,9 @@ pub fn dispatch(
                 return Err(failed(cx));
             }
             Ok(())
+        }
+        WorkerEvent::WStdio { .. } | WorkerEvent::WStdin { .. } => {
+            dispatch_stdio(cx, global, &failed, &ev)
         }
         WorkerEvent::WExit { worker_id, code } => {
             if !state::worker_exited(worker_id) {
@@ -790,7 +801,7 @@ pub use super::worker_term::{
     term_tls_bind, term_tls_flagged, worker_boot_from_slot, worker_booted,
     worker_spawn,
 };
-pub use super::worker_messaging::{post_to_thread, thread_bridge_attach, worker_attach, worker_post, worker_tid};
+pub use super::worker_messaging::{WORKER_STDIO_INIT, dispatch_stdio, post_to_thread, thread_bridge_attach, worker_attach, worker_post, worker_stdin_to, worker_stdio_out, worker_tid};
 
 
 /// 终止 worker（`WTerminate`；退出码经 `WExit` 事件回传，恒 1）。

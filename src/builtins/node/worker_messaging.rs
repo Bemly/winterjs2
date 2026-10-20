@@ -6,7 +6,7 @@
 
 use mozjs::jsval::{JSVal, UndefinedValue};
 
-use crate::jsapi_glue::{report_error, value_to_string, wrap_cx, Frame};
+use crate::jsapi_glue::{call_one, report_error, value_to_string, wrap_cx, Frame};
 use crate::state;
 
 use super::worker::{WorkerEvent, arg_id, with_str_args};
@@ -56,6 +56,72 @@ pub unsafe extern "C" fn worker_post(
         Some((inbox, parent)) => inbox
             .send(WorkerEvent::PortMsg { to: parent, json })
             .is_ok(),
+        None => false,
+    };
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// UNSAFE-BOUNDARY: worker 会话子输出上报。`__wjs2_worker_stdio(fd, wire)` →
+/// boolean（fd "1"/"2"，wire JSON {s}/{b}；主 inbox WStdio 投递，exit 前保序）。
+/// 前置：worker 会话内调用（自 id + 主 inbox 来自 TLS；主会话调即 false）。
+/// 覆盖：`tests/node/worker.rs::worker_stdio_surface`。
+pub unsafe extern "C" fn worker_stdio_out(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 worker::port_pair
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: worker stdio needs (fd, wire)");
+        return false;
+    }
+    let fd = value_to_string(&mut cx, frame.arg(0));
+    let wire = value_to_string(&mut cx, frame.arg(1));
+    let stream: u8 = match fd.as_str() {
+        "2" => 2,
+        "1" => 1,
+        _ => {
+            report_error(&mut cx, "TypeError: worker stdio fd must be 1 or 2");
+            return false;
+        }
+    };
+    let (id, inbox) = match state::with_plain(|p| (p.worker_self_id, p.worker_main_inbox.clone())) {
+        (Some(id), Some(inbox)) => (id, inbox),
+        _ => {
+            frame.set_rval(mozjs::jsval::BooleanValue(false));
+            return true;
+        }
+    };
+    let ok = inbox.send(WorkerEvent::WStdio { worker_id: id, stream, data: wire }).is_ok();
+    frame.set_rval(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+/// UNSAFE-BOUNDARY: 主→worker 子输入。`__wjs2_worker_stdin(workerId, wire)` →
+/// boolean（wire JSON {s}/{b}/{end}；worker 收件箱 WStdin 投递）。
+/// 前置：id 为已登记 worker；覆盖：同上。
+pub unsafe extern "C" fn worker_stdin_to(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let id = match arg_id(&mut cx, &frame, 0) {
+        Some(id) => id,
+        None => return false,
+    };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: worker stdin needs a wire string");
+        return false;
+    }
+    let wire = value_to_string(&mut cx, frame.arg(1));
+    let ok = match worker_route(id) {
+        Some((inbox, _)) => inbox.send(WorkerEvent::WStdin { data: wire }).is_ok(),
         None => false,
     };
     frame.set_rval(mozjs::jsval::BooleanValue(ok));
@@ -192,6 +258,58 @@ pub fn thread_deliver(
     Ok(())
 }
 
+/// stdio 派发（`WStdio/WStdin` 用；`dispatch` 经 `&failed` 保底；worker.rs 纯搬移）。
+pub fn dispatch_stdio(
+    cx: &mut JSContext,
+    global: *mut JSObject,
+    failed: &dyn Fn(&mut JSContext) -> crate::error::Error,
+    ev: &WorkerEvent,
+) -> Result<(), crate::error::Error> {
+    match ev {
+        WorkerEvent::WStdio { worker_id, stream, data } => {
+            // 只进主会话；worker 会话收到即丢（绝不回流）。
+            if !state::worker_is_main() {
+                return Ok(());
+            }
+            let Some(target) = state::worker_target(*worker_id) else {
+                return Ok(());
+            };
+            if !target.is_object() {
+                return Ok(());
+            }
+            rooted!(&in(cx) let t: *mut JSObject = target.to_object());
+            let Some(fun) = get_prop_value(cx, t.get(), c"__ev") else {
+                return Err(failed(cx));
+            };
+            let kind = if *stream == 2 { "stderr" } else { "stdout" };
+            if with_str_args(cx, global, fun, kind, data).is_none() {
+                return Err(failed(cx));
+            }
+            Ok(())
+        }
+        WorkerEvent::WStdin { data } => {
+            // 只进 worker 会话；主会话收到即丢。全局钩子缺失（旧快照）即丢。
+            if state::worker_is_main() {
+                return Ok(());
+            }
+            let Some(hook) = get_prop_value(cx, global, c"__wjs2_stdin_push") else {
+                return Ok(());
+            };
+            rooted!(&in(cx) let hook_root = hook);
+            rooted!(&in(cx) let mut arg = UndefinedValue());
+            {
+                use mozjs::conversions::ToJSValConvertible as _;
+                data.to_jsval(cx, arg.handle_mut());
+            }
+            rooted!(&in(cx) let arg_root = arg.get());
+            if call_one(cx, global, hook_root.get(), arg_root.get()).is_none() {
+                return Err(failed(cx));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
 /// 直投回执：唤醒发送方 `postMessageToThread` 等待者（桥接缺失即发送方已去，丢弃）。
 pub fn thread_ack(
     cx: &mut JSContext,
@@ -216,3 +334,124 @@ pub fn thread_ack(
         None => Err(failed(cx)),
     }
 }
+
+// ── worker stdio 面（stdio 套件；worker.rs 纯搬移，调用方经 `pub use` 原位重导出）──
+
+/// worker 会话 stdio 接线脚本（`runtime::init_session` 内 worker 分支求值；
+/// 用户脚本前运行）：stdout/stderr 写拦截上报（本地 TEE 不变）+ stdin 换
+/// fed-Readable（`__wjs2_stdin_push` 进流）。全程设防，永不抛（抛即会话起不来）。
+pub const WORKER_STDIO_INIT: &str = r#"
+(() => {
+  try {
+    const proc = globalThis.process;
+    if (!proc || proc.__wjs2_stdioInit) return;
+    proc.__wjs2_stdioInit = true;
+    const encChunk = (chunk) => {
+      if (typeof chunk === "string") return JSON.stringify({ s: chunk });
+      try {
+        if (typeof Buffer !== "undefined" && Buffer.isBuffer(chunk)) {
+          return JSON.stringify({ b: chunk.toString("base64") });
+        }
+        if (typeof Uint8Array !== "undefined" && chunk instanceof Uint8Array) {
+          return JSON.stringify({
+            b: Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString("base64"),
+          });
+        }
+      } catch {}
+      try { return JSON.stringify({ s: String(chunk) }); } catch { return JSON.stringify({ s: "" }); }
+    };
+    const wrapStream = (stream, fd) => {
+      if (!stream || typeof stream.write !== "function" || stream.__wjs2_stdioWrapped) return;
+      const orig = stream.write.bind(stream);
+      const wrapped = function (chunk, ...rest) {
+        try { __wjs2_worker_stdio(fd, encChunk(chunk)); } catch {}
+        return orig(chunk, ...rest);
+      };
+      wrapped.__wjs2_stdioWrapped = true;
+      try { stream.write = wrapped; } catch {}
+    };
+    try { wrapStream(proc.stdout, "1"); } catch {}
+    try { wrapStream(proc.stderr, "2"); } catch {}
+    const listeners = {};
+    const queue = [];
+    const piped = [];
+    let live = true;
+    const emit = (ev, arg) => {
+      const list = listeners[ev];
+      if (!list) return;
+      for (const cb of [...list]) { try { cb(arg); } catch {} }
+    };
+    const flushQueue = () => {
+      while (queue.length > 0 && (piped.length > 0 || (listeners["data"] ?? []).length > 0)) {
+        const c = queue.shift();
+        emit("data", c);
+        for (const d of [...piped]) { try { d.write(c); } catch {} }
+      }
+    };
+    const stdin = {
+      readable: true, readableEnded: false, destroyed: false,
+      on(ev, cb) {
+        if (typeof cb !== "function") return this;
+        ((listeners[String(ev)] ??= [])).push(cb);
+        if (String(ev) === "data") flushQueue();
+        return this;
+      },
+      once(ev, cb) {
+        if (typeof cb !== "function") return this;
+        const self = this;
+        const wrapped = (...args) => { self.off(ev, wrapped); cb(...args); };
+        return this.on(ev, wrapped);
+      },
+      off(ev, cb) {
+        const list = listeners[String(ev)];
+        if (list) {
+          let i = list.findIndex((l) => l === cb);
+          while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb); }
+        }
+        return this;
+      },
+      removeListener(ev, cb) { return this.off(ev, cb); },
+      read() { return queue.length > 0 ? queue.shift() : null; },
+      pipe(dest) {
+        piped.push(dest);
+        flushQueue();
+        return dest;
+      },
+      unpipe(dest) {
+        if (dest === undefined) piped.length = 0;
+        else {
+          let i = piped.findIndex((d) => d === dest);
+          while (i >= 0) { piped.splice(i, 1); i = piped.findIndex((d) => d === dest); }
+        }
+        return this;
+      },
+      __pushWire(wire) {
+        let obj;
+        try { obj = JSON.parse(String(wire)); } catch { return; }
+        if (!obj || typeof obj !== "object") return;
+        if (obj.end) {
+          if (!live) return;
+          live = false;
+          this.readableEnded = true;
+          flushQueue();
+          for (const d of [...piped]) { try { d.end(); } catch {} }
+          piped.length = 0;
+          emit("end");
+          emit("close");
+          return;
+        }
+        if (!live) return;
+        let chunk = null;
+        if (typeof obj.b === "string") {
+          try { chunk = Buffer.from(obj.b, "base64"); } catch { return; }
+        } else if (typeof obj.s === "string") chunk = obj.s;
+        else return;
+        queue.push(chunk);
+        flushQueue();
+      },
+    };
+    globalThis.__wjs2_stdin_push = (wire) => { try { stdin.__pushWire(wire); } catch {} };
+    try { proc.stdin = stdin; } catch {}
+  } catch {}
+})();
+"#;

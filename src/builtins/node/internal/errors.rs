@@ -350,6 +350,8 @@ E('ERR_TLS_SNI_FROM_SERVER',
   'Cannot issue SNI from a TLS server-side socket', Error);
 E('ERR_TRACE_EVENTS_CATEGORY_REQUIRED', 'At least one category must be enabled', TypeError);
 E('ERR_INVALID_ASYNC_ID', 'Invalid %s value: %s', RangeError);
+E('ERR_INVALID_CURSOR_POS',
+  'Cannot set cursor row without setting its column', TypeError);
 E('ERR_INVALID_THIS', 'Value of "this" must be of type %s', TypeError, HideStackFramesError);
 E('ERR_INVALID_TUPLE', 'Each query pair must be an iterable [name, value] tuple', TypeError, HideStackFramesError);
 E('ERR_INVALID_URI', 'URI malformed', URIError);

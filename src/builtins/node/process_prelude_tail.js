@@ -63,6 +63,66 @@ try {
     __wjs2_stderr_write(`Setting the NODE_DEBUG environment variable to '${__sec}' can expose sensitive data (such as passwords, tokens and authentication headers) in the resulting log.\n`);
   }
 } catch { /* 环境不可读即跳过 */ }
+// process.report 诊断面（agent-reuse-drained-socket 套件 incidental 取数：
+// getReport().libuv 取 tcp 句柄；本实现只给真实可得项，libuv 句柄表暂空——
+// 轮子无 libuv 句柄枚举面，不造假数据）。
+try {
+  const __p = globalThis.process;
+  if (__p && __p.report === undefined) {
+    __p.report = {
+      reportOnFatalError: false,
+      reportOnSignal: false,
+      reportOnUncaughtException: false,
+      excludeEnv: false,
+      excludeNetwork: false,
+      compact: false,
+      directory: "",
+      filename: "",
+      signal: "SIGUSR2",
+      getReport(err) {
+        const __now = new Date();
+        let __stack = [];
+        let __msg = "";
+        try {
+          const __e = err instanceof Error ? err : new Error("getReport");
+          __msg = String(__e.message ?? "");
+          __stack = String(__e.stack ?? "").split("\n").slice(1).map((l) => l.trim());
+        } catch {}
+        return {
+          header: {
+            event: "getReport",
+            trigger: "Manual",
+            filename: null,
+            dumpEventTime: __now.toISOString(),
+            dumpEventTimeStamp: String(__now.getTime()),
+            processId: __p.pid,
+            cwd: (() => { try { return __p.cwd(); } catch { return ""; } })(),
+            exePath: (() => { try { return __p.execPath; } catch { return ""; } })(),
+            javascriptStack: { message: __msg, stack: __stack },
+            arch: __p.arch,
+            platform: __p.platform,
+            componentVersions: (() => { try { return { ...__p.versions }; } catch { return {}; } })(),
+            release: {},
+            osName: "",
+            osMachine: "",
+            osRelease: "",
+            osVersion: "",
+            cpus: [],
+            networkInterfaces: [],
+            hostName: "",
+          },
+          javascriptStack: { message: __msg, stack: __stack },
+          javascriptHeap: {},
+          nativeStack: [],
+          resourceUsage: {},
+          libuv: [],
+          workers: [],
+          environmentVariables: {},
+        };
+      },
+    };
+  }
+} catch {}
 // R9：config 冻结 + exitCode 不可删除（真机 bootstrap 口径：config 经 reviver
 // 深冻；exitCode configurable:false，严格模式 delete 即抛）。
 try {

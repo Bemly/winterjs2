@@ -2,6 +2,17 @@
 class __ServerClass extends EventEmitter {
   constructor(options, cb) {
     super();
+    // node Server captureRejections（lib/net.js:3099 真机逐字）：connection
+    // 监听拒即以该错销毁 socket（'error' 落 socket）；余者转 server 'error'。
+    try {
+      this[EventEmitter.captureRejectionSymbol] = (err, event, sock) => {
+        if (event === "connection" && sock !== undefined && sock !== null) {
+          try { sock.destroy(err); } catch {}
+        } else {
+          try { this.emit("error", err); } catch {}
+        }
+      };
+    } catch { /* 旧引擎无符号即跳过 */ }
     // node Server（server-options 套件逐字）：function 即 connectionListener；
     // null/undefined 走 {}；其余非对象（0/'path'/true）→ ARG_TYPE validateObject 形。
     if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
@@ -15,6 +26,8 @@ class __ServerClass extends EventEmitter {
     // （默认 false/0，真机 26 实测）；_handle 在 listen 成功路径建桩（含 onconnection）。
     this.keepAlive = !!(options && typeof options === "object" && options.keepAlive);
     this.keepAliveInitialDelay = (options && typeof options === "object" && options.keepAliveInitialDelay !== undefined) ? options.keepAliveInitialDelay : 0;
+    // server-nodelay 套件：noDelay 存自身（accept 面透传已接受柄，去重预置见 __acceptConn）。
+    this.noDelay = !!(options && typeof options === "object" && options.noDelay);
     // server 选项面（blocklist/drop-connections/pause-on-connect 套件）
     this.pauseOnConnect = !!(options && typeof options === "object" && options.pauseOnConnect);
     this.__blockList = (options && typeof options === "object" && options.blockList) || null;
@@ -39,6 +52,11 @@ class __ServerClass extends EventEmitter {
       if (this.keepAlive && clientHandle && typeof clientHandle.setKeepAlive === "function") {
         try { clientHandle.setKeepAlive(true, this.keepAliveInitialDelay); } catch {}
       }
+      // server-nodelay 套件：noDelay 真即调已接受柄（去重预置见 __acceptConn，
+      // 后续同值显式调用被吞）。
+      if (this.noDelay && clientHandle && typeof clientHandle.setNoDelay === "function") {
+        try { clientHandle.setNoDelay(true); } catch {}
+      }
       this.__acceptConn(payload);
     } };
   }
@@ -53,6 +71,8 @@ class __ServerClass extends EventEmitter {
     // server keepAlive 落已接受 socket（去重缓存预置，首个同值显式调用被吞，
     // server-keepalive 套件三调只进二）。
     if (this.keepAlive) { try { s.setKeepAlive(true, this.keepAliveInitialDelay); } catch {} }
+    // server-nodelay 套件：同值去重预置（柄面已透传，见 __setupHandle）。
+    if (this.noDelay) s.__noDelaySet = true;
     if (this.__listening && typeof this.__listening === "object") {
       s.localAddress = this.__listening.address;
       s.localPort = this.__listening.port;
@@ -153,11 +173,22 @@ class __ServerClass extends EventEmitter {
     const wantSync = host === null && reusePort !== true;
     const r = String(__wjs2_net_listen(Number(port), host === null ? "0.0.0.0" : host, this, reusePort === true ? "1" : "", wantSync ? "1" : ""));
     this.__bindHost = host === null ? "0.0.0.0" : host;
+    this.__listeningSync = false;
     if (wantSync) {
       const [idStr, portStr] = r.split(":");
       this.__id = Number(idStr);
       const bp = Number(portStr);
-      if (bp > 0) this.__listening = { address: "0.0.0.0", port: bp, family: "IPv4" };
+      if (bp > 0) {
+        this.__listening = { address: "0.0.0.0", port: bp, family: "IPv4" };
+        // node Server._connectionKey：'<family>:<host>:<请求端口>'（listen(0) 键含 '0'）。
+        this._connectionKey = `4:0.0.0.0:${this.__port}`;
+        // node 真机：'listening' 经 nextTick 系发出——unref 亦达；
+        // 任务事件后到即去重（见 __ev listening）。
+        this.__listeningSync = true;
+        queueMicrotask(() => {
+          if (this.__listeningSync && !this.__closing && this.__id) this.emit("listening");
+        });
+      }
     } else {
       this.__id = Number(r);
     }
@@ -261,7 +292,8 @@ class __ServerClass extends EventEmitter {
       case "listening": {
         // bind 窗口内 close()（listen-close-server 套件）：listening 派发吞掉，
         // listening 回调永不触发；'close' 由 destroy 路径照常发。
-        if (this.__closing) break;
+        // 同步 bind 面已发即去重（同值复赋；microtask 先行见 __doListen）。
+        if (this.__closing || this.__listeningSync) break;
         const o = JSON.parse(payload);
         if (o.uds) {
           this.__listening = o.path;

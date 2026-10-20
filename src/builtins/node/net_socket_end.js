@@ -8,17 +8,32 @@
     this.writable = false; this.__ended = true;
     this.__nativeEnd(); // node 口径：FIN 排队到连接完成+缓冲写冲刷之后（包裹面覆写）
     // node 口径：写侧刷完即 'finish'（早于 close；bytes-stats/bytes-read 套件点名）。
-    // 本仓同步写队列：FIN 已发即 microtask 派发 finish。
-    queueMicrotask(() => this.emit("finish"));
+    // 本仓同步写队列：FIN 已发即 microtask 派发 finish——但连接前缓冲未刷时
+    // 递延（buffersize 套件：finish 时 bufferSize 必须归零）。单发守卫。
+    if (!this.__finishEmitted) {
+      if (!this.__connected || (this.__pendW && this.__pendW.length > 0)) {
+        this.__finishPending = true;
+      } else {
+        this.__finishEmitted = true;
+        queueMicrotask(() => this.emit("finish"));
+      }
+    }
     // node 流语义：end 的回调挂 'finish'（非 close——半开对端不回 FIN 时
     // close 永不来，async-iter 套件 `end(resolve)` 卡死）。
     if (cb2) this.once("finish", cb2);
     return this;
   }
-  // node 口径：resetAndDestroy() = RST 硬关（本端无 error 即 close；
-  // 对端读侧 ECONNRESET）。本仓 TCP 无 RST 面：本端走 destroy 无 error，
-  // 对端侧由传输 FIN 收尾（ECONNRESET 偏离，见 bun-parity net 节）。
-  resetAndDestroy() { return this.destroy(); }
+  // node 口径：resetAndDestroy() = RST 硬关（已连接即发 RST，对端读侧
+  // ECONNRESET；未连接即 ERR_SOCKET_CLOSED 异步 error）。
+  resetAndDestroy() {
+    if (!this.__connected && !this.connecting && (this._handle === null || this._handle === undefined)) {
+      const e = new Error("Socket is closed");
+      e.code = "ERR_SOCKET_CLOSED";
+      return this.destroy(e);
+    }
+    if (this.__id) { try { __wjs2_net_reset(this.__id); } catch {} }
+    return this.destroy();
+  }
   // node 口径：error 事件只在 destroy(err) 带参时发（显式 destroy() 无参不发）。
   // 校验/状态 write 失败走 cb（__writeErr），不进 error 事件——lib/net.js 原文口径。
   destroy(err) {
@@ -31,7 +46,26 @@
       // bytesWritten pending 同清（预测未落盘，销毁即不再落盘；base 保留实发）。
       this.__sockQ = 0; this.__needSockDrain = false;
       this.__bwPend = 0;
-      this.__nativeKill();
+      // node 口径：连接建立前销毁，未刷写回调即 ERR_SOCKET_CLOSED_BEFORE_CONNECTION
+      //（write-cb-on-destroy-before-connect 套件；已连接形走既有通道）。
+      if (!this.__connected && this.__pendW && this.__pendW.length > 0) {
+        const __p = this.__pendW; this.__pendW = [];
+        this.__pendBytes = 0;
+        for (const [, __cb] of __p) {
+          if (typeof __cb === "function") {
+            const __e = new Error("Socket closed before the connection was established");
+            __e.code = "ERR_SOCKET_CLOSED_BEFORE_CONNECTION";
+            queueMicrotask(() => { try { __cb.call(this, __e); } catch {} });
+          }
+        }
+      }
+      // node 传输语义：带未读数据销毁即 RST（stream 套件：paused 积压后 destroy，
+      // 对端读侧 ECONNRESET；clean-FIN 形不受影响）。
+      if (this.__id && ((this.__pauseBuf && this.__pauseBuf.length > 0))) {
+        try { __wjs2_net_reset(this.__id); } catch {}
+      } else {
+        this.__nativeKill();
+      }
       // node 口径 emitErrorNT：error 经 nextTick 异步发（同步抛错会把
       // uncaughtException 语义压成同步异常——upgrade body-error 套件；
       // tick 回调带 uncaught 路由，无监听即交付 uncaughtException）。
@@ -39,6 +73,18 @@
         this.__hadError = true;
         const __e = err;
         process.nextTick(() => { this.emit("error", __e); });
+      }
+      // node 口径：无底层即无原生 close 事件——自发 close（单发守卫；
+      // connect-destroy 套件：未连接 destroy 即关）。
+      // 递延 error 之后一拍：转发链（TLS 包裹经 forwarder 再 destroy）有多跳
+      // nextTick，error 须先达用户监听；同拍 FIFO 在嵌套调度下不保序
+      // （https bad-lookup 形 error 丢失）。
+      if (!this.__id) {
+        process.nextTick(() => process.nextTick(() => {
+          if (this.__closeEmitted) return;
+          this.__closeEmitted = true;
+          this.emit("close", this.__hadError === true);
+        }));
       }
     }
     return this;

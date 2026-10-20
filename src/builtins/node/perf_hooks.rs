@@ -136,6 +136,12 @@ function __record(entry) {
   __notify(entry.entryType);
   return entry;
 }
+// net 'connect' 条目桥（perf_hooks 套件）：net 侧经此投递纯数据，
+// 此处包 PerformanceEntry 入列（公开面零新增）。
+try {
+  globalThis.__wjs2_perfRecord = (d) => __record(new PerformanceEntry(
+    d.name, d.entryType, d.startTime, d.duration, d.detail));
+} catch { /* 无 globalThis 即跳过 */ }
 
 const __performanceMethods = {
   now: () => __nowMs(),

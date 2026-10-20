@@ -113,6 +113,57 @@ pub fn net_reader_gone(id: u64) -> bool {
     with_plain(|p| p.net_sockets.get(&id).is_some_and(|e| e.reader_done))
 }
 
+// ── RST 面（resetAndDestroy 发 RST；ports.rs/worker.rs 同款 OnceLock 静态，
+// entry 外记账，purge 即清；无 GC 指针，线程安全）─────────────────────────
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+/// TCP 原始 fd 表（connect/accept 成功点记；take 即摘，防 fd 号复用误伤）。
+fn net_rst_fds() -> &'static Mutex<HashMap<u64, i32>> {
+    static MAP: OnceLock<Mutex<HashMap<u64, i32>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// RST 静默位表（reset 后读端异常不发 Error，只走 Close 收尾）。
+fn net_rst_quiet() -> &'static Mutex<HashMap<u64, bool>> {
+    static MAP: OnceLock<Mutex<HashMap<u64, bool>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 记录 TCP 原始 fd（resetAndDestroy 发 RST 用；connect/accept 成功点）。
+pub fn net_fd_record(id: u64, fd: i32) {
+    if let Ok(mut m) = net_rst_fds().lock() {
+        m.insert(id, fd);
+    }
+}
+
+/// 取出并摘除 TCP fd（reset 一次性；兼防 fd 号复用误伤）。
+pub fn net_fd_take(id: u64) -> Option<i32> {
+    net_rst_fds().lock().ok().and_then(|mut m| m.remove(&id))
+}
+
+/// 置 RST 静默位（读端 EBADF 不发 Error，只走 Close 收尾）。
+pub fn net_reset_quiet(id: u64) {
+    if let Ok(mut m) = net_rst_quiet().lock() {
+        m.insert(id, true);
+    }
+}
+
+/// 取 RST 静默位。
+pub fn net_reset_quiet_check(id: u64) -> bool {
+    net_rst_quiet().lock().map(|m| m.get(&id).copied().unwrap_or(false)).unwrap_or(false)
+}
+
+/// RST 面收尾（purge 即清，防跨连接残留）。
+pub(crate) fn net_rst_purge(id: u64) {
+    if let Ok(mut m) = net_rst_fds().lock() {
+        m.remove(&id);
+    }
+    if let Ok(mut m) = net_rst_quiet().lock() {
+        m.remove(&id);
+    }
+}
+
 /// 写端是否已死（死则读端 EOF 需代行收尾，End 命令无人消费）。
 pub fn net_writer_dead(id: u64) -> bool {
     with_plain(|p| p.net_sockets.get(&id).is_some_and(|e| !e.writer_alive))
@@ -174,6 +225,22 @@ pub fn net_halfhold(id: u64) -> bool {
     })
 }
 
+/// 续命装回（pause-unhold 的逆操作；只在 holding 为 false 时落账一次）。
+pub fn net_rehold(id: u64) -> bool {
+    with_plain(|p| {
+        if let Some(e) = p.net_sockets.get_mut(&id) {
+            if !e.holding {
+                e.holding = true;
+                if e.refed {
+                    p.net_open += 1;
+                }
+                return true;
+            }
+        }
+        false
+    })
+}
+
 /// 收尾清除（entry + target；Close 派发后调用；返回首次 true）。
 pub fn net_purge(id: u64) -> bool {
     let counted = net_purge_entry(id);
@@ -190,6 +257,7 @@ pub(crate) fn net_purge_entry(id: u64) -> bool {
             .remove(&id)
             .is_some_and(|e| e.refed && e.holding)
     });
+    net_rst_purge(id);
     if counted {
         with_plain(|p| p.net_open = p.net_open.saturating_sub(1));
     }
@@ -284,5 +352,23 @@ mod tests {
         assert!(!net_set_ref(u64::MAX, false));
         assert!(!net_purge_entry(u64::MAX));
         assert_eq!(net_open(), base);
+    }
+
+    /// RST 面记账：fd 记/take（一次性）+ 静默位置位/读取 + purge 即清。
+    #[test]
+    #[serial]
+    fn net_rst_ledger() {
+        let id = 424242u64;
+        assert_eq!(net_fd_take(id), None);
+        assert!(!net_reset_quiet_check(id));
+        net_fd_record(id, 99);
+        net_reset_quiet(id);
+        assert!(net_reset_quiet_check(id));
+        assert_eq!(net_fd_take(id), Some(99));
+        assert_eq!(net_fd_take(id), None);
+        assert!(net_reset_quiet_check(id));
+        net_rst_purge(id);
+        assert!(!net_reset_quiet_check(id));
+        assert_eq!(net_fd_take(id), None);
     }
 }

@@ -267,11 +267,15 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_net_write", Some(node::net::net_write), 2),
             ("__wjs2_net_end", Some(node::net::net_end), 1),
             ("__wjs2_net_destroy", Some(node::net::net_destroy), 1),
+            // resetAndDestroy 发 RST（对端 ECONNRESET；见 net_pumps::net_reset）。
+            ("__wjs2_net_reset", Some(node::net::net_reset), 1),
             // 10a：ref 真计数（net/dgram 共用）
             ("__wjs2_net_ref", Some(node::net::net_ref), 1),
             ("__wjs2_net_unref", Some(node::net::net_unref), 1),
             // G11：半开摘续命（对端 FIN 后半开持有不续命，真机同款）
             ("__wjs2_net_halfhold", Some(node::net::net_halfhold), 1),
+            // pause-unhold 逆操作（连接前 pause 摘续命，resume/data 监听装回）
+            ("__wjs2_net_rehold", Some(node::net::net_rehold), 1),
             ("__wjs2_dns_lookup", Some(node::dns::dns_lookup), 1),
             // 10d：dns 深件（hickory 全套；lookup 维持 std）
             ("__wjs2_dns_query", Some(node::dns::dns_query), 2),

@@ -2699,3 +2699,39 @@ G1/G2/G3/G9 已收官。）
   `tls_` 15/15、`https_` 12/12；custom-lookup 单发抖动复跑 5/5（load 并发 flake
   记一笔）；冒烟 5/5；双守门绿；`split-js` 未触发（tls.js 960/net 全员 <1000）。
 
+## 2026-10-21 net P1 落地（事件序/reset/RST/lookup/EPIPE/finish 全家）
+
+- 事件序×12 全绿：reset 空闲 ERR_SOCKET_CLOSED（lib/net.js:1112 口径）/
+  destroy 未连接自发 close（单发守卫）/ nodelay 去重透传（kSetNoDelay 初 false，
+  变值透传；connect 期异步调柄供 mock；server 侧 accept 透传+预置）/
+  plain-handle 接管（kHandle 口径）/ lookup 事件（系统成功 peer 透传 + 失败
+  DNS 码先发 + 自定义恒发，发射异步防同步 mock 漏接；IP 字面不发，真机实证）/
+  end-cb（unref listening 经 microtask 送达）/ paused 预连摘续命（resume/data
+  装回，G11 半开让路）。
+- RST 真语义（reset-after/until/server/stream 五件）：`__wjs2_net_reset` 经
+  SO_LINGER(0)+SHUT_RD 唤醒读端，常规 teardown 关 fd 即 RST（raw close 有 fd
+  复用竞速致 segfault，已删）；读端静默只走 Close；服务端读错形 read ECONNRESET；
+  未读销毁（paused 积压）亦 RST；fd/静默位走 OnceLock 静态（ports 同款，
+  purge 即清）+ 单测 `net_rst_ledger`。
+- finish/EPIPE/校验：auto-end 走完整语义（无显式 end 亦 finish，单发守卫；
+  标志递延保 'end' 内 writable 真）；EPIPE 限 peerFin+已 end+非半开；
+  write 序 null→chunk→destroyed→EPIPE→writable→句柄（echo 旧偏离翻转）；
+  setTimeout 全校验（无参亦抛，真机实证，黑盒同步翻转）+ write-cb
+  （pre-connect 销毁未刷回调 SOCKET_CLOSED_BEFORE_CONNECTION，文案逐字）/
+  captureRejections（Server 符号钩，connection 拒即 destroy 递错）/
+  perf net 条目桥（公开面零新增，TCP 成功记，pipe 不记）/
+  写失败 surfacing（写 task 错即 Error+Close 收尾）。
+- 运行时序观测（记档，未动引擎）：I/O 回调内 queueMicrotask 晚于
+  setImmediate(0)（ord 探针，node 相反）→ 自门改 setImmediate 保序；
+  嵌套调度下同拍 nextTick 不先于 microtask → 未连接自发 close 改双拍
+  nextTick（https bad-lookup 保 error 先行）。
+- 定级 P2（另案）：listen-handle-cluster ×2（worker 传柄 + raw TCP 句柄
+  listen，需 cluster IPC 柄/句柄 fd 底座）；dns-custom/lookup 余 HANG 面已清。
+- 验证：P1 23 件全绿（事件序 12 + shutdown/timeout/nodelay/dns/perf/cluster
+  已修面；双旗复验；until-connected/server-reset 串行抖动各一笔，隔离 3/3、
+  2/2）；黑盒 +3（reset/lookup/epipe）与旧件两处按真机翻转（st-noarg 抛、
+  reset 对端 ECONNRESET）；`net_` 22/22、`http_` 35/35、`https_` 12/12、
+  `tls_` 15/15；附带修 https_connect_lookup_family（回归）；冒烟 5/5；
+  双守门绿（含 `split-js` 切 net_socket_ev.js 280 行 + OnceLock 退 struct 字段）。
+
+

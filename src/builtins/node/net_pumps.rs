@@ -63,7 +63,11 @@ pub(crate) fn spawn_pumps<R, W>(
                     // 显式 shutdown 再退（10b https 保活案：tokio-rustls 写半部
                     // drop 不发 close_notify，对端读端永 block，双边死锁；
                     // TCP 写半部 drop 自带 FIN，故 9d 从未暴露）。
-                    let _ = w.shutdown().await;
+                    // reset 面跳过 shutdown（先 FIN 即与 RST 竞速；linger(0) 的
+                    // drop 关即发纯 RST，见 net_reset）。
+                    if !state::net_reset_quiet_check(id) {
+                        let _ = w.shutdown().await;
+                    }
                     // G11 keep-alive-timeout 案：destroy 后对端半开永不 FIN，
                     // 本端读端在 read() 永等不到 EOF，此处不等读端即发 Close
                     //（close_once 防与读端 EOF/错路径双发；读端后到的 EOF 只
@@ -125,6 +129,14 @@ pub(crate) fn spawn_pumps<R, W>(
                     });
                 }
                 Err(e) => {
+                    // RST 静默位（resetAndDestroy 后 EBADF）：不发 Error，只走 Close 收尾。
+                    if state::net_reset_quiet_check(id) {
+                        state::net_reader_done(id);
+                        if state::net_close_once(id) {
+                            let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
+                        }
+                        break;
+                    }
                     let code = crate::builtins::node::fs::io_code(&e);
                     let _ = ev_tx.send(NetEvent {
                         id,
@@ -232,7 +244,7 @@ pub unsafe extern "C" fn net_connect(
                 match bound_conn {
                     Err(_) => unreachable!(),
                     Ok(stream) => {
-                        let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None } });
+                        let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None, peer: None } });
                         let (r, w) = stream.into_split();
                         spawn_pumps(id, r, w, ev_tx, cmd_rx);
                         return;
@@ -249,7 +261,7 @@ pub unsafe extern "C" fn net_connect(
                     let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
                 }
                 Ok(stream) => {
-                    let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None } });
+                    let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None, peer: None } });
                     let (r, w) = stream.into_split();
                     spawn_pumps(id, r, w, ev_tx, cmd_rx);
                 }
@@ -277,7 +289,14 @@ pub unsafe extern "C" fn net_connect(
             Ok(stream) => {
                 let _ = stream.set_nodelay(no_delay);
                 let local = stream.local_addr().ok();
-                let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local } });
+                let peer = stream.peer_addr().ok();
+                // resetAndDestroy 发 RST 用 fd（take 即摘；TLS/UDS 路不记）。
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsRawFd as _;
+                    state::net_fd_record(id, stream.as_raw_fd());
+                }
+                let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local, peer } });
                 let (r, w) = stream.into_split();
                 spawn_pumps(id, r, w, ev_tx, cmd_rx);
             }
@@ -614,6 +633,12 @@ pub unsafe extern "C" fn net_listen(
                                 .local_addr()
                                 .unwrap_or_else(|_| "0.0.0.0:0".parse::<std::net::SocketAddr>().expect("literal addr"));
                             let (conn_id, conn_cmd_rx) = state::net_conn_add();
+                            // resetAndDestroy 发 RST 用 fd（take 即摘）。
+                            #[cfg(unix)]
+                            {
+                                use std::os::fd::AsRawFd as _;
+                                state::net_fd_record(conn_id, stream.as_raw_fd());
+                            }
                             let (r, w) = stream.into_split();
                             spawn_pumps(conn_id, r, w, ev_tx.clone(), conn_cmd_rx);
                             let _ = ev_tx.send(NetEvent {
@@ -712,6 +737,50 @@ pub unsafe extern "C" fn net_destroy(
         report_error(&mut cx, "TypeError: destroy: id must be a number");
         return false;
     };
+    state::net_cmd(id as u64, NetCmd::Close);
+    true
+}
+
+/// `__wjs2_net_reset(id)`：RST 硬关（resetAndDestroy 套件；对端读侧 ECONNRESET）。
+/// UNSAFE-BOUNDARY：libc setsockopt——前置：fd 系 TCP connect/accept 成功点
+/// 记录、take 即摘（无复用）；setsockopt 为 fd 生命周期内一次性调用；
+/// 非 unix/无记录即纯 Close 命令回落。关闭本身走常规泵 teardown（tokio drop
+/// 关 fd，无 fd 号复用竞速；raw close 曾致 segfault，已删）。
+/// 覆盖：`tests/node/net.rs`
+/// （reset-after-destroy/until-connected/server-reset/stream 四件）。
+/// 存量 unsafe{}/extern 计数不变（本函数与 net_destroy 同形新增一个 C 入口，
+/// 随 socket 数线性增长类结构性新增，见 AGENTS §6）。
+pub unsafe extern "C" fn net_reset(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: reset: id must be a number");
+        return false;
+    };
+    #[cfg(unix)]
+    if let Some(fd) = state::net_fd_take(id as u64) {
+        // SAFETY(见上)：存活 TCP fd 置 SO_LINGER(0)；随后常规 teardown 关 fd
+        // 即发 RST（无预 FIN：写 task Close 分支见 reset_quiet 跳 shutdown）。
+        // SHUT_RD 唤醒阻塞中的读 task（EOF 收尾，不发 FIN、不释放 fd 号，
+        // 无复用竞速）；双半部 drop 后真关 fd 即 RST。
+        unsafe {
+            let linger = libc::linger { l_onoff: 1, l_linger: 0 };
+            let _ = libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                &linger as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            );
+            let _ = libc::shutdown(fd, libc::SHUT_RD);
+            // 读端异常由 reset_quiet 压住（只走 Close 收尾）；写端 Close 命令照常。
+            state::net_reset_quiet(id as u64);
+        }
+    }
     state::net_cmd(id as u64, NetCmd::Close);
     true
 }

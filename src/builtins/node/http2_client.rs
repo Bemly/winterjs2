@@ -128,7 +128,7 @@ async fn drive_session<S>(
             return;
         }
     };
-    let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None } });
+    let _ = ev_tx.send(NetEvent { id, kind: NetKind::Connect { local: None, peer: None } });
     // 开流登记：stream_id → 响应体是否已完结（session 死时未完结者报 aborted）。
     let open: Arc<std::sync::Mutex<HashMap<u64, bool>>> =
         Arc::new(std::sync::Mutex::new(HashMap::new()));

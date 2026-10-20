@@ -273,6 +273,12 @@
 - 4.308 import `with` 非 `type` 键 SM 直接拒收（2026-10-20，vm lane）
 - 4.309 prelude 块级 function 经 Annex B 漏全局（2026-10-20，vm lane）
 - 4.310 unhandledRejection 投递形状（2026-10-20，vm lane）
+- 4.315 hook 入口 realm 即被主 AutoRealm 覆盖（2026-10-20，vm lane）
+- 4.316 记录操作必须进记录所属 compartment（2026-10-20，vm lane）
+- 4.317 帮忙函数住主 global（2026-10-20，vm lane）
+- 4.318 oxc 箭头函数是独立 AST 节点（2026-10-20，vm lane）
+- 4.319 after-evaluate 跨上下文队列是引擎墙（2026-10-20，vm lane）
+- 4.320 link 连带落定的依赖也要结算闭包（2026-10-20，vm lane）
 
 ## 条目
 
@@ -284,7 +290,7 @@
 - `docs/pitfalls-03.md`：4.125–4.169（45 条）
 - `docs/pitfalls-04.md`：4.170–4.205（36 条）
 - `docs/pitfalls-05.md`：4.206–4.264（60 条）
-- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310（24 条）
+- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310 + 4.315–4.320（30 条）
 
 > 新坑：主索引追一行 + 正文追到末卷（当前 `docs/pitfalls-06.md`）末尾。
 

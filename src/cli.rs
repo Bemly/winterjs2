@@ -45,8 +45,13 @@ pub struct Cli {
     pub run: Option<PathBuf>,
 
     /// Evaluate inline JS code and print its completion value
-    #[arg(short = 'e', long = "eval", value_name = "CODE")]
+    #[arg(long = "eval", value_name = "CODE")]
     pub eval: Option<String>,
+
+    /// Evaluate inline JS code without printing (node `-e` parity;
+    /// spawned `-e` children stay byte-exact, kill 套件精确输出面)
+    #[arg(short = 'e', long = "eval-quiet", value_name = "CODE")]
+    pub eval_quiet: Option<String>,
 
     /// Show resolved settings (or their JSON Schema with --schema)
     #[arg(short = 'c', long = "config")]
@@ -260,6 +265,9 @@ impl Cli {
         if self.eval.is_some() {
             v.push("--eval");
         }
+        if self.eval_quiet.is_some() {
+            v.push("-e");
+        }
         if self.config {
             v.push("--config");
         }
@@ -439,7 +447,7 @@ const COMPAT_VALUE_FLAGS: &[&str] = &["--max-http-header-size"];
 
 /// 动作旗（条件 `--run` 插入时判"已有显式动作"用；`-v/-l` 修饰旗不在内）。
 const COMPAT_ACTION_FLAGS: &[&str] = &[
-    "-r", "--run", "-e", "--eval", "-c", "--config", "--completions", "-m", "--man",
+    "-r", "--run", "-e", "--eval", "--eval-quiet", "-c", "--config", "--completions", "-m", "--man",
     "-a", "--add", "-i", "--install", "-R", "--remove", "-U", "--uninstall",
     "-p", "--publish", "--login", "-u", "--upgrade",
     "-I", "--init", "--repl", "-t", "--test", "-C", "--completions", "-L", "--lint", "-f", "--fmt", "-s", "--serve", "-b", "--db",
@@ -548,8 +556,8 @@ pub fn strip_node_compat_args(
         // node 自举翻译（max-header-size 套件：子进程即自身，`--flag -p expr`
         // 形；`-p`（node print）→ `--eval`（本仓 --eval 即打印完成值）。
         // 仅剥过兼容旗时（node-spawn 上下文证据），纯 `winterjs2 -p` 照旧 publish。
-        // `-e` 本就同 `--eval`，统一改写无害。
-        if out.len() > 2 && (out[1] == "-p" || out[1] == "-e") {
+        // `-e` 不再改写（本仓 `-e` 即静默，node 同形；kill 套件精确输出面）。
+        if out.len() > 2 && out[1] == "-p" {
             out[1] = OsString::from("--eval");
         }
         let has_action = out[1..].iter().any(|a| {
@@ -602,12 +610,13 @@ mod node_compat_tests {
 
     #[test]
     fn node_runtime_flags_by_rule() {
-        // D1：node 运行时旗（精确名单 + 前缀族）剥除并补 --run / -e→--eval。
+        // D1：node 运行时旗（精确名单 + 前缀族）剥除并补 --run；`-e` 透传
+        // （本仓 -e 即静默，kill 套件精确输出面；仅 -p 译 --eval）。
         let (f, s) = strip_node_compat_args(&argv(&["w", "--pending-deprecation", "a.js", "x"]));
         assert_eq!(strs(&f), ["w", "--run", "a.js", "x"]);
         assert_eq!(s, ["--pending-deprecation"]);
         let (f, s) = strip_node_compat_args(&argv(&["w", "--experimental-stream-iter", "-e", "1"]));
-        assert_eq!(strs(&f), ["w", "--eval", "1"]);
+        assert_eq!(strs(&f), ["w", "-e", "1"]);
         assert_eq!(s, ["--experimental-stream-iter"]);
         let (f, s) = strip_node_compat_args(&argv(&["w", "--stack-trace-limit=3", "--no-warnings", "a.mjs"]));
         assert_eq!(strs(&f), ["w", "--run", "a.mjs"]);

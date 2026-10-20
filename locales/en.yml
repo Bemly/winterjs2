@@ -15,6 +15,9 @@ arg:
   eval:
     help: "Evaluate inline JS code and print its completion value"
     value: "CODE"
+  eval_quiet:
+    help: "Evaluate inline JS code without printing (node -e parity)"
+    value: "CODE"
   config:
     help: "Show resolved settings (or their JSON Schema with --schema)"
   completions:

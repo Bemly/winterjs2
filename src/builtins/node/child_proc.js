@@ -2,7 +2,7 @@ import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import * as fs from "node:fs";
 import __osDefault from "node:os";
-import { getSystemErrorName as __uvName } from "node:util";
+import { getSystemErrorName as __uvName, inspect as __inspect } from "node:util";
 import errors from 'node:internal/errors';
 import { addAbortListener } from 'node:internal/events/abort_listener';
 const {
@@ -60,10 +60,10 @@ function __normExecOpts(opts) {
     }
     o.killSignal = hit.name; o.killSigno = hit.signo;
   }
-  // signal：undefined 过；余下必须 AbortSignal 实例（真机 validateAbortSignal 口径，
-  // null 也抛——abortcontroller 系套件 {}/函数形 ARG_TYPE）。
+  // signal：undefined 过；余下 duck-type（'aborted' 在即过，真机
+  // validateAbortSignal 逐字；null/{}/函数形照旧抛）。
   if (opts.signal !== undefined) {
-    if (!(opts.signal instanceof AbortSignal)) {
+    if (opts.signal === null || typeof opts.signal !== "object" || !("aborted" in opts.signal)) {
       throw new ERR_INVALID_ARG_TYPE("options.signal", "AbortSignal", opts.signal);
     }
     o.signal = opts.signal;
@@ -225,8 +225,9 @@ function __selfArgv(file, args) {
   }
   const a = [...args];
   // 前导 node 运行时旗（`--pending-deprecation file`/`--experimental-x -e …`）原样
-  // 透传，CLI 起点剥除 + 补 --run/-e→--eval（cli::strip_node_compat_args）。
-  if (a[0] === "-e" || a[0] === "-p") return [file, ["--eval", ...a.slice(1)]];
+  // 透传，CLI 起点剥除 + 补 --run（cli::strip_node_compat_args）；`-p` 译 `--eval`
+  // （打印），`-e` 直通（本仓 -e 即静默，kill 套件精确输出面）。
+  if (a[0] === "-p") return [file, ["--eval", ...a.slice(1)]];
   if (a[0] !== undefined && !String(a[0]).startsWith("-")) return [file, ["--run", ...a]];
   return [file, a];
 }
@@ -401,9 +402,11 @@ export function spawnSync(file, args, opts) {
   if (args !== undefined && args !== null && !Array.isArray(args)) { opts = args; args = []; }
   const o = __normSpawnOpts(opts);
   __nullCheck(String(file), "file");
-  for (let i = 0; i < (args || []).length; i++) __nullCheck(String(args[i]), `args[${i}]`);
-  const f = String(file);
+  // 参数一次 stringify（spawnsync-non-string-args 套件 toString 恰调一次；
+  // \0 判走串后值，真机同 outcome）。
   const origArgs = [...(args || [])].map(String);
+  for (let i = 0; i < origArgs.length; i++) __nullCheck(origArgs[i], `args[${i}]`);
+  const f = String(file);
   const [f2, a2] = __selfArgv(f, origArgs);
   const r = JSON.parse(__wjs2_cp_spawn(f2, JSON.stringify(a2), JSON.stringify({
     cwd: o.cwd ?? null, env: o.env ?? null, timeout_ms: o.timeoutMs,

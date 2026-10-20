@@ -404,13 +404,14 @@ globalThis.process = {
       }
       envArray.push(`${key}=${value}`);
     }
-    // 自身：裸文件形补 --run（子进程 argv 保持 node 形，execve 套件点名）。
+    // 自身：裸文件形补 --run（子进程 argv 保持 node 形，execve 套件点名）；
+    // `-p` 译 `--eval`（打印），`-e` 直通（本仓 -e 即静默）。
     let argv = args;
     try {
       const fs = require("node:fs");
       if (fs.realpathSync(execPath) === fs.realpathSync(process.execPath)) {
         const a = [...args];
-        if (a[1] === "-e" || a[1] === "-p") a.splice(1, 1, "--eval");
+        if (a[1] === "-p") a.splice(1, 1, "--eval");
         else if (a[1] !== undefined && !String(a[1]).startsWith("-")) a.splice(1, 0, "--run");
         argv = a;
       }
@@ -640,6 +641,8 @@ globalThis.process = {
       return this;
     },
   },
+  // openStdin 即 stdin 本体（真机恒等；ipc 套件 echo 面）。
+  openStdin() { return globalThis.process.stdin; },
   getuid() { return __wjs2_process_getuid(); },
   getgid() { return __wjs2_process_getgid(); },
   geteuid() { return __wjs2_process_geteuid(); },

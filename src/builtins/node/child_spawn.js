@@ -150,6 +150,12 @@ function __normSpawnAsyncOpts(opts) {
       e.code = "EPERM"; e.errno = -1; e.syscall = "spawn"; throw e;
     }
   }
+  // serialization：undefined/'json'/'advanced' 外一律 ARG_VALUE（真机逐字文案；
+  // advanced-serialization 套件首段点名；fork 同口径，见 __normForkOpts）。
+  if (opts.serialization !== undefined && opts.serialization !== "json" && opts.serialization !== "advanced") {
+    const e = new TypeError("The property 'options.serialization' must be one of: undefined, 'json', 'advanced'. Received " + __inspect(opts.serialization));
+    e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+  }
   // shell：boolean/string（node normalizeSpawnArguments 口径；spawn-shell 套件）。
   if (opts.shell !== undefined && opts.shell !== null) {
     if (typeof opts.shell !== "boolean" && typeof opts.shell !== "string") {
@@ -178,9 +184,10 @@ function __normSpawnAsyncOpts(opts) {
     }
     o.timeoutMs = opts.timeout;
   }
-  // signal：undefined 过；余下必须 AbortSignal 实例（真机 validateAbortSignal）。
+  // signal：undefined 过；余下 duck-type（'aborted' 在即过，真机
+  // validateAbortSignal 逐字——EventTarget 伪信号照收，timeout-kill 套件块 4）。
   if (opts.signal !== undefined) {
-    if (!(opts.signal instanceof AbortSignal)) {
+    if (opts.signal === null || typeof opts.signal !== "object" || !("aborted" in opts.signal)) {
       throw new ERR_INVALID_ARG_TYPE("options.signal", "AbortSignal", opts.signal);
     }
     o.signal = opts.signal;
@@ -751,7 +758,7 @@ process.removeAllListeners = function (type) {
 await import(__mod);
 `;
 function __normForkOpts(opts) {
-  const o = { execPath: process.execPath, killSignal: "SIGTERM", silent: false, signal: null, killSigname: "SIGTERM", killSigno: 15 };
+  const o = { execPath: process.execPath, killSignal: "SIGTERM", silent: false, signal: null, killSigname: "SIGTERM", killSigno: 15, timeoutMs: 0 };
   if (opts === undefined || opts === null) return o;
   if (typeof opts !== "object") {
     const err = new TypeError("The \"options\" argument must be of type object");
@@ -788,8 +795,44 @@ function __normForkOpts(opts) {
     o.env = { ...opts.env };
   }
   if (opts.silent !== undefined) o.silent = !!opts.silent;
+  // serialization：与 spawn 同口径（fork 亦验，见上）。
+  if (opts.serialization !== undefined && opts.serialization !== "json" && opts.serialization !== "advanced") {
+    const e = new TypeError("The property 'options.serialization' must be one of: undefined, 'json', 'advanced'. Received " + __inspect(opts.serialization));
+    e.code = "ERR_INVALID_ARG_VALUE"; throw e;
+  }
+  // timeout：validateInteger 逐字口径（fork-timeout-kill-signal 套件
+  // 'badValue'/{} 点名；"timeout" argument 名 + 2^53-1 上限与 spawn 同文）。
+  if (opts.timeout !== undefined && opts.timeout !== null) {
+    if (typeof opts.timeout !== "number") {
+      throw new ERR_INVALID_ARG_TYPE("timeout", "number", opts.timeout);
+    }
+    if (!Number.isInteger(opts.timeout)) {
+      const e = new RangeError(`The value of "timeout" is out of range. It must be an integer. Received ${opts.timeout}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    if (opts.timeout < 0 || opts.timeout > 9007199254740991) {
+      const e = new RangeError(`The value of "timeout" is out of range. It must be >= 0 && <= 9007199254740991. Received ${opts.timeout}`);
+      e.code = "ERR_OUT_OF_RANGE"; throw e;
+    }
+    o.timeoutMs = opts.timeout;
+  }
+  // stdio：string 形仅 pipe/inherit/ignore/overlapped（余下 ARG_VALUE，
+  // fork-stdio-string-variant 套件 '33' 点名；'ipc' 亦非法）；数组形须恰一
+  // 'ipc'（缺即 IPC_REQUIRED，多即 ONE_PIPE；线程底座值本身忽略）。
+  if (typeof opts.stdio === "string") {
+    if (!["pipe", "inherit", "ignore", "overlapped"].includes(opts.stdio)) {
+      throw new ERR_INVALID_ARG_VALUE("stdio", opts.stdio);
+    }
+  } else if (Array.isArray(opts.stdio)) {
+    const nIpc = opts.stdio.filter((s) => s === "ipc").length;
+    if (nIpc === 0) {
+      const e = new Error("Forked processes must have an IPC channel, missing value 'ipc' in options.stdio");
+      e.code = "ERR_CHILD_PROCESS_IPC_REQUIRED"; throw e;
+    }
+    if (nIpc > 1) throw new ERR_IPC_ONE_PIPE();
+  }
   if (opts.signal !== undefined) {
-    if (!(opts.signal instanceof AbortSignal)) {
+    if (opts.signal === null || typeof opts.signal !== "object" || !("aborted" in opts.signal)) {
       throw new ERR_INVALID_ARG_TYPE("options.signal", "AbortSignal", opts.signal);
     }
     o.signal = opts.signal;
@@ -866,17 +909,46 @@ export function fork(modulePath, args, opts) {
     if (typeof proc.onerror === "function") proc.onerror(e);
   });
   worker.on("exit", (code) => proc.__onForkExit(code));
+  // 退出收尾钩（自然退：清 timeout timer + abort 监听 dispose 归零，
+  // timeout-kill 套件 listenerCount 断言）。
+  const __kDispose = Symbol.dispose ?? Symbol.for("Symbol.dispose");
+  let __abortDispose = null;
+  const __disposeAbort = () => {
+    if (__abortDispose !== null) {
+      try { __abortDispose[__kDispose](); } catch {}
+      __abortDispose = null;
+    }
+  };
+  // timeout（fork-timeout-kill-signal 套件：到点按 killSignal 杀，
+  // exit(null, signame)；自然先退则清 timer 不补发）。
+  if (o.timeoutMs > 0) {
+    const __forkTmo = setTimeout(() => {
+      if (proc.__exitDone) return;
+      proc.__exitDone = true;
+      try { worker.terminate(); } catch {}
+      __disposeAbort();
+      if (typeof proc.onexit === "function") proc.onexit(null, o.killSigname);
+      if (typeof proc.onclose === "function") proc.onclose(null, o.killSigname);
+    }, o.timeoutMs);
+    const __rawForkExit = proc.__onForkExit.bind(proc);
+    proc.__onForkExit = (code) => { clearTimeout(__forkTmo); __disposeAbort(); __rawForkExit(code); };
+  } else {
+    const __rawForkExit = proc.__onForkExit.bind(proc);
+    proc.__onForkExit = (code) => { __disposeAbort(); __rawForkExit(code); };
+  }
   // abort（node：error 先行 + terminate；exit(null, killSignal) 由 abort 路径
-  // 自发——线程 exit 事件被 __exitDone 旗拦下）。
+  // 自发——线程 exit 事件被 __exitDone 旗拦下；addAbortListener 供 listenerCount
+  // 可见，退出各路径 dispose）。
   if (o.signal) {
-    o.signal.addEventListener("abort", () => {
+    __abortDispose = addAbortListener(o.signal, () => {
       if (proc.__exitDone) return;
       proc.__exitDone = true;
       try { worker.terminate(); } catch { /* 已退即走下 */ }
+      __disposeAbort();
       proc.__emitAbort(o.signal.reason);
       if (typeof proc.onexit === "function") proc.onexit(null, o.killSigname);
       if (typeof proc.onclose === "function") proc.onclose(null, o.killSigname);
-    }, { once: true });
+    });
   }
   return proc;
 }

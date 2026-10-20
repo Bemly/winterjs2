@@ -166,7 +166,7 @@ async fn run_inner(
             .chain(std::iter::once(filename.to_owned()))
             .chain(extra_args.iter().cloned())
             .collect(),
-        Mode::Eval => std::iter::once(argv0).chain(extra_args.iter().cloned()).collect(),
+        Mode::Eval | Mode::EvalQuiet => std::iter::once(argv0).chain(extra_args.iter().cloned()).collect(),
     };
     let init = init_session(argv)?;
     // 声明顺序即 drop 逆序：`rt` 若先于 `engine` drop（`?` 早退路径），Runtime
@@ -306,7 +306,7 @@ async fn run_inner(
         // F1 懒加载：eager require 29 模块占 --eval 启动 175ms（--run 空文件
         // 127ms vs --eval 1 302ms 实测）；此处只装 getter，首次访问才 require
         // 并原位替换为值（enumerable/configurable/writable 与直接赋值一致）。
-        if mode == Mode::Eval {
+        if mode == Mode::Eval || mode == Mode::EvalQuiet {
             let setup = CString::new("eval-globals.js").unwrap_or_else(|_| c"eval.js".into());
             let setup_options = CompileOptionsWrapper::new(rt.cx(), setup, 1);
             rooted!(&in(rt.cx()) let mut setup_rval = UndefinedValue());
@@ -341,7 +341,7 @@ async fn run_inner(
         // evaluate_script 内部自进 realm；rval 为 rooted 出参，跨事件循环存活
         let res = evaluate_script(rt.cx(), global.handle(), source, rval.handle_mut(), options);
         if res.is_err() {
-            if mode == Mode::Eval {
+            if mode == Mode::Eval || mode == Mode::EvalQuiet {
                 let r = eval_syntax_fallback(&mut rt, &global, source, filename, &mut fetch_rx, &mut ws_rx, &mut watch_rx, &mut child_rx, &mut net_rx, &mut worker_rx, &mut quic_rx, &mut napi_rx, &mut dispatch_rx).await
                     .map_err(|e| fatal_exit(&mut rt, &global, e));
                 // §4.8：跳过引擎/运行时析构（StoreBuffer 悬垂边在 destroyRuntime 的小 GC 里 SEGV）
@@ -417,7 +417,8 @@ async fn run_inner(
         crate::builtins::node::process_::emit_exit(&mut realm, global.get());
     }
     // worker_threads 内完成值恒不回显（node 口径；见上）。
-    let r = if state::worker_is_main() {
+    // EvalQuiet（-e 短旗）恒不回显（node -e 同形）。
+    let r = if state::worker_is_main() && mode != Mode::EvalQuiet {
         print_completion(&mut rt, &global, rval.get(), false)
     } else {
         Ok(())

@@ -17,6 +17,29 @@ fn eval_completion_value(#[case] code: &str, #[case] expected: &str) {
     assert_eq!(stdout_of(&mut winterjs2().args(["--eval", code])), expected);
 }
 
+#[rstest]
+#[case("40 + 2", "")]
+#[case("process.stdout.write('x')", "x")]
+#[case("undefined", "")]
+fn eval_quiet_flag_never_prints(#[case] code: &str, #[case] expected: &str) {
+    // 正常：短旗 -e 恒不回显（node 同形；spawn -e 子进程字节精确面）；
+    // 报错：-e 抛错仍 exit=1 走 node 形（与 --eval 同错形）；
+    // 边界：--eval 长旗照旧打印（冒烟面，不回归）。
+    assert_eq!(stdout_of(&mut winterjs2().args(["-e", code])), expected);
+}
+
+#[test]
+fn eval_quiet_throw_keeps_node_shape() {
+    // -e 抛错：exit=1 + node 形（与 --eval 同错形，不因静默改错道）。
+    let out = winterjs2().args(["-e", "throw new Error(\"boom\")"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.starts_with("eval.js:1\nthrow new Error(\"boom\")\n      ^\n\nError: boom\n    at eval.js:1:7\n"),
+        "stderr:\n{stderr}"
+    );
+}
+
 #[test]
 fn eval_uncaught_exception_exit_1_with_plain_format() {
     // AGENTS.md §3 验收格式（D4，node 形，非 TTY）：`eval.js:1` + 源行 + `^` + 空行 +

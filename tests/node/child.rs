@@ -6,3 +6,5 @@ mod spawn;
 mod exec;
 #[path = "child/fork.rs"]
 mod fork;
+#[path = "child/validation.rs"]
+mod validation;

@@ -89,9 +89,12 @@
     this.__exitCode = code;
     if (this.__connected) this.__connected = false;
     // node 口径：exit/close 双参 (code, signal)（fork 旧单对象形一并翻转，
-    // 与 spawn 派发同形）。
-    if (typeof this.onexit === "function") this.onexit(code, null);
-    if (typeof this.onclose === "function") this.onclose(code, null);
+    // 与 spawn 派发同形）。递延一轮派发——线程退出与 IPC 消息竞速时，
+    // 先到的消息须先达（fork-close 套件 message→exit→close 序）。
+    queueMicrotask(() => {
+      if (typeof this.onexit === "function") this.onexit(code, null);
+      if (typeof this.onclose === "function") this.onclose(code, null);
+    });
   }
   get connected() { return !!this.__connected; }
   unref() {

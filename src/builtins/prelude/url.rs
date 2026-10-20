@@ -90,6 +90,89 @@ function __wjs2_urlBrand(self) {
   }
   return st;
 }
+// W9 custom-inspect（真机 internal/url.js:177-236 口径）：URLContext 偏移按 ada
+// urlComponents 语义由 href 反推（node 5 形实测全对：test 串/无 auth/单 user/
+// 带端口/file），属性顺序与真机一致，has* 系原型 getter（showHidden 下 [Getter]）。
+function __wjs2_urlContext(href) {
+  const OMIT = 4294967295;
+  const colon = href.indexOf(":");
+  const scheme = colon === -1 ? "" : href.slice(0, colon).toLowerCase();
+  const protocol_end = colon === -1 ? 0 : colon + 1;
+  const scheme_type = scheme === "http" ? 0 : scheme === "https" ? 2 : scheme === "ws" ? 3
+    : scheme === "ftp" ? 4 : scheme === "wss" ? 5 : scheme === "file" ? 6 : 1;
+  if (href.slice(protocol_end, protocol_end + 2) !== "//") {
+    const q = href.indexOf("?", protocol_end);
+    const h = href.indexOf('#', protocol_end);
+    return { href, protocol_end, username_end: protocol_end, host_start: protocol_end,
+      host_end: protocol_end, pathname_start: protocol_end,
+      search_start: q === -1 ? OMIT : q, hash_start: h === -1 ? OMIT : h,
+      port: OMIT, scheme_type };
+  }
+  const auth_start = protocol_end + 2;
+  let authEnd = href.length;
+  for (const c of ["/", "?", '#']) {
+    const i = href.indexOf(c, auth_start);
+    if (i !== -1 && i < authEnd) authEnd = i;
+  }
+  const authority = href.slice(auth_start, authEnd);
+  const at = authority.indexOf("@");
+  let username_end, host_start, hostPart;
+  if (at !== -1) {
+    const at_index = auth_start + at;
+    const auth = authority.slice(0, at);
+    const ci = auth.indexOf(":");
+    username_end = ci === -1 ? at_index : auth_start + ci;
+    host_start = at_index;
+    hostPart = authority.slice(at + 1);
+  } else {
+    username_end = host_start = auth_start;
+    hostPart = authority;
+  }
+  let portColon = -1;
+  if (hostPart.startsWith("[")) {
+    const close = hostPart.indexOf("]");
+    if (close !== -1) {
+      const c2 = hostPart.indexOf(":", close);
+      if (c2 !== -1) portColon = c2;
+    }
+  } else {
+    portColon = hostPart.lastIndexOf(":");
+  }
+  let portStr = null;
+  if (portColon !== -1 && /^\d*$/.test(hostPart.slice(portColon + 1))) portStr = hostPart.slice(portColon + 1);
+  const hostBase = host_start === auth_start ? auth_start : host_start + 1;
+  let host_end, port;
+  if (portStr !== null) {
+    host_end = hostBase + portColon;
+    port = portStr === "" ? 0 : parseInt(portStr, 10);
+  } else {
+    host_end = hostBase + hostPart.length;
+    port = OMIT;
+  }
+  const pathname_start = authEnd;
+  const q = href.indexOf("?", authEnd);
+  const h = href.indexOf('#', authEnd);
+  return { href, protocol_end, username_end, host_start, host_end, pathname_start,
+    search_start: q === -1 ? OMIT : q, hash_start: h === -1 ? OMIT : h, port, scheme_type };
+}
+class __wjs2_URLContext {
+  constructor(href) {
+    const c = __wjs2_urlContext(href);
+    this.href = c.href;
+    this.protocol_end = c.protocol_end;
+    this.username_end = c.username_end;
+    this.host_start = c.host_start;
+    this.host_end = c.host_end;
+    this.pathname_start = c.pathname_start;
+    this.search_start = c.search_start;
+    this.hash_start = c.hash_start;
+    this.port = c.port;
+    this.scheme_type = c.scheme_type;
+  }
+  get hasPort() { return this.port !== 4294967295; }
+  get hasSearch() { return this.search_start !== 4294967295; }
+  get hasHash() { return this.hash_start !== 4294967295; }
+}
 globalThis.URL = class URL {
   constructor(url, base) {
     // WebIDL 必填首参：零实参即 ERR_MISSING_ARGS（custom-parsing 套件点名；
@@ -156,6 +239,61 @@ globalThis.URL = class URL {
   }
   toString() { __wjs2_urlBrandRecv(this); return this.href; }
   toJSON() { __wjs2_urlBrandRecv(this); return this.href; }
+  // W9 custom-inspect（真机 internal/url.js:935-959 口径）：12 键展开 + depth<0
+  // 坍缩 + showHidden 挂 Symbol(context)；ctor 名动态（MyURL 子类）；嵌套
+  // searchParams 走 USP 自身 custom（depth-1，保证 depth:0 坍缩）。
+  [Symbol.for("nodejs.util.inspect.custom")](depth, options, inspectFn) {
+    if (typeof depth === "number" && depth < 0) return this;
+    // 品牌门（真机 getter 隐式抛；此处显式先行，保证非法接收者必抛而非落空串）。
+    __wjs2_urlBrand(this);
+    const ctor = (this !== null && this !== undefined && this.constructor) || URL;
+    const ctorName = (ctor && ctor.name) || "URL";
+    const q = (s) => "'" + String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
+    const usp = this.searchParams;
+    const uspDepth = (typeof depth === "number") ? depth - 1 : depth;
+    let uspStr = "URLSearchParams {}";
+    try {
+      uspStr = usp[Symbol.for("nodejs.util.inspect.custom")](uspDepth, options);
+    } catch { uspStr = "URLSearchParams {}"; }
+    const items = [
+      "href: " + q(this.href),
+      "origin: " + q(this.origin),
+      "protocol: " + q(this.protocol),
+      "username: " + q(this.username),
+      "password: " + q(this.password),
+      "host: " + q(this.host),
+      "hostname: " + q(this.hostname),
+      "port: " + q(this.port),
+      "pathname: " + q(this.pathname),
+      "search: " + q(this.search),
+      "searchParams: " + uspStr,
+      "hash: " + q(this.hash),
+    ];
+    if (options !== null && typeof options === "object" && options.showHidden) {
+      const c = new __wjs2_URLContext(this.href);
+      const inner = [
+        "href: " + q(c.href),
+        "protocol_end: " + c.protocol_end,
+        "username_end: " + c.username_end,
+        "host_start: " + c.host_start,
+        "host_end: " + c.host_end,
+        "pathname_start: " + c.pathname_start,
+        "search_start: " + c.search_start,
+        "hash_start: " + c.hash_start,
+        "port: " + c.port,
+        "scheme_type: " + c.scheme_type,
+        "[hasPort]: [Getter]",
+        "[hasSearch]: [Getter]",
+        "[hasHash]: [Getter]",
+      ];
+      items.push("Symbol(context): URLContext {\n    " + inner.join(",\n    ") + "\n  }");
+    }
+    const single = ctorName + " { " + items.join(", ") + " }";
+    const bl = (options !== null && typeof options === "object") ? options.breakLength : undefined;
+    const lim = (typeof bl === "number") ? bl : 80;
+    if (single.length <= lim) return single;
+    return ctorName + " {\n  " + items.join(",\n  ") + "\n}";
+  }
 };
 // for-in 可见性（custom-properties 套件点名顺序：toString 先行，其次各
 // 访问器，toJSON 收尾；类语法默认不可枚举，此处逐项翻为可枚举——先删后建，

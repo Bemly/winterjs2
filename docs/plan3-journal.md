@@ -1957,5 +1957,27 @@ G1/G2/G3/G9 已收官。）
 - 另轮/范围外：`--expose-internals` loader 特性、`--allow-natives-syntax` V8 内禀、
   sea/wasi（journal:1557 维持否决），永不进对齐验收。
 
+## 2026-10-20 W9 custom-inspect 续啃落地（prelude+inspect 核对齐）
+
+- 实现：`src/builtins/prelude/url.rs`（+136 行，744 行守门内）——`URL.prototype[inspect.custom]`
+  12 键展开（href…search/searchParams/hash 真机顺序，ultra 值走 url-crate getter，
+  searchParams 嵌套走 USP 自身 custom depth-1）+ depth<0 返自身 + showHidden 挂
+  `Symbol(context)`（`__wjs2_URLContext`，ada urlComponents 语义由 href 反推，
+  node 5 形实测全对）+ 品牌门显式先行；`src/builtins/node/internal/inspect.rs`
+  （重排 26 行）：custom 先于 depth<0 坍缩（真机实证 `o[custom](-1)` 被调，
+  原“负深度不调 custom”注记证伪并删除；USP/iterator 系 custom 自返 `[Object]` 不变，
+  URL 系返自身落空容器 prefix 形 `URL {}`）。
+- 坑：prelude 系 `r#"..."#` 内禁 `"#`（`indexOf("#")` 截断 raw 串致 E0762 级联，
+  改单引号 `'#'`）；`Reflect.apply(custom,[],{})` 须显式品牌门（USP 兜底 catch 会吞错致 NO-THROW）。
+- 验证：node 套件 `test-whatwg-url-custom-inspect`（4 断言）转绿 rc=0；
+  黑盒 `tests/builtins.rs::url_custom_inspect_faces`（正常 12 键+报错品牌+边界
+  depth:0/子类/showHidden）绿；`--test builtins` 41/41；相邻
+  searchparams-inspect/properties/parsing/global 全绿；`test-util-inspect.js`
+  红系 `--expose-internals`（`No such binding: js_stream`）既有范围外非回归；
+  冒烟 5/5（alt 二进制）；`check-naming: ok`；`check-lines` 本仓三文件全绿
+  （fs.rs/h2_client.js 超限系并行 lane 未提交改动，非本轮）。
+- 构建：sweep base19 正用 `target/debug`，本轮一律 `CARGO_TARGET_DIR=~/wjs-data/target-alt`
+ （Xcode libclang），未碰主构建目录。
+
 
 

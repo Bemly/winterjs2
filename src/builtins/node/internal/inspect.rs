@@ -478,8 +478,21 @@ function inspect2(value, ctx, depth, seen) {
   }
   // 10f：函数不走 primitives（Node formatValue 亦然；否则 '[Function]' 变 'unknown'）
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return formatPrimitive(value, ctx);
+  // custom inspect（customInspect:false 关闭；真机负深度亦调 custom，实证
+  // `o[custom](-1)` 被调，故 custom 先行；返回自身则继续普通格式化；异常传播）
+  try {
+    if (ctx.customInspect && typeof value[kCustom] === 'function') {
+      const ret = value[kCustom](depth, { ...ctx, stylize: (s, t) => __stylize(s, t, ctx) }, inspect);
+      if (ret !== value) return ret;
+    }
+  } catch (err0) {
+    return __revokedFallback(value, ctx, err0);
+  }
+
   // 10f：depth<0 只截断容器（Array/普通对象/Map/Set/TypedArray/AB），Date/Error/
   // RegExp/Promise/函数照常展开（真机口径）；空容器仍显体，非空显 `[Prefix]`。
+  // （custom 已在上处理：USP/iterator 系 custom 自返 '[Object]'；URL 系返自身
+  // 落到此处空容器 prefix 形 'URL {}'；W9 custom-inspect depth:0 套件点名。）
   try {
   if (depth < 0) {
     if (value instanceof Error || value instanceof Date || value instanceof RegExp ||
@@ -504,9 +517,6 @@ function inspect2(value, ctx, depth, seen) {
       let keys;
       try { keys = Reflect.ownKeys(value); } catch { return '[Object]'; }
       if (keys.length === 0) {
-        // 10f：depth<0 且具 custom inspect 面即 '[Object]'（真机：负深度不调
-        // custom，直接坍缩；custom-searchparams-inspect 套件点名）。
-        if (ctx.customInspect && typeof value[kCustom] === 'function') return '[Object]';
         const p = prefixOf(value) || (Object.getPrototypeOf(value) === null ? '[Object: null prototype] ' : '');
         return p ? `${p}{}` : '{}';
       }
@@ -518,16 +528,6 @@ function inspect2(value, ctx, depth, seen) {
   }
   } catch (errD) {
     return __revokedFallback(value, ctx, errD);
-  }
-
-  // custom inspect（customInspect:false 关闭；返回自身则继续普通格式化；异常传播）
-  try {
-    if (ctx.customInspect && typeof value[kCustom] === 'function') {
-      const ret = value[kCustom](depth, { ...ctx, stylize: (s, t) => __stylize(s, t, ctx) }, inspect);
-      if (ret !== value) return ret;
-    }
-  } catch (err0) {
-    return __revokedFallback(value, ctx, err0);
   }
 
   seen.push(value);

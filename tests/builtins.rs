@@ -819,6 +819,30 @@ fn url_global_shape_and_brand() {
 }
 
 #[test]
+fn url_custom_inspect_faces() {
+    // 正常：12 键多行展开与真机逐字一致（W9 custom-inspect 套件）；报错：
+    // 非法接收者调 custom 即品牌错；边界：depth:0 嵌套坍缩 `URL {}`、子类名前缀、
+    // showHidden 挂 Symbol(context) 偏移行。
+    let out = stdout_of(winterjs2().args([
+        "--eval",
+        "const util = require('util');\n\
+         const u = new URL('https://username:password@host.name:8080/path/name/?que=ry#hash');\n\
+         console.log(util.inspect(u));\n\
+         console.log('nest:' + JSON.stringify(util.inspect({ a: u }, { depth: 0 })));\n\
+         class MyURL extends URL {}\n\
+         console.log('sub:' + util.inspect(new MyURL(u.href)).startsWith('MyURL {'));\n\
+         console.log('hidden:' + util.inspect(u, { showHidden: true }).includes('Symbol(context)') + '/' + util.inspect(u, { showHidden: true }).includes('protocol_end: 6') + '/' + util.inspect(u, { showHidden: true }).includes('scheme_type: 2'));\n\
+         console.log('brand:' + (() => { try { Reflect.apply(u[Symbol.for('nodejs.util.inspect.custom')], [], {}); return 'NO-THROW'; } catch (e) { return e.constructor.name + ':' + e.message.slice(0, 20); } })());",
+    ]));
+    assert!(out.contains("href: 'https://username:password@host.name:8080/path/name/?que=ry#hash'"), "out: {out}");
+    assert!(out.contains("searchParams: URLSearchParams { 'que' => 'ry' }"), "out: {out}");
+    assert!(out.contains("nest:\"{ a: URL {} }\""), "out: {out}");
+    assert!(out.contains("sub:true"), "out: {out}");
+    assert!(out.contains("hidden:true/true/true"), "out: {out}");
+    assert!(out.contains("brand:TypeError:Cannot read private"), "out: {out}");
+}
+
+#[test]
 fn text_decoder_coded_failures() {
     // 正常：非 fatal 替换字符；报错：fatal 挂 ERR_ENCODING_INVALID_ENCODED_DATA
     // 全小写文案、未知编码挂 ERR_ENCODING_NOT_SUPPORTED；边界：首尾 ASCII 空白

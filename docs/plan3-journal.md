@@ -2306,3 +2306,35 @@ G1/G2/G3/G9 已收官。）
   校验，小轮）；early-hints 主件（MUSTCALL 未达=1 runtime 投递缺口未合，
   归 runtime 面）；ping-settings-heapdump（v8.getHeapSnapshot 内禀缺口，
   转范围外/bound，不开轮）。
+## 2026-10-20 P0三件各3遍复判（9 runs，全确定性挂死，零抖动）
+
+- 二进制（零新构建，借现成）：`~/wjs-data/wt/wt-whatwg/target/debug/winterjs2`
+  （mtime 21:10，md5 4d540db191d9c19ae6c9d650134bbf51，worktree HEAD 1246228
+  = lane/whatwg tip；含 22f2db2 open 缺陷但三件不走 fs.open，无干扰）。
+  主仓 target/debug（20:03，6decde08）未动，未使用。
+- 命令（node-test/test/parallel 下，TMPDIR 外置，槽位递增
+  TEST_THREAD_ID=363x + NODE_COMMON_PORT=3133x）：
+  `TEST_THREAD_ID=.. NODE_COMMON_PORT=.. WINTERJS2_HANG_EXIT=20   perl -e 'alarm 45; exec @ARGV or die' $WJS --run <file>.js`
+  （注意变量名是 `WINTERJS2_HANG_EXIT` 带 2，见下）。
+- 结果（3/3 全同，无一转绿/快败）：
+  1. compat-socket-destroy-delayed（3× rc=1，自报 net=1）：未触发
+     test:31 `request.once('response')`——连接已建，服务端回包 HEADERS
+     从未到达客户端。base18 绿 → **真回归**（C2 destroy-cascade 或
+     C3 serverrequest 改动嫌疑，归 C 轮复查）。
+  2. client-proxy-over-http2（3× rc=1，自报 net=3）：未触发 test:47
+     `server.once('connect')` + test:27 隧道 response——首个 CONNECT
+     请求服务端根本未分发。base18 绿 → **真回归**
+     （C2 connect-method 面嫌疑）。
+  3. goaway-opaquedata（3× rc=1，自报 net=1）：未触发 test:20
+     `server.on('stream')` + test:24 session-close——连接已建 stream
+     未分发。base18 即 TIMEOUT（留守，GOAWAY opaque 面，journal:1779
+     进行中）。
+- 共性：三件皆“连接已建、服务端请求/流分发永不到”，compat-server 分发
+  路径嫌疑最大（C2/C3 动过 listen/serverrequest/destroy 级联）。
+  P0 不再复判，直接进 C 轮修（socket-destroy-delayed 与 proxy 为回归，
+  优先于 goaway 留守件）。
+- 附带发现（sweep 机制 bug，未修，归 runtime lane）：sweep-bg.py 写
+  `WINTERJS_HANG_EXIT`（无 2），runtime 读 `WINTERJS2_HANG_EXIT`（有 2，
+  src/runtime/mod.rs:582）——sweep 全量 TIMEOUT 件的提前自报**从未触发**
+  （base19 results.log 零 HANG/MUSTCALL 行即证）。修法：一行改名对齐 +
+  重编验证（未知哪边是笔误，以 runtime 为准改脚本侧）。

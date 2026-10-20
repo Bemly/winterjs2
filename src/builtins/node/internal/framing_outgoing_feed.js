@@ -795,12 +795,17 @@ export function withClientRequest(openSocket, flavor) {
           this.__headerNames.authorization = "Authorization";
         }
       }
-      // setHost:true 即补 Host（dont-set 下亦补；拼写取规范 'Host'）。
+      // node 口径（lib/internal/http/client.js 420 行 + host-headers 套件）：
+      // setHost 未给即 setDefaultHeaders !== false；给了即 Boolean()——
+      // false/0/null 皆禁自动 Host（Host 缺席即服务端 requireHostHeader 400，
+      // 'request' 不派发）；true 即补 Host（dont-set 下亦补，拼写取规范 'Host'，
+      // 数组形亦补——node setHeader 进数组，wire 有序对同出）。
       if (options.setHost === true && this.__headers.host === undefined) {
         this.__headers.host = this.__hostHeader;
         this.__headerNames.host = "Host";
       }
-      if (!__noDefaults && this.__headers.host === undefined && !Array.isArray(this.__headerList)) {
+      const __setHost = options.setHost !== undefined ? Boolean(options.setHost) : !__noDefaults;
+      if (__setHost && this.__headers.host === undefined && !Array.isArray(this.__headerList)) {
         // node 口径（lib/_http_client.js 546 行 + connect-default-host-header
         // 套件真机实测）：CONNECT 且 options.path 在场时 Host 取 path 本体
         //（authority），不取连接主机。

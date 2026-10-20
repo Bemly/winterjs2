@@ -163,7 +163,8 @@ class Http2ServerStream extends Duplex {
     this.__headersSent = true;
     this.__sentHeaders = sent;
     this.__sentPseudoHeaders = sentPseudo;
-    __wjs2_h2_respond(this.__conn, this.id, status, JSON.stringify(entries));
+    __wjs2_h2_respond(this.__conn, this.id, status, JSON.stringify(entries),
+      (options.endStream || endStreamAuto) ? 1 : 0);
     if (options.endStream || endStreamAuto) {
       this.endAfterHeaders = true;
       this.__finishWritable();
@@ -757,7 +758,10 @@ class Http2ServerResponse extends Writable {
     }
     this.headersSent = true;
     this.__stream.__headersSent = true;
-    __wjs2_h2_respond(this.__conn, this.__id, this.statusCode, JSON.stringify(entries));
+    // HEAD 请求：END_STREAM 随头出线（node：writeHead 即发 flags=5 的 HEADERS，
+    // end(chunk) 仅账面收尾，体不上线；Rust 侧 end_stream 语义承接）。
+    __wjs2_h2_respond(this.__conn, this.__id, this.statusCode, JSON.stringify(entries),
+      this.__stream.__headRequest === true ? 1 : 0);
   }
   write(chunk, encoding, cb) {
     // node：response.destroy() 后 write 静默 false、回调不触发（write block3 真机 p1）；

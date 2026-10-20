@@ -624,3 +624,80 @@ server.listen(0, () => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_head_end_stream_on_headers() {
+    // C3 HEAD 块：END_STREAM 随头出线（node：writeHead 即发 flags=5 的 HEADERS，
+    // end(chunk) 仅账面收尾；native respond {endStream:true} 同形）。
+    // 回归守卫：普通 GET 空体 end 仍走头/尾分离（flags=4 + data + end），
+    // 禁同 tick 空 END 合并（同款合并曾致 173 回退）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "h.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer((req, res) => {
+  if (req.headers[":method"] === "HEAD") {
+    res.writeHead(200, { foo: "bar" });
+    res.end("data", () => console.log("head-finish-cb"));
+  } else {
+    res.end("hello");
+  }
+});
+server.listen(0, () => {
+  const port = server.address().port;
+  const c = http2.connect(`http://localhost:${port}`);
+  const h = c.request({ ":path": "/", ":method": "HEAD" });
+  h.on("response", (headers, flags) => console.log("head-flags", flags, headers.foo));
+  h.on("data", () => console.log("head-DATA-UNEXPECTED"));
+  h.on("end", () => {
+    console.log("head-end");
+    const g = c.request({ ":path": "/" });
+    let body = "";
+    g.on("response", (headers, flags) => console.log("get-flags", flags));
+    g.on("data", (ch) => { body += ch; });
+    g.on("end", () => {
+      console.log("get-body", body);
+      const s2 = http2.createServer();
+      s2.on("stream", (stream) => {
+        stream.respond({ ":status": 200 }, { endStream: true });
+      });
+      s2.listen(0, () => {
+        const c2 = http2.connect(`http://localhost:${s2.address().port}`);
+        const n = c2.request({ ":path": "/" });
+        n.on("response", (headers, flags) => console.log("native-flags", flags));
+        n.on("data", () => console.log("native-DATA-UNEXPECTED"));
+        n.on("end", () => {
+          console.log("native-end");
+          c2.close();
+          s2.close();
+          c.close();
+          server.close();
+        });
+        n.end();
+      });
+    });
+    g.end();
+  });
+  h.end();
+});
+"#,
+    );
+    for line in [
+        "head-flags 5 bar",
+        "head-end",
+        "head-finish-cb",
+        "get-flags 4",
+        "get-body hello",
+        "native-flags 5",
+        "native-end",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    assert!(
+        !out.lines().any(|l| l.contains("UNEXPECTED")),
+        "HEAD/none body leaked DATA; out: {out}"
+    );
+    dir.close().unwrap();
+}

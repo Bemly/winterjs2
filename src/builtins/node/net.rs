@@ -116,10 +116,13 @@ pub enum NetCmd {
     // ── http2 ─────────────────────────────────────────────────────────────
     /// 服务端应答头（发往 conn id；stream_id 由 H2Request 事件给出）。
     /// 10f 流式化：头与体分离，体经 H2RespondData/H2RespondEnd 增量下发。
+    /// end_stream（C3 HEAD 块）：HEAD/204/205/304 与显式 endStream 意图——
+    /// END_STREAM 随头出线（客户端 response flags=5），后到的 data/end 账面收尾不上线。
     H2Respond {
         stream_id: u64,
         status: u16,
         headers: String,
+        end_stream: bool,
     },
     /// 服务端应答体块（须在 H2Respond 之后；task 侧早到则暂存 outbox）。
     H2RespondData { stream_id: u64, data_b64: String },

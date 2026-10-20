@@ -480,9 +480,11 @@ function __maybeProtoPoison(session, upd) {
   return true;
 }
 // 客户端流 aborted（h2_client.js __onAborted 委托；放此处守 1000 行门）。
-// 干净收尾只发 aborted（destroy 探针）；对端 RST 置 aborted 并按码错误。
+// 干净收尾：先发 aborted，再递 end 后收尾（client-socket-destroy：
+// node 序 aborted → end → close；直接 destroy 会吞掉 end）。
+// 对端 RST 带码：aborted 置位并按码错误（error 先于 close）。
 function __clientOnAborted(st, rstCode) {
-  if (st.aborted) return;
+  if (st.aborted || st.destroyed) return;
   const n = Number(rstCode);
   const hasCode = Number.isInteger(n) && (rstCode !== undefined && rstCode !== null && rstCode !== "");
   const err = hasCode ? __h2RstError(n) : undefined;
@@ -492,8 +494,22 @@ function __clientOnAborted(st, rstCode) {
   }
   st.emit("aborted");
   st.push(null);
-  if (err !== undefined) st.destroy(err);
-  else st.destroy();
+  if (err !== undefined) {
+    st.destroy(err);
+    return;
+  }
+  if (st.readableEnded) {
+    st.destroy();
+    return;
+  }
+  let done = false;
+  const fin = () => {
+    if (done || st.destroyed) return;
+    done = true;
+    st.destroy();
+  };
+  st.once("end", fin);
+  setImmediate(fin);
 }
 // GOAWAY 非零码的会话级销毁（propagate-session-destroy-code）：
 // 全流 SESSION_ERROR + 会话 error + 销毁（closed 保持 false，connClose 后才 close）。

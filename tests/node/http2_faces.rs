@@ -318,3 +318,55 @@ server.listen(0, () => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_client_socket_destroy_faces() {
+    // client-socket-destroy：会话 socket.destroy 即会话 destroy——
+    // 服务端流 aborted（须在 close 前）；客户端 req aborted → end → close
+    //（无 end 即挂；直接 destroy 会吞 end）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "d.mjs",
+        r#"
+import http2 from "node:http2";
+const { kSocket } = require("node:internal/http2/util");
+const server = http2.createServer();
+server.on("stream", (stream) => {
+  stream.on("aborted", () => console.log("srv-aborted"));
+  stream.on("close", () => console.log("srv-close"));
+  stream.on("error", () => {});
+  stream.respond();
+  stream.write("x");
+});
+server.listen(0, () => {
+  const client = http2.connect(`http://localhost:${server.address().port}`);
+  client.on("close", () => console.log("cli-close"));
+  const req = client.request();
+  req.on("response", () => {
+    client[kSocket].destroy();
+  });
+  req.resume();
+  req.on("aborted", () => console.log("req-aborted"));
+  req.on("end", () => console.log("req-end"));
+  req.on("close", () => {
+    console.log("req-close");
+    server.close();
+  });
+  req.on("error", () => {});
+  req.end();
+});
+"#,
+    );
+    for line in [
+        "srv-aborted",
+        "srv-close",
+        "req-aborted",
+        "req-end",
+        "req-close",
+        "cli-close",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

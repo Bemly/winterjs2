@@ -727,7 +727,9 @@ class ClientHttp2Session extends EventEmitter {
           if (!st.__responseReceived && this.__id) {
             __wjs2_h2_reset(this.__id, st.id, 8);
           }
-          if (!st.destroyed) st.destroy();
+          // 经 __onAborted 收尾（先 aborted，有缓冲即递 end 后 close；
+          // 真机 destroy 探针序；直接 destroy 会吞 end，client-socket-destroy）。
+          if (!st.destroyed) st.__onAborted("");
         }
         if (this.__id) {
           __wjs2_net_destroy(this.__id);

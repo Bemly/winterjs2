@@ -4,7 +4,7 @@
 // 入口 __h2SendFile(stream, src, headers, options, isFd)：
 //   file（src=path）：ownsFd=true，open→fstat→类检→statCheck→应答→泵体；
 //   fd（src=number|FileHandle）：ownsFd=false，无 open/类检（node 口径）。
-// 非阻塞面：FIFO open/读永不卡 JS 线程——读端 O_NONBLOCK + setImmediate 轮询
+// 非阻塞面：FIFO open/读永不卡 JS 线程——读端 O_NONBLOCK + setTimeout(1) 轮询
 // （node 靠线程池消化阻塞语义；本仓回调面同步底座，见 fs_async.js __fsOpenFifo）。
 import { fileURLToPath } from "node:url";
 // 路径归一（statSync/openSync 经 __fsPath 自带；nb-open 需预转串）。
@@ -64,7 +64,7 @@ function __h2SendFile(stream, src, headers, options, isFd) {
     } catch (err) { failOpen(err); return; }
     let stat;
     try { stat = fs.fstatSync(fd); }
-    catch (err) { try { fs.closeSync(fd); } catch {} failOpen(err); return; }
+    catch (err) { __h2TryClose(fd); failOpen(err); return; }
     __h2SendFileStat(stream, fd, stat, headers, options, onError, true);
     return;
   }
@@ -90,17 +90,20 @@ function __h2OpenFifoPoll(stream, path, headers, options, onError) {
     try {
       fd = __h2OpenNb(__h2PathStr(path));
     } catch (err) {
-      if (err && (err.code === "ENXIO" || err.code === "EAGAIN")) { setImmediate(attempt); return; }
+      if (err && (err.code === "ENXIO" || err.code === "EAGAIN")) { __h2Poll(attempt); return; }
       failOpen(err);
       return;
     }
     let stat;
     try { stat = fs.fstatSync(fd); }
-    catch (err) { try { fs.closeSync(fd); } catch {} failOpen(err); return; }
+    catch (err) { __h2TryClose(fd); failOpen(err); return; }
     __h2SendFileStat(stream, fd, stat, headers, options, onError, true);
   };
   attempt();
 }
+// 轮询节流（与 fs_async.js __fsPoll 同理：setImmediate 紧循环饿死 I/O 相，
+// 此处一律 setTimeout 1ms）。
+function __h2Poll(fn) { setTimeout(fn, 1); }
 // O_NONBLOCK open（读端；常规位 read，custom_flags 由 Rust 侧直通）。
 // 错误富化口径与 fs __fsErr 同构（native 串 `CODE: msg, open 'path'` →
 function __h2OpenNb(path) {
@@ -135,9 +138,51 @@ function __h2EnrichFsErr(e, syscall, path) {
   return err;
 }
 // file 种：类检（node doSendFileFD 逐字）→statCheck→应答→泵体。
+// 常规判定（常规文件/目录即直接关；余者走 linger——写者会合面前不可早关）。
+function __h2IsReg(stat) {
+  try {
+    if (stat && typeof stat.isFile === "function" && stat.isFile()) return true;
+    if (stat && typeof stat.isDirectory === "function" && stat.isDirectory()) return true;
+  } catch {}
+  return false;
+}
+// node tryClose 口径：异步 fs.close（fd-leak 套件 mock 点名调用）。
+function __h2TryClose(fd) {
+  try { fs.close(fd, () => {}); } catch {}
+}
+// 收尾关 fd：常规即关；FIFO 等非常规则 linger（读弃至 EOF/错再关——
+// 写者 open('w') 需读端在场会合；早关则写者永 ENXIO，error-pipe-offset 挂死）。
+// 写者永不到即与 node 阻塞 open 同构永活（非假绿）。
+function __h2CloseOrLinger(fd, stat, ownsFd, seenData) {
+  if (!ownsFd) return;
+  // 常规或已见首字节（写者必到过）即直关；否则 linger 会合。
+  if (__h2IsReg(stat) || seenData === true) { __h2TryClose(fd); return; }
+  const buf = Buffer.alloc(0x8000);
+  // 首字节前的 0 = 写者未到（POSIX：读端无写者在场即 0，非 EAGAIN），
+  // 视为可重试；见首字节后的 0 方为真 EOF。空写者（开即关、无写入）无法
+  // 区分——与"写者永不到"同构永活（记档偏离，node 系 EOF）。
+  let seen = false;
+  const step = () => {
+    let r;
+    try { r = fs.readSync(fd, buf, 0, buf.length, null); }
+    catch (e) {
+      if (e && e.code === "EAGAIN") { __h2Poll(step); return; }
+      __h2TryClose(fd);
+      return;
+    }
+    if (r <= 0) {
+      if (!seen) { __h2Poll(step); return; }
+      __h2TryClose(fd);
+      return;
+    }
+    seen = true;
+    __h2Poll(step);
+  };
+  step();
+}
 function __h2SendFileStat(stream, fd, stat, headers, options, onError, ownsFd) {
   const failStat = (err) => {
-    try { if (ownsFd) fs.closeSync(fd); } catch {}
+    __h2CloseOrLinger(fd, stat, ownsFd);
     if (typeof onError === "function") { onError(err); return; }
     stream.destroy(err);
   };
@@ -158,7 +203,7 @@ function __h2SendFileStat(stream, fd, stat, headers, options, onError, ownsFd) {
     length = -1;
   }
   if (stream.destroyed) {
-    try { if (ownsFd) fs.closeSync(fd); } catch {}
+    __h2CloseOrLinger(fd, stat, ownsFd);
     stream.destroy(__code("ERR_HTTP2_INVALID_STREAM"));
     return;
   }
@@ -166,13 +211,13 @@ function __h2SendFileStat(stream, fd, stat, headers, options, onError, ownsFd) {
   const h = { ...headers };
   if (typeof options.statCheck === "function") {
     if (options.statCheck.call(stream, stat, h) === false) {
-      try { if (ownsFd) fs.closeSync(fd); } catch {}
+      __h2CloseOrLinger(fd, stat, ownsFd);
       return;
     }
   }
   // statCheck 内自发应答即静默撤销（node HEADERS_SENT 复检口径）。
   if (stream.__headersSent) {
-    try { if (ownsFd) fs.closeSync(fd); } catch {}
+    __h2CloseOrLinger(fd, stat, ownsFd);
     return;
   }
   if (isFile) {
@@ -183,11 +228,11 @@ function __h2SendFileStat(stream, fd, stat, headers, options, onError, ownsFd) {
   // 头上残错（非法头名等）即 destroy（node processRespondWithFD 口径：无 onError）。
   try { stream.respond(h, {}); }
   catch (err) {
-    try { if (ownsFd) fs.closeSync(fd); } catch {}
+    __h2CloseOrLinger(fd, stat, ownsFd);
     stream.destroy(err);
     return;
   }
-  __h2PumpFile(stream, fd, offset, length, ownsFd, onError);
+  __h2PumpFile(stream, fd, stat, offset, length, ownsFd, onError);
 }
 // fd 种（node doSendFD 逐字）：statOptions→statCheck（3 参）→直接泵体
 //（无类检、无 content-length 自动头、无 open 错路由）。
@@ -207,52 +252,59 @@ function __h2SendFdStat(stream, fd, stat, headers, options) {
   }
   try { stream.respond(h, {}); }
   catch (err) { stream.destroy(err); return; }
-  __h2PumpFile(stream, fd, statOptions.offset | 0, statOptions.length | 0, false, options.onError);
+  __h2PumpFile(stream, fd, stat, statOptions.offset | 0, statOptions.length | 0, false, options.onError);
 }
-// 泵体：常规=定长位置读；offset -1=游标读到 EOF（EAGAIN 即 setImmediate 续）。
-function __h2PumpFile(stream, fd, offset, length, ownsFd, onError) {
-  const streaming = offset === -1;
-  let pos = streaming ? 0 : offset;
-  const end = streaming ? -1 : offset + Math.max(0, length);
+// 泵体：定长位置读；length<0 即读到 EOF（file 管道/file 常规未指定/file 种
+// 缺省皆经此）。位置读（offset>0）的 0 即真 EOF；游标读非常规且未见首字节
+// 的 0 视为写者未到（与 linger 同理），余者皆收尾。
+function __h2PumpFile(stream, fd, stat, offset, length, ownsFd, onError) {
+  const streaming = length < 0;
+  const positional = !streaming || (offset | 0) > 0;
+  let pos = positional ? (offset | 0) : 0;
+  let seen = false;
+  const end = streaming ? -1 : pos + Math.max(0, length);
   if (!streaming && pos >= end) {
-    try { if (ownsFd) fs.closeSync(fd); } catch {}
+    __h2CloseOrLinger(fd, stat, ownsFd, seen);
     if (!stream.writableEnded) stream.__finishWritable();
     return;
   }
   const CH = 0x8000;
   const step = () => {
     if (stream.destroyed || stream.__closed) {
-      try { if (ownsFd) fs.closeSync(fd); } catch {}
+      __h2CloseOrLinger(fd, stat, ownsFd, seen);
       return;
     }
     const want = streaming ? CH : Math.min(CH, end - pos);
     const buf = Buffer.alloc(want);
     let r;
     try {
-      r = fs.readSync(fd, buf, 0, want, streaming ? null : pos);
+      r = fs.readSync(fd, buf, 0, want, positional ? pos : null);
     } catch (err) {
       // EAGAIN=本轮无数据（FIFO 写者未到），让出再试；余错即 destroy。
-      if (err && err.code === "EAGAIN") { setImmediate(step); return; }
-      try { if (ownsFd) fs.closeSync(fd); } catch {}
+      if (err && err.code === "EAGAIN") { __h2Poll(step); return; }
+      __h2CloseOrLinger(fd, stat, ownsFd, seen);
       stream.destroy(err);
       return;
     }
     if (r <= 0) {
-      // EOF：关 fd（ownsFd）→ 收尾（node FilePipe 到 EOF 即 END_STREAM）。
-      try { if (ownsFd) fs.closeSync(fd); } catch {}
+      if (!positional && !seen && !__h2IsReg(stat)) { __h2Poll(step); return; }
+      __h2CloseOrLinger(fd, stat, ownsFd, seen);
       if (!stream.writableEnded) stream.__finishWritable();
       return;
     }
+    seen = true;
     __wjs2_h2_data(stream.__conn, stream.id, __b64enc(buf.subarray(0, r)));
-    if (!streaming) {
+    if (positional && !streaming) {
       pos += r;
       if (pos >= end) {
-        try { if (ownsFd) fs.closeSync(fd); } catch {}
+        __h2CloseOrLinger(fd, stat, ownsFd, seen);
         if (!stream.writableEnded) stream.__finishWritable();
         return;
       }
+    } else if (positional) {
+      pos += r;
     }
-    setImmediate(step);
+    __h2Poll(step);
   };
   step();
 }

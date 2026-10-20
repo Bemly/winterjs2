@@ -255,6 +255,13 @@
 - 4.290 promisify custom 改名 fallback 全局污染（2026-10-20，console lane）
 - 4.291 `node:` 内部真路径要显式别名 + 注册表长度断言并发 stale（2026-10-20，console lane）
 - 4.292 sweep 基线构建只认干净树（2026-10-20，sweep lane）
+- 4.293 setImmediate 紧循环饿死 I/O 相（2026-10-20，http2 lane）
+- 4.294 FIFO 阻塞 open 卡死 JS 线程（2026-10-20，http2 lane）
+- 4.295 O_TRUNC 开 FIFO 即 EINVAL（2026-10-20，http2 lane）
+- 4.296 POSIX 无写者读端得 0（2026-10-20，http2 lane）
+- 4.297 node respondWithFile 自动 content-length（2026-10-20，http2 lane）
+- 4.298 h2 'connection' 手动 emit 无监听即 TIMEOUT（2026-10-20，http2 lane）
+- 4.299 response 'finish' 在流关闭时（2026-10-20，http2 lane）
 
 ## 条目
 

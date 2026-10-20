@@ -547,13 +547,18 @@ class Http2ServerResponse extends Writable {
     this.__ended = false;
     stream.on("drain", () => this.emit("drain"));
     stream.on("finish", () => {
-      if (!this.__finishEmitted) {
-        this.__finishEmitted = true;
-        this.emit("finish");
-      }
+      // node onStreamCloseResponse 口径：response 'finish' 在流关闭时（且可写
+      // 已终）才发，不在流 finish 时——finish 处理内 socket 已不可见
+      //（finished 套件）。此处只记账，派发延至 close；destroy 路径即时 finish 不动。
+      this.__streamFinished = true;
     });
     stream.on("close", () => {
       if (!this.__ended) this.__ended = true;
+      this.__resClosed = true;
+      if (this.__streamFinished === true && !this.__finishEmitted) {
+        this.__finishEmitted = true;
+        this.emit("finish");
+      }
       queueMicrotask(() => this.emit("close"));
     });
     // close 单发：Writable autoDestroy 与 stream 转发各派一次，
@@ -570,7 +575,12 @@ class Http2ServerResponse extends Writable {
     stream.__attach(req, this);
   }
   get stream() { return this.__stream; }
-  get socket() { return this.__stream.__destroyed ? undefined : this.req.socket; }
+  // node 口径：response state closed（流关闭/destroy）后 socket 不可见
+  //（http1 ServerResponse 同款；finished 套件点名 finish 内 undefined）。
+  get socket() {
+    if (this.__resClosed === true || this.__stream.__destroyed) return undefined;
+    return this.req.socket;
+  }
   get connection() { return this.socket; }
   get session() { return this.__stream.__session; }
   // node 口径：finished/writableEnded 即时位（end() 同步置位）；长度/水位读底层流

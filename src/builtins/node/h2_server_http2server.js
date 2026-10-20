@@ -57,6 +57,11 @@ class Http2Server extends EventEmitter {
     }
     // request 监听器只由 createServer/createSecureServer 接线（§4.39）
     this.__ev = this.__ev.bind(this);
+    // node：connectionListener 常驻（secure 先 TLS 握手再建会话；手动 emit
+    // 注入同样走此路——socket-close 套件：net 明文 socket 注入 secure server）。
+    // 本仓 listen 路径自有 native accept（不经 JS 'connection'，无双重）。
+    this.__adopted = new Map();
+    this.on("connection", (socket) => __h2AdoptConnection(this, socket));
   }
   get socket() { return this.__sockBag; }
   setTimeout(msecs, callback) {
@@ -265,10 +270,29 @@ class Http2Server extends EventEmitter {
         const connId = Number(JSON.parse(payload).payload);
         const s = this.__sessions.get(connId);
         if (s) s.__ev("connClose", payload);
+        // 注入连接：会话亡即连带 destroy 注入 socket（node socket 归会话所有；
+        // 套件自毁在先时此处即 no-op）。
+        const adopted = this.__adopted.get(connId);
+        if (adopted) {
+          this.__adopted.delete(connId);
+          try { adopted.destroy(); } catch {}
+        }
         // 全会话已收且监听器已关 → server 'close'
         queueMicrotask(() => {
           if (this.__closing && !this.__id && this.__sessions.size === 0) this.__emitClose();
         });
+        break;
+      }
+      case "adoptData": {
+        // adopt 桥写出（Rust payload = "connId b64"）：落注入 socket。
+        const o = JSON.parse(payload);
+        const raw = String(o.payload ?? "");
+        const sp = raw.indexOf(" ");
+        const connId = Number(raw.slice(0, sp));
+        const sock = this.__adopted.get(connId);
+        if (sock && !sock.destroyed) {
+          try { sock.write(Buffer.from(__b64dec(raw.slice(sp + 1)))); } catch {}
+        }
         break;
       }
       case "error": {
@@ -337,4 +361,37 @@ class Http2Server extends EventEmitter {
   }
   ref() { if (this.__id) __wjs2_net_ref(this.__id); return this; }
   unref() { if (this.__id) __wjs2_net_unref(this.__id); return this; }
+}
+
+// 注入连接承接（node connectionListener 口径）：socket 数据经 adopt 桥进
+// serve_conn；socket 消亡即喂 EOF（serve 收尾→connClose→会话终结）。
+function __h2AdoptConnection(server, socket) {
+  if (!socket || typeof socket.on !== "function" || !socket.__id) return;
+  const listenOpts = { ...(server.__tlsOpts ?? {}) };
+  if (server.__opts && server.__opts.settings !== undefined) {
+    listenOpts.settings = __validateSettings(server.__opts.settings, "options.settings");
+  }
+  const peer = `${socket.remoteAddress ?? ""}:${socket.remotePort ?? 0}`;
+  let connId;
+  try {
+    connId = Number(__wjs2_h2_adopt(JSON.stringify(listenOpts), peer, server));
+  } catch { return; }
+  if (!Number.isFinite(connId)) return;
+  server.__adopted.set(connId, socket);
+  socket.__h2Adopted = connId;
+  socket.on("data", (chunk) => {
+    try {
+      // isView 跨 compartment 安全（§4.57 禁 instanceof 判形态）。
+      const u8 = ArrayBuffer.isView(chunk) ? chunk : Buffer.from(String(chunk));
+      __wjs2_h2_adopt_data(connId, __b64enc(u8));
+    } catch {}
+  });
+  socket.once("close", () => {
+    server.__adopted.delete(connId);
+    try { __wjs2_h2_adopt_close(connId); } catch {}
+  });
+  // 半关（对端 FIN 但 socket 未关）：同样终结会话（node 会话随 socket 收尾）。
+  socket.once("end", () => {
+    try { __wjs2_h2_adopt_close(connId); } catch {}
+  });
 }

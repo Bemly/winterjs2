@@ -2338,3 +2338,45 @@ G1/G2/G3/G9 已收官。）
   src/runtime/mod.rs:582）——sweep 全量 TIMEOUT 件的提前自报**从未触发**
   （base19 results.log 零 HANG/MUSTCALL 行即证）。修法：一行改名对齐 +
   重编验证（未知哪边是笔误，以 runtime 为准改脚本侧）。
+## R19-C3 收尾：respond-file x3 重做 + socket-close adopt（lane/http2）
+
+### respond-file x3（range/with-pipe/error-pipe-offset，转绿待验证）
+- 根因三件：
+  1. range：node doSendFileFD 对常规文件恒覆写 content-length（min(size-offset,length)），旧移植靠 statCheck 手填 → `null !== 3`。
+  2. with-pipe/error-pipe-offset：本仓 fs.open 回调面同步执行，FIFO 阻塞 open 卡死 JS 线程（writer 在 load 期先行调用即死锁，port 侧永远到不了）→ 双 TIMEOUT。
+- 修法（纯 JS + 1 Rust 字段，无新 native）：
+  - 新 h2_sendfile.js：node core.js doSendFileFD/doSendFD/processRespondWithFD 逐字（类检→statCheck 2参/3参→HEADERS_SENT 复检→自动 content-length→泵体；应答错直 destroy 无 onError；目录 SEND_FILE/显式 offset 在非常规上 NOSEEK）。
+  - fs_async.js：async open/writeFile FIFO 分支（statSync 嗅探→O_NONBLOCK + setImmediate 轮询；ENXIO/EAGAIN 重试；常规路径零改）。
+  - fs_fd.rs OpenFlags.nonblock 经 custom_flags 直通；fs.rs io_code 增 ENXIO(6)/EAGAIN(35/11)+单测。
+  - 坑：O_TRUNC 开 FIFO 即 EINVAL（nb-open 只取纯方向位）；中央 ERR_INVALID_ARG_TYPE 传 ['number','FileHandle'] 数组才渲染 node 形。
+- 证据（待 worktree 构建后补）：套件三件 node 双绿基线已取；黑盒 5 件（range/pipe/noseek/dir/fd-validation）。
+
+### socket-close（TIMEOUT 根因 + adopt 桥，待验证）
+- 根因：h2Server.emit('connection', socket) 我方零监听；node 链为 net connectionListener→TLS 握手→secureConnection→http2 建会话。debug 日志 rustls client hs 发出后服务端零响应。
+- 修法：adopt 通道桥（AdoptIo：读走 inbox channel、写走 H2Stream/adoptData 事件；__wjs2_h2_adopt/_data/_close + state::net_ev_tx；复用 serve_conn；server_id 取 conn_id 独占路由）。JS：Http2Server 常驻 connection 监听（native listen 不经此事件）；connClose 连带 destroy 注入 socket（双向拆链皆洁）。
+- 证据（待补）：套件 node EXIT=0 / 我方旧版 TIMEOUT(25s)；黑盒 http2_socket_close_unordered_teardown。
+
+### 过程记
+- 主仓多人混写：提交前 hunk 级验纯度（fs_async.js 的 exists-hunk 用过滤 patch 剔除）；commit 22f2db2 push origin/master（后迁 lane/http2 续）。
+- 本机无 /opt/homebrew/opt/llvm：LIBCLANG_PATH 用 CLT（/Library/Developer/CommandLineTools/usr/lib）。
+- 新区 4 lane 齐编 load>300：错峰（load<50 + cargo -j2），构建停后 -j2 续编。
+
+### 验证轮次（worktree wt-http2，target 本地）
+- x3 + socket-close 首验：range绿；with-pipe EXIT=1(mode误传)→修；pipe-offset TIMEOUT→会合分析→linger→绿；
+  socket-close TIMEOUT→adopt桥→h2c通/outbound断→查得Rust payload漏connId前缀→修→h2c/TLS全通。
+- 回归：fd/filehandle因fd-length=-1被当0长红→泵按length重构→绿；fd-leak因closeSync绕mock红→
+  __h2TryClose异步关→绿；serverresponse-finished因finish早发+socket可见红→finish延至close+closed门→绿
+  （destroy-suite SAME1双红非回归）。fd-invalid留红（fd-reuse竞态，我方合成fd无此竞态，另案）。
+- open三宗罪（sweep c1a5cf7定责）：2参rest切片修、void m删、node三态对齐；三参早已修。
+- setImmediate紧循环饿死I/O（listen永不到）→全部轮询改setTimeout(1)（fs __fsPoll/h2 __h2Poll）。
+- POSIX无写者读端得0（非EAGAIN）→首0续候+linger-seen位（空写者记档偏离）。
+- 黑盒：http2域30/30（含新6件），fs域29/29×3（首跑1败复跑绿，判flakes），io_code单测绿，冒烟5/5，守门双绿。
+- fs域sweep c3-fs-verify进行中（worktree二进制，thread-id 7701/ports 33999）。
+- fs sweep 收官（c3-fs-verify，333/333）：SAME0=282/SAME1=11/DIFF=39/TIMEOUT=1；
+  对 base19（DIFF 75）净修 38（open/writeFile/stream 全家即三宗罪 fallout），
+  1 新红 test-fs-write-stream-patch-open：单跑/复现/单文件sweep/分类器(3x wjs绿)皆绿，
+  判 sweep 并行交互 flakes（自 fork 套件；与本轮改动无涉：child 侧 open 已 mock 掉）。
+  rerun-red 复核 51 件同分布。
+- open 黑盒 fs_open_arg_forms 落 tests/node/fs/basic.rs（2/3/4 参形+ENOENT+无cb）。
+- commit：9c0daf3（open三态+sendfile+finish，4文件）已推 origin lane/http2；
+  adopt 桥（socket-close）随后单 commit。

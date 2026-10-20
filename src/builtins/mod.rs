@@ -304,6 +304,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_h2_data", Some(node::http2::h2_data), 3),
             ("__wjs2_h2_end", Some(node::http2::h2_end), 3),
             ("__wjs2_h2_reset", Some(node::http2::h2_reset), 3),
+            // 注入式连接（'connection' 手动 emit；socket-close 套件）：adopt 桥
+            ("__wjs2_h2_adopt", Some(node::http2::h2_adopt), 3),
+            ("__wjs2_h2_adopt_data", Some(node::http2::h2_adopt_data), 2),
+            ("__wjs2_h2_adopt_close", Some(node::http2::h2_adopt_close), 1),
             // Phase 9e-1a: node:crypto 增量 Hash（oneshot 复用全局 __wjs2_*）
             ("__wjs2_crypto_hash_new", Some(node::crypto::crypto_hash_new), 1),
             ("__wjs2_crypto_hash_update", Some(node::crypto::crypto_hash_update), 2),

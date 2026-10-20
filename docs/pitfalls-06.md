@@ -242,3 +242,48 @@
 - 复现：base19（旧二进制脏树构建；journal base19 节 + §0.3 mixed-binary 注）。
 - 推广铁律：**基线构建只认干净树**——status 非空不构建、不起 sweep；
   混合二进制基线必须落盘标注切换点，冻结后重跑纯净版。
+### 4.293 setImmediate 紧循环饿死 I/O 相（2026-10-20，http2 FIFO 轮）
+- 症状：FIFO open 轮询（ENXIO→setImmediate 重试）挂起后，server.listen 回调、`connection` 事件永不到；改 setTimeout(...,1) 即通。
+- 根因：本仓事件循环中 check 相紧递归挤占 poll 相（node 同理；nextTick 系更甚）。
+- 修法：一切"轮询等待外部进展"的循环一律 setTimeout(≥1ms) 节流；setImmediate 只用于一次性递延。
+- 复现：t_srv3（writer open 轮询 + h2 listen 同进程）vs t_srv5（setTimeout 版即通）。
+- 推广铁律：**轮询必须带时钟**——无时钟的自驱循环（immediate/microtask）即潜在饿死，先查相位再查逻辑。
+
+### 4.294 FIFO 阻塞 open 卡死 JS 线程（2026-10-20，同轮）
+- 症状：with-pipe/error-pipe-offset 双 TIMEOUT，且死在套件 load 期（writer 先行 open）。
+- 根因：本仓 fs.open 回调面同步执行（syncFn 立即执行）；FIFO 写端 open 在无读者时 OS 级阻塞，node 靠线程池消化。
+- 修法：statSync 先行嗅探（不阻塞）→FIFO 单独 O_NONBLOCK open + 轮询 rendezvous；ENXIO/EAGAIN 重试、余错正常回调；常规路径零改。
+- 复现：mkfifo + fs.open(pipe,'w',cb) 无读者即挂。
+- 推广铁律：**阻塞式 open 永不进同步底座**——先 stat 嗅探类型，特殊文件走非阻塞重试。（AGENTS §4 候选）
+
+### 4.295 O_TRUNC 开 FIFO 即 EINVAL（2026-10-20，同轮）
+- 症状：nb-open 写端 EINVAL 非 ENXIO，轮询永不命中。
+- 根因：__fsFlags("w") 含 truncate；O_TRUNC 在 FIFO 上非法。
+- 修法：nb-open 只取纯方向位（read/write/append），剥离 truncate/create。
+- 推广铁律：**特殊文件 open flags 最小化**——方向位外逐位论证。
+
+### 4.296 POSIX 无写者读端得 0（2026-10-20，同轮）
+- 症状：with-pipe 体空（首读 0 被当 EOF 早关，写者随后永 ENXIO）；error-pipe-offset linger 空转。
+- 根因：FIFO 无写者在场时读得 0（非 EAGAIN）；EAGAIN 仅"有写者无数据"。
+- 修法：游标流/ linger 首字节前的 0 视为可重试（seen 位），见首字节后方为真 EOF；收尾关按 seen/常规分流（直关 vs linger）。
+- 记档偏离：空写者（开即关、无写入）无法区分——与"写者永不到"同构永活（node 系 EOF）。
+- 推广铁律：**0 不等于 EOF**——流式读的终止条件必须带状态（seen/位置/类型），裸 `r<=0` 即收尾是错的。
+
+### 4.297 node respondWithFile 自动 content-length（2026-10-20，同轮）
+- 症状：range 套件 `null !== 3`。
+- 根因：node doSendFileFD 对常规文件恒覆写 content-length（min(size-offset,length)），旧移植靠 statCheck 手填。
+- 修法：isFile 即覆写（用户值亦覆，node 同）。
+- 推广铁律：**移植核对"对方替用户填了什么"**——不只看体，还要看自动头/默认值。
+
+### 4.298 h2 'connection' 手动 emit 无监听即 TIMEOUT（2026-10-20，socket-close）
+- 症状：test-http2-socket-close 静默 TIMEOUT；debug 日志 rustls client hs 发出后服务端零响应。
+- 根因：Http2Server 无 connectionListener（node 靠它做服务端 TLS 握手+建会话；secure 种 listener 挂 secureConnection，手动 emit('connection') 重进 net 层握手链）。
+- 修法：adopt 通道桥（AdoptIo：读走 inbox channel、写走 H2Stream/adoptData 事件；server_id 取 conn_id 独占路由；复用 serve_conn）；'connection' 常驻监听（native listen 不经此事件）；connClose 连带 destroy 注入 socket（双向拆链皆洁）。
+- 附带坑：Rust payload 漏 connId 前缀致 NaN 路由丢弃（inbound 通、outbound 断；h2c 隔离二分）。
+- 推广铁律：**emit 即契约**——手动 emit 的事件必须有内部监听承接；光发不接即挂死。（AGENTS §4 候选）
+
+### 4.299 response 'finish' 在流关闭时（2026-10-20，serverresponse-finished）
+- 症状：`response.socket !== undefined` 在 finish 内（得 {}）。
+- 根因：node onStreamCloseResponse 在流关闭时置 closed 并（可写已终则）发 finish；旧移植在流 finish 即转发，早了一拍。
+- 修法：流 finish 只记账，response finish 延至流 close（writableFinished 前提），socket 门加 __resClosed；destroy 路径即时 finish 不动。
+- 推广铁律：**终结事件看关闭不看完成**——finish/close 的派发点与可见性门以 node 状态机为准，不以宿主流事件时间为准。

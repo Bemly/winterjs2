@@ -570,6 +570,16 @@ pub(crate) async fn serve_conn<IO>(
                     }
                     Some(NetCmd::Close) | None => {
                         tracing::debug!(target: "winterjs2::http2", conn_id, "serve_conn: Close cmd");
+                        // 优雅收尾优先：先 GOAWAY 让在途 HEADERS/END 落盘再断
+                        //（flushheaders 套件：server 'finish' 即调 close()，此时 END
+                        // 尚在 ChanBody 队列；直接 break 丢尾包，客户端报
+                        // ERR_HTTP2_STREAM_ERROR。排空至多 5s，超时硬断）。
+                        conn.as_mut().graceful_shutdown();
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            &mut conn,
+                        )
+                        .await;
                         break;
                     }
                     _ => {}

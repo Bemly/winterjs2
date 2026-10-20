@@ -701,3 +701,67 @@ server.listen(0, () => {
     );
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_server_close_idle_connection() {
+    // C3 backlog：server.close() 主动关闲置连接（无在途流会话立即收尾，
+    // 有流会话自然排空）；会话侧 'stream' 在服务端 'stream'/'request' 之后；
+    // 双向尽后流先 'finish'（writableFinished 置位）再 'close'；
+    // 整洁收尾不 abort 待消费的 req（req 'end' 照旧到）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "c.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer();
+server.on("session", (session) => {
+  session.on("stream", (stream) => {
+    console.log("session-stream");
+    stream.respond({ ":status": 200 });
+    stream.end("hello");
+    stream.on("close", () => console.log("stream-close", stream.writableFinished === true));
+  });
+  session.on("close", () => console.log("session-close"));
+});
+server.on("close", () => console.log("server-close"));
+server.listen(0, () => {
+  const c = http2.connect(`http://localhost:${server.address().port}`);
+  c.on("close", () => console.log("client-close"));
+  const req = c.request({ ":path": "/" });
+  req.setEncoding("utf8");
+  let data = "";
+  req.on("data", (ch) => { data += ch; });
+  req.on("end", () => {
+    console.log("body", data);
+    setImmediate(() => server.close());
+  });
+  req.end();
+  req.resume();
+});
+const s2 = http2.createServer((req, res) => {
+  req.on("end", () => console.log("req-end"));
+  res.end();
+});
+s2.listen(0, () => {
+  const c = http2.connect(`http://localhost:${s2.address().port}`);
+  const q = c.request({ ":path": "/", ":method": "HEAD" });
+  q.on("end", () => { c.close(); s2.close(); });
+  q.end();
+  q.resume();
+});
+"#,
+    );
+    for line in [
+        "session-stream",
+        "stream-close true",
+        "session-close",
+        "server-close",
+        "client-close",
+        "body hello",
+        "req-end",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

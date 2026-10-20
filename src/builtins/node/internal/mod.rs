@@ -20,6 +20,7 @@ pub mod abort_controller;
 pub mod buffer;
 pub mod debuglog;
 pub mod encoding;
+pub mod crypto_util;
 pub mod http2_util;
 pub mod http_aliases;
 pub mod errors;
@@ -85,6 +86,7 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/readline/utils", readline_utils::SOURCE),
     ("node:internal/readline/callbacks", readline_callbacks::SOURCE),
     ("node:internal/readline/emitKeypressEvents", readline_emit_keypress::SOURCE),
+    ("node:internal/crypto/util", crypto_util::SOURCE),
     ("node:internal/encoding", encoding::SOURCE),
     ("node:internal/buffer", buffer::SOURCE),
     ("node:internal/webstream_adapters", webstream_adapters::SOURCE),
@@ -209,9 +211,9 @@ mod tests {
             normalize_internal("internal/streams/end-of-stream"),
             Some("node:internal/streams/end_of_stream")
         );
-        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；console 轮 + node:internal/util/debuglog 别名 +1；readline 轮 + node:internal/readline/utils +1 + callbacks +1 + emitKeypressEvents +1；增删同步改此数）。
-        // 注：console 轮落 83、utils 轮落 84、callbacks 轮落 85——本轮按实测 86 落数。
-        assert_eq!(INTERNALS.len(), 86);
+        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；console 轮 + node:internal/util/debuglog 别名 +1；readline 轮 + node:internal/readline/utils +1 + callbacks +1 + emitKeypressEvents +1；crypto 轮 + node:internal/crypto/util +1；增删同步改此数）。
+        // 注：console 轮落 83、utils 轮落 84、callbacks 轮落 85、emitKeypressEvents 轮落 86——本轮按实测 87 落数。
+        assert_eq!(INTERNALS.len(), 87);
         // console-formatTime 轮：node 真路径 internal/util/debuglog 可解（套件直引形）。
         assert_eq!(
             normalize_internal("internal/util/debuglog"),
@@ -235,6 +237,11 @@ mod tests {
         assert_eq!(
             normalize_internal("internal/readline/emitKeypressEvents"),
             Some("node:internal/readline/emitKeypressEvents")
+        );
+        // crypto R-A1：secLevel 工具模块可解（node 真路径 `internal/crypto/util`）。
+        assert_eq!(
+            normalize_internal("internal/crypto/util"),
+            Some("node:internal/crypto/util")
         );
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");

@@ -246,4 +246,29 @@ const __api = {
   argon2, argon2Sync, X509Certificate, Certificate,
   encapsulate, decapsulate,
 };
+// 废弃别名（random 套件描述符行钉住）：configurable 真、enumerable 假的访问器；
+// 首调（任一别名）警告一次，消息按首调别名（真机逐项）；set 即平值替换（真机口径）。
+let __prngWarned = false;
+function __deprecatedRandomBytes(alias, ...args) {
+  if (!__prngWarned) {
+    __prngWarned = true;
+    try {
+      process.emitWarning(`crypto.${alias} is deprecated.`, { type: "DeprecationWarning", code: "DEP0115" });
+    } catch {}
+  }
+  return randomBytes(...args);
+}
+for (const __alias of ["pseudoRandomBytes", "prng", "rng"]) {
+  Object.defineProperty(__api, __alias, {
+    configurable: true,
+    enumerable: false,
+    get() {
+      const __name = __alias;
+      return (...args) => __deprecatedRandomBytes(__name, ...args);
+    },
+    set(v) {
+      Object.defineProperty(__api, __alias, { value: v, writable: true, configurable: true });
+    },
+  });
+}
 export default __api;

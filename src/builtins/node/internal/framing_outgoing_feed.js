@@ -345,10 +345,15 @@
                 st.res = __nx;
               }
             }
-            // 半关连接（客户端已 FIN）且这是最后一个在途响应：收口不续
-            // keep-alive；还有管线中响应（st.res 已是后继请求的 res）则继续。
-            if (sock.__finReceived && st.res === res) {
-              try { sock.destroy(); } catch { /* gone */ }
+            // 半关连接（客户端已 FIN）且这是最后一个在途响应：收口 end()
+            //（排空再 FIN，见 connection 段 end 处理器；destroy 会砍排空
+            // 队列——net EPIPE 门实录）；还有管线中响应（st.res 已是后继
+            // 请求的 res）则继续。
+            // 注：上游 st.res 已先置 null/移交后继，此处"无后继"即 null/
+            // undefined（原文 `st.res === res` 置 null 后再比较恒假，递延
+            // 收口永不触发，create-connection 并发 FIN 竞速即悬空）。
+            if (sock.__finReceived && (st.res === null || st.res === undefined)) {
+              try { sock.end(); } catch { /* gone */ }
               return;
             }
             // 请求+响应完整落地：回空闲期（headersTimeout/keepAliveTimeout 双计时）。
@@ -463,8 +468,11 @@
       // node close 口径：空闲连接销毁；仍有在途请求/响应的连接 unref（进程不
       // 等待，响应落地后自然退出——pipeline-assertionerror-finish 套件；
       // 空闲判定走 __srvConnIdle（半截头非空闲，server-close-idle 套件）。
+      // 对端已 FIN 的连接（__finReceived）纵有未完结 res 亦销毁——FIN 递延
+      // 收口下 res 永不完结即悬空（destroy-midflight 套件：客户端杀连接后
+      // 服务端须见 close）；对端存活的在途管线仍等待（上条套件）。
       for (const sock of this.__sockets) {
-        if (__srvConnIdle(sock.__httpState)) {
+        if (__srvConnIdle(sock.__httpState) || sock.__finReceived === true) {
           try { sock.destroy(); } catch { /* closed meanwhile */ }
         } else if (typeof sock.unref === "function") {
           try { sock.unref(); } catch { /* gone */ }

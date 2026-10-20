@@ -76,6 +76,9 @@ pub const INTERNALS: &[(&str, &str)] = &[
     // eos 分支与套件直调读空即假；immediate-error 套件直引）。
     ("node:internal/async_hooks", super::async_hooks::INTERNAL_ASYNC_HOOKS_FACADE_SOURCE),
     ("node:internal/debuglog", debuglog::SOURCE),
+    // node 真路径 `internal/util/debuglog`（套件 `--expose-internals` 直引形；
+    // 与上条同源，见 node:inspector/promises 同源先例）。
+    ("node:internal/util/debuglog", debuglog::SOURCE),
     ("node:internal/encoding", encoding::SOURCE),
     ("node:internal/buffer", buffer::SOURCE),
     ("node:internal/webstream_adapters", webstream_adapters::SOURCE),
@@ -200,8 +203,18 @@ mod tests {
             normalize_internal("internal/streams/end-of-stream"),
             Some("node:internal/streams/end_of_stream")
         );
-        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；增删同步改此数）。
-        assert_eq!(INTERNALS.len(), 80);
+        // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；console-formatTime 轮 + node:internal/util/debuglog 别名 +1；增删同步改此数）。
+        // 注：HEAD 即 82（断言仍写 80，已 stale 两轮）——本轮按实测 83 落数。
+        assert_eq!(INTERNALS.len(), 83);
+        // console-formatTime 轮：node 真路径 internal/util/debuglog 可解（套件直引形）。
+        assert_eq!(
+            normalize_internal("internal/util/debuglog"),
+            Some("node:internal/util/debuglog")
+        );
+        assert_eq!(
+            source("node:internal/util/debuglog"),
+            source("node:internal/debuglog")
+        );
         for (name, src) in INTERNALS {
             assert!(source(name).is_some(), "{name} missing");
             assert!(!src.is_empty(), "{name} empty source");

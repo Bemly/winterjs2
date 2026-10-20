@@ -176,3 +176,51 @@ console.log("grp", JSON.stringify(seen));
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn console_debuglog_format_time_faces() {
+    // 正常：test-console-formatTime 8 断言逐字（node 真机实测同值）+
+    // node:internal/util/debuglog 与裸 internal/util/debuglog 同一实现；
+    // 报错：Symbol 入参 TypeError（真机同形）；边界：0/负数/亚毫秒舍入/
+    // 分·时整界/NaN（真机实测钉值）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { formatTime } from "node:internal/util/debuglog";
+import bare from "internal/util/debuglog";
+import assert from "node:assert";
+assert.strictEqual(formatTime(100.0096), "100.01ms");
+assert.strictEqual(formatTime(100.0115), "100.011ms");
+assert.strictEqual(formatTime(1500.04), "1.500s");
+assert.strictEqual(formatTime(1000.056), "1.000s");
+assert.strictEqual(formatTime(60300.3), "1:00.300 (m:ss.mmm)");
+assert.strictEqual(formatTime(4000457.4), "1:06:40.457 (h:mm:ss.mmm)");
+assert.strictEqual(formatTime(3601310.4), "1:00:01.310 (h:mm:ss.mmm)");
+assert.strictEqual(formatTime(3213601017.6), "892:40:01.018 (h:mm:ss.mmm)");
+console.log("suite8 ok");
+console.log("bare", typeof bare.formatTime, bare.formatTime === formatTime);
+console.log("edge", formatTime(0), formatTime(-5), formatTime(0.0004), formatTime(0.0005));
+console.log("round", formatTime(999.9999), formatTime(60000), formatTime(3600000), formatTime(NaN));
+try { formatTime(Symbol("x")); console.log("sym-no-throw"); }
+catch (e) { console.log("sym-throw", e.constructor.name); }
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "suite8 ok",
+        "bare function true",
+        "edge 0ms -5ms 0ms 0.001ms",
+        "round 1000ms 1:00.000 (m:ss.mmm) 1:00:00.000 (h:mm:ss.mmm) NaNms",
+        "sym-throw TypeError",
+    ] {
+        assert!(out.contains(want), "missing {want}, out: {out}");
+    }
+    dir.close().unwrap();
+}

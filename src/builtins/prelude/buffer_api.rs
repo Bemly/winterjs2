@@ -100,11 +100,14 @@ globalThis.Buffer = Buffer;
 })();
 const __wjs2_keyState = new WeakMap();
 function NotSupportedError_(what) { return new Error(`NotSupportedError: unsupported ${what}`); }
+// WebCrypto 错误面（真机逐项）：DOMException 定名（OperationError/DataError/
+// InvalidAccessError/NotSupportedError），套件断 name。
+function __wjs2_domErr(name, message) { return new DOMException(String(message), String(name)); }
 function __wjs2_normHash(h) {
   const s = typeof h === "string" ? h : String(h?.name ?? "");
   const up = s.trim().toUpperCase();
-  const map = { "SHA-1": "SHA-1", "SHA1": "SHA-1", "SHA-256": "SHA-256", "SHA256": "SHA-256", "SHA-384": "SHA-384", "SHA384": "SHA-384", "SHA-512": "SHA-512", "SHA512": "SHA-512" };
-  if (!map[up]) throw new Error(`NotSupportedError: unsupported hash '${s}'`);
+  const map = { "SHA-1": "SHA-1", "SHA1": "SHA-1", "SHA-256": "SHA-256", "SHA256": "SHA-256", "SHA-384": "SHA-384", "SHA384": "SHA-384", "SHA-512": "SHA-512", "SHA512": "SHA-512", "SHA3-256": "SHA3-256", "SHA3-384": "SHA3-384", "SHA3-512": "SHA3-512" };
+  if (!map[up]) throw new DOMException("Unrecognized algorithm name", "NotSupportedError");
   return map[up];
 }
 function __wjs2_makeKey(alg, material, usages, extractable, kind) {
@@ -113,8 +116,73 @@ function __wjs2_makeKey(alg, material, usages, extractable, kind) {
   // algorithm.hash.name；字符串输入在此统一转形，消费侧只认对象形）。
   const a = alg === null || typeof alg !== "object" ? {} : { ...alg };
   if (typeof a.hash === "string") a.hash = { name: a.hash };
-  __wjs2_keyState.set(k, { alg: a, material, usages, extractable, kind: kind ?? "secret" });
+  const kk = kind ?? "secret";
+  // 用量校验（真机逐项）：非法即 SyntaxError Unsupported key usage。
+  __wjs2_checkUsages(String(a.name ?? "").toUpperCase(), kk, usages ?? []);
+  __wjs2_keyState.set(k, { alg: a, material, usages, extractable, kind: kk });
   return k;
+}
+// 各算法/钥型可用量表（export-import/derive/wrap 各套件真机逐项）。
+function __wjs2_allowedUsages(name, kind) {
+  if (kind === "secret") {
+    if (name === "HMAC") return ["sign", "verify"];
+    if (name === "HKDF" || name === "PBKDF2") return ["deriveKey", "deriveBits"];
+    if (name.startsWith("AES-")) return ["encrypt", "decrypt", "wrapKey", "unwrapKey"];
+    return null;
+  }
+  if (kind === "public") {
+    if (name === "ECDSA" || name === "ED25519") return ["verify"];
+    if (name === "ECDH" || name === "X25519") return [];
+    if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-PSS") return ["verify"];
+    if (name === "RSA-OAEP") return ["encrypt", "wrapKey"];
+    return null;
+  }
+  if (kind === "private") {
+    if (name === "ECDSA" || name === "ED25519") return ["sign", "verify"];
+    if (name === "ECDH" || name === "X25519") return ["deriveKey", "deriveBits"];
+    if (name === "RSASSA-PKCS1-V1_5" || name === "RSA-PSS") return ["sign", "verify"];
+    if (name === "RSA-OAEP") return ["decrypt", "unwrapKey"];
+    return null;
+  }
+  return null;
+}
+function __wjs2_checkUsages(name, kind, usages) {
+  const allowed = __wjs2_allowedUsages(name, kind);
+  if (allowed === null) return;
+  for (const u of usages ?? []) {
+    if (!allowed.includes(u)) throw new DOMException(`Unsupported key usage for ${name} key`, "SyntaxError");
+  }
+}
+// JWK use/alg 校验（export-import 各套件真机逐项）：alg 缺省即过，白名单外
+// 即 DataError；use 按签名/加密两族（缺省即过）。
+function __wjs2_checkJwkMeta(keyData, algs, sigFamily) {
+  if (keyData?.alg !== undefined) {
+    if (algs !== null && !algs.includes(keyData.alg)) {
+      throw __wjs2_domErr("DataError", 'JWK "alg" does not match the requested algorithm');
+    }
+  }
+  if (keyData?.use !== undefined) {
+    const ok = sigFamily ? keyData.use === "sig" : keyData.use === "enc";
+    if (!ok) throw __wjs2_domErr("DataError", 'Invalid JWK "use" Parameter');
+  }
+}
+const __wjs2_keyUsageValues = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits", "wrapKey", "unwrapKey"];
+function __wjs2_checkKeyOps(keyData, usages, name, kind) {
+  const ops = keyData?.key_ops;
+  if (ops === undefined) return;
+  if (!Array.isArray(ops)) throw __wjs2_domErr("DataError", "Invalid keyData");
+  for (const u of usages ?? []) {
+    if (!ops.includes(u)) throw __wjs2_domErr("DataError", "Key operations and usage mismatch");
+  }
+  const allowed = __wjs2_allowedUsages(name, kind);
+  if (allowed !== null) {
+    for (const o of ops) {
+      if (__wjs2_keyUsageValues.includes(o) && !allowed.includes(o)) {
+        throw new DOMException(`Unsupported key usage for ${name} key`, "SyntaxError");
+      }
+    }
+  }
+  if (new Set(ops).size !== ops.length) throw __wjs2_domErr("DataError", "Duplicate key operation");
 }
 // KeyObject.from 桥（hidden-slots 套件：绕过可伪造的原型 getter，直读内部槽）。
 globalThis.__wjs2_cryptoKeyInfo = (k) => {
@@ -134,13 +202,27 @@ function __wjs2_dataBytes(v) {
 function __wjs2_needUsage(st, op) {
   if (!st.usages.includes(op)) throw new DOMException(`Unable to use this key to ${op}`, "InvalidAccessError");
 }
+// derive 系用量门（真机逐字，独立文案）。
+function __wjs2_needDeriveUsage(st, op) {
+  if (!st.usages.includes(op)) throw new DOMException(`baseKey does not have ${op} usage`, "InvalidAccessError");
+}
+// deriveBits/deriveKey 共用长度门（真机逐项）：null/缺省 OperationError；
+// 超出 u32 Range 即 TypeError；非 8 倍数 OperationError。
+function __wjs2_needBitsLength(len) {
+  if (len === null || len === undefined) throw new DOMException("length cannot be null", "OperationError");
+  const n = Number(len);
+  if (!Number.isFinite(n) || n < 0 || n > 4294967295) throw new TypeError("length out of range");
+  if (!Number.isInteger(n) || n % 8 !== 0) throw new DOMException("length must be a multiple of 8", "OperationError");
+  return n / 8;
+}
 function __wjs2_aesParams(algorithm) {
   const iv = __wjs2_dataBytes(algorithm?.iv ?? new Uint8Array(0));
-  if (iv.length !== 12) throw new Error("OperationError: AES-GCM iv must be 12 bytes");
   const aad = algorithm?.additionalData === undefined ? undefined : __wjs2_dataBytes(algorithm.additionalData);
   const tagLength = algorithm?.tagLength === undefined ? 128 : Number(algorithm.tagLength);
-  if (tagLength !== 128) throw new Error("NotSupportedError: only 128-bit AES-GCM tags for now");
-  return { iv, aad };
+  if (![32, 64, 96, 104, 112, 120, 128].includes(tagLength)) {
+    throw __wjs2_domErr("OperationError", `${algorithm?.tagLength} is not a valid AES-GCM tag length`);
+  }
+  return { iv, aad, tagLength };
 }
 function __wjs2_b64urlEncode(u8) {
   let s = "";

@@ -85,6 +85,14 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_aesgcm_decrypt", Some(crypto::aesgcm_decrypt), 4),
             ("__wjs2_hmac_sign", Some(crypto::hmac_sign), 3),
             ("__wjs2_hmac_verify", Some(crypto::hmac_verify), 4),
+            ("__wjs2_hkdf_derive", Some(crypto::hkdf_derive), 5),
+            ("__wjs2_pbkdf2_derive", Some(crypto::pbkdf2_derive), 5),
+            ("__wjs2_shake_digest", Some(crypto::shake_digest), 3),
+            ("__wjs2_aescbc_encrypt", Some(crypto::aescbc_encrypt), 3),
+            ("__wjs2_aescbc_decrypt", Some(crypto::aescbc_decrypt), 3),
+            ("__wjs2_aesctr_crypt", Some(crypto::aesctr_crypt), 4),
+            ("__wjs2_aeskw_wrap", Some(crypto::aeskw_wrap), 2),
+            ("__wjs2_aeskw_unwrap", Some(crypto::aeskw_unwrap), 2),
             ("__wjs2_rsa_generate", Some(crypto::rsa_generate), 2),
             ("__wjs2_rsa_public", Some(crypto::rsa_public), 1),
             ("__wjs2_rsa_sign", Some(crypto::rsa_sign), 3),
@@ -102,6 +110,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_ecdh_derive", Some(crypto::ecdh_derive), 3),
             ("__wjs2_ec_jwk", Some(crypto::ec_jwk), 3),
             ("__wjs2_ec_jwk_pub", Some(crypto::ec_jwk_pub), 2),
+            ("__wjs2_ec_spki_normalize", Some(crypto::ec_spki_normalize), 2),
             ("__wjs2_ec_import_priv", Some(crypto::ec_import_priv), 2),
             ("__wjs2_ec_import_pub", Some(crypto::ec_import_pub), 3),
             // 10f crypto五轮：压缩/混合 SEC1 点导入（轮子内解压+上曲线校验）
@@ -336,6 +345,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_ccm_crypt", Some(node::crypto::ccm_crypt_native), 7),
             // 10e: GCM 任意 iv（12B 走 crate，其余 J0 手工；WebCrypto 共用面不动）
             ("__wjs2_gcm_anyiv", Some(node::crypto::gcm_anyiv), 5),
+            ("__wjs2_gcm_subtle", Some(node::crypto::gcm_subtle), 6),
             // Phase 9e-1c: RSA v1.5 + DH/素性（签名/派生复用既有 natives）
             ("__wjs2_rsa_encrypt_v15", Some(node::crypto::rsa_encrypt_v15), 2),
             ("__wjs2_rsa_decrypt_v15", Some(node::crypto::rsa_decrypt_v15), 2),

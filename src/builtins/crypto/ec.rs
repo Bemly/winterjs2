@@ -307,6 +307,46 @@ pub unsafe extern "C" fn ec_jwk(
     }
 }
 
+/// `__wjs2_ec_spki_normalize(curve, pubDer)` → 非压缩点 SPKI DER（45859 口径：
+/// 压缩点导入即解压存，导出恒非压缩）。
+pub unsafe extern "C" fn ec_spki_normalize(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: EC SPKI normalize needs curve and public key");
+        return false;
+    }
+    let curve = value_to_string(&mut cx, frame.arg(0));
+    let Some(pub_der) = view_bytes(&mut cx, frame.arg(1), "EC public key") else {
+        return false;
+    };
+    let out: Result<Vec<u8>, String> = with_curve!(curve.as_str(), |C, Secret, Public, Signing, Verifying, Sig, K| {
+        (|| -> Result<Vec<u8>, String> {
+            use K::elliptic_curve::pkcs8::{DecodePublicKey as _, EncodePublicKey as _};
+            use K::elliptic_curve::sec1::ToSec1Point as _;
+            let pk = Public::from_public_key_der(&pub_der)
+                .map_err(|_| "DataError: bad EC public key (SPKI)".to_string())?;
+            let uncompressed = pk.to_sec1_point(false);
+            let pk2 = Public::from_sec1_bytes(uncompressed.as_bytes())
+                .map_err(|_| "DataError: bad EC public key (SPKI)".to_string())?;
+            pk2.to_public_key_der()
+                .map(|d| d.as_bytes().to_vec())
+                .map_err(|_| "DataError: bad EC public key (SPKI)".to_string())
+        })()
+    });
+    match out {
+        Ok(der) => set_rval_bytes(&mut cx, &frame, &der),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
 /// `__wjs2_ec_jwk_pub(curve, pubDer)` → 公钥坐标 JSON（`{x,y}`；非导出私钥时用）。
 pub unsafe extern "C" fn ec_jwk_pub(
     cx_raw: *mut mozjs::jsapi::JSContext,

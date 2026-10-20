@@ -274,6 +274,17 @@ globalThis.DOMException = class DOMException extends Error {
     globalThis.DOMException[name] = code;
   }
 }
+// random 套件：QuotaExceededError 全局类（DOMException 子类；quota/requested
+// 缺省 null，真机逐项）。
+globalThis.QuotaExceededError = class QuotaExceededError extends DOMException {
+  constructor(message = "", options = {}) {
+    super(String(message), "QuotaExceededError");
+    const o = options ?? {};
+    this.quota = o.quota ?? null;
+    this.requested = o.requested ?? null;
+  }
+  get [Symbol.toStringTag]() { return "QuotaExceededError"; }
+};
 // Node 15+ 全局 MessageChannel/MessagePort = worker_threads 同款类（getter 惰性
 // require 保类同一性：global 与 module 导出同一对象，instanceof 不分叉）。
 for (const name of ["MessageChannel", "MessagePort"]) {

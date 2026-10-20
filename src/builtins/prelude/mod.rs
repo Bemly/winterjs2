@@ -12,6 +12,8 @@ mod buffer_core;
 mod buffer_int;
 mod buffer_ops;
 mod crypto;
+mod crypto_import;
+mod crypto_ops;
 mod events;
 mod fetch;
 mod http;
@@ -45,7 +47,9 @@ pub static PRELUDE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         buffer_ops::BUFFER_OPS_JS,
         buffer_class::BUFFER_CLASS_JS,
         buffer_api::BUFFER_API_JS,
-        crypto::CRYPTO_JS,
+        crypto::CRYPTO_KEYS_JS,
+        crypto_import::CRYPTO_IMPORT_JS,
+        crypto_ops::CRYPTO_OPS_JS,
         events::EVENTS_JS,
         http::HTTP_JS,
         serve::SERVE_JS,

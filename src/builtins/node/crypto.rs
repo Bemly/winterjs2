@@ -128,7 +128,7 @@ pub(crate) fn sha1_bytes(data: &[u8]) -> Vec<u8> {
 
 pub use super::crypto_cipher::{
     ccm_crypt_native, cipher_chacha, cipher_final, cipher_new, cipher_set_autopad,
-    cipher_update, gcm_anyiv,
+    cipher_update, gcm_anyiv, gcm_subtle,
 };
 pub use super::crypto_dh::{dh_genkey, dh_secret, prime_check, prime_gen};
 pub use super::crypto_hash::{

@@ -370,3 +370,36 @@ server.listen(0, () => {
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn http2_server_listen_callback_faces() {
+    // client-request-listeners-warning：server.listen(cb) 即随机端口 + 回调
+    //（首参函数形；旧实现误作端口致 hang）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "l.mjs",
+        r#"
+import http2 from "node:http2";
+const server = http2.createServer((req, res) => res.end("ok"));
+server.listen(() => {
+  const port = server.address().port;
+  console.log("port", port > 0);
+  const client = http2.connect(`http://localhost:${port}`);
+  const req = client.request({ ":path": "/" });
+  req.on("response", () => console.log("resp"));
+  req.on("end", () => {
+    console.log("end");
+    client.close();
+    server.close();
+  });
+  req.resume();
+  req.end();
+});
+"#,
+    );
+    for line in ["port true", "resp", "end"] {
+        assert!(out.lines().any(|l| l == line), "missing {line}; out: {out}");
+    }
+    dir.close().unwrap();
+}

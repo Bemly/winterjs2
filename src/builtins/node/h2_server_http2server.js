@@ -289,7 +289,11 @@ class Http2Server extends EventEmitter {
   address() { return this.__listening; }
   listen(...args) {
     let port, host = null, cb = null;
-    if (typeof args[0] === "object" && args[0] !== null) {
+    if (typeof args[0] === "function") {
+      // node：listen(cb) 即随机端口 + 回调（client-request-listeners-warning）。
+      cb = args[0];
+      port = 0;
+    } else if (typeof args[0] === "object" && args[0] !== null) {
       port = args[0].port;
       host = args[0].host ?? null;
       cb = typeof args[1] === "function" ? args[1] : null;

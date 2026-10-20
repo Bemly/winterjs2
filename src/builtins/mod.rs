@@ -390,6 +390,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // vm-triage：Promise 结算内态（util.inspect 显示用；vm evaluate 同步落定断言）
             ("__wjs2_promise_state", Some(node::vm_module::promise_state), 1),
             ("__wjs2_promise_result", Some(node::vm_module::promise_result), 1),
+            // vm-triage M3：求值超时（watchdog + 中断回调）
+            ("__wjs2_vm_timeout_fired", Some(node::vm::timeout_fired), 0),
             // Phase 9f-2: worker 消息通道（端口对/投递/线程身份/环境数据）
             ("__wjs2_port_pair", Some(node::worker::port_pair), 0),
             ("__wjs2_port_attach", Some(node::worker::port_attach), 2),

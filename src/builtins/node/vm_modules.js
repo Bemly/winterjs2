@@ -69,16 +69,20 @@ export class Module {
   }
   evaluate(options) {
     this.__assertThis();
+    let timeout = 0;
     if (options !== undefined) {
       if (options === null || (typeof options !== "object" && typeof options !== "function")) {
         __modErr("ERR_INVALID_ARG_TYPE", `The "options" argument must be of type object. Received ${__recv(options)}`);
       }
-      if (options.timeout !== undefined) __normTimeout(options.timeout, "timeout");
+      if (options.timeout !== undefined) {
+        __normTimeout(options.timeout, "timeout");
+        timeout = options.timeout;
+      }
       if (options.breakOnSigint !== undefined && typeof options.breakOnSigint !== "boolean") {
         __modErr("ERR_INVALID_ARG_TYPE", `The "options.breakOnSigint" property must be of type boolean. Received ${__recv(options.breakOnSigint)}`);
       }
     }
-    return this.__doEvaluate();
+    return this.__doEvaluate(timeout);
   }
 }
 
@@ -209,7 +213,7 @@ export class SourceTextModule extends Module {
       this.__status = "linked";
     });
   }
-  __doEvaluate() {
+  __doEvaluate(timeoutMs = 0) {
     if (this.__status !== "linked" && this.__status !== "evaluating" && this.__status !== "evaluated" && this.__status !== "errored") {
       return __modStatusErr("ERR_VM_MODULE_STATUS", "Module status must be one of linked, evaluated, or errored");
     }
@@ -225,7 +229,7 @@ export class SourceTextModule extends Module {
     // 不能让引擎孤儿 promise 触发 fatal）并同步失败；pending（TLA）→异步认领。
     let r;
     try {
-      r = __vmCall(() => __wjs2_vm_evaluate(this.__id));
+      r = __vmCall(() => __wjs2_vm_evaluate(this.__id, String(timeoutMs)), 0, 0, timeoutMs);
     } catch (e) {
       this.__status = "errored";
       this.__error = e;
@@ -356,7 +360,7 @@ export class SyntheticModule extends Module {
     // Synthetic 出生即 linked；重复 link 照真机保持 linked（无操作成功）。
     return Promise.resolve(undefined);
   }
-  __doEvaluate() {
+  __doEvaluate(timeoutMs = 0) {
     if (this.__status === "evaluated") return Promise.resolve(undefined);
     if (this.__status === "errored") return Promise.reject(this.__error);
     if (this.__status === "evaluating") {

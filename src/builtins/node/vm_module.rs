@@ -204,7 +204,7 @@ pub unsafe extern "C" fn vm_mod_link(
     true
 }
 
-/// 求值模块：`__wjs2_vm_evaluate(modId)` → completion（promise 照常回调用方）。
+/// 求值模块：`__wjs2_vm_evaluate(modId, timeoutMs?)` → completion（promise 照常回调用方）。
 /// 未 link 即报 `ERR_VM_MODULE_STATUS`（Node 口径：先 link 后 evaluate）。
 pub unsafe extern "C" fn vm_mod_evaluate(
     cx_raw: *mut mozjs::jsapi::JSContext,
@@ -212,6 +212,7 @@ pub unsafe extern "C" fn vm_mod_evaluate(
     vp: *mut JSVal,
 ) -> bool {
     use mozjs::rust::wrappers2::ModuleEvaluate;
+    use super::vm::{vm_timeout_arg, vm_timeout_peek_ms, vm_timeout_rearm, vm_timeout_report, VmTimeoutGuard};
     // SAFETY: 同 vm_create
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
@@ -226,6 +227,8 @@ pub unsafe extern "C" fn vm_mod_evaluate(
             return false;
         }
     };
+    let timeout_ms = vm_timeout_arg(&mut cx, &frame, 1);
+    let _timeout_guard = VmTimeoutGuard::enter(cx_raw, timeout_ms);
     let Some((record, ctx, _has_imports, linked, _evaluated)) = state::vm_mod_get(id) else {
         report_error(&mut cx, "ERR_VM_MODULE_NOT_FOUND: vm Module has been released");
         return false;
@@ -243,12 +246,55 @@ pub unsafe extern "C" fn vm_mod_evaluate(
     let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
     // SAFETY: record 有效 rooted；realm 内同步求值
     if !unsafe { ModuleEvaluate(&mut realm, record_root.handle(), rval.handle_mut()) } {
+        // 超时命中优先（同 vm_run：先补发中断再排空孤儿任务）。
+        if vm_timeout_peek_ms().is_some() {
+            use mozjs::jsapi::RunJobs;
+            vm_timeout_rearm(cx_raw);
+            // SAFETY: realm 内排空（主循环同款）
+            unsafe { RunJobs((&mut realm).raw_cx()) };
+        }
+        if vm_timeout_report(&mut realm, timeout_ms) {
+            return false;
+        }
         let msg = crate::modules::module_error(&mut realm, "vm_module").to_string();
         throw_vm(&mut realm, "Error", &msg);
         return false;
     }
+    // 超时中断的模块求值：ModuleEvaluate 同步返回 rejected completion
+    //（uncatchable 中止，因恒 undefined）——命中标记在即按超时失败处理：
+    // 先补发中断排空孤儿任务（escape-promise-module 口径：逃逸 `.then(loop)`
+    // 中止、永不落定、无 unhandled），再报真机口径错。pending/fulfilled +
+    // 命中（竞态：回调置位与同步完成同时）则清标记正常返回（V8 口径：终
+    // 止未送达即完成，不报错；清标记防同线程后继定时求值误报）。
+    if vm_timeout_peek_ms().is_some() {
+        let rejected = rval.is_object() && {
+            rooted!(&in(&mut realm) let rval_obj: *mut JSObject = rval.to_object());
+            // 只读 state（promise_state 同源；safe 读，不推进 jobqueue）
+            matches!(
+                crate::jsapi_glue::promise_settled_value(&mut realm, rval_obj.get()),
+                Some(Some((false, _)))
+            )
+        };
+        if rejected {
+            use mozjs::jsapi::RunJobs;
+            // 中止 completion 自身的 unhandled 认领（因恒 undefined 的终止
+            // rejection，真机不报告；调用方经 evaluate() 认领超时错，此处
+            // 等效 Handled 摘除，防事件循环尾 fatal）。
+            let rval_ptr = rval.to_object();
+            state::with_rooted(|s| s.unhandled.retain(|h| h.get() != rval_ptr));
+            vm_timeout_rearm(cx_raw);
+            // SAFETY: realm 内排空（主循环同款）
+            unsafe { RunJobs((&mut realm).raw_cx()) };
+            if vm_timeout_report(&mut realm, timeout_ms) {
+                return false;
+            }
+        } else {
+            super::vm::vm_timeout_fired_ms();
+        }
+    }
     // Node afterEvaluate 等效（runInContext 系由各自求值点排空；模块求值不
-    // 在此处排空——TLA 模块的 pending 必须留给事件循环，否则同步结算偏离真机）。
+    // 在此处排空——TLA 模块的 pending 必须留给事件循环，否则同步结算偏离真机；
+    // 上方超时分支是唯一例外：命中即求值已失败，排空只杀孤儿）。
     // 落定判定一律由 JS 壳经 `__wjs2_promise_state/result` 做（跨 compartment
     // 安全：GetPromiseState 内解包；result 侧本文件解包后读），此处原样返回
     // completion（非 promise 同步值即置 evaluated 位）。

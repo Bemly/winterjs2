@@ -40,6 +40,13 @@ function __vmUnwrap(e, lo, co) {
   const m = String((e && e.message) || e);
   const mm = m.match(/^__wjs2_vm_error:([A-Za-z]+)\n([\s\S]*)$/);
   if (!mm) {
+    // native 直报码（`ERR_X: msg`，如超时）：拆码赋 code（真机 err.code 口径）。
+    const cm = m.match(/^(ERR_[A-Z0-9_]+): ([\s\S]*)$/);
+    if (cm) {
+      const err = new Error(cm[2]);
+      err.code = cm[1];
+      throw err;
+    }
     const err = new Error(m);
     err.code = "ERR_VM_ERROR";
     throw err;
@@ -62,10 +69,20 @@ function __vmUnwrap(e, lo, co) {
   }
   throw err;
 }
-function __vmCall(fn, lo, co) {
+function __vmCall(fn, lo, co, timeoutMs) {
   try {
     return fn();
   } catch (e) {
+    // 超时命中优先（中断回调置位；native 侧已清 pending 残留，此处建真机口径错）。
+    if (timeoutMs) {
+      let fired = 0;
+      try { fired = __wjs2_vm_timeout_fired(); } catch { fired = 0; }
+      if (fired) {
+        const err = new Error(`Script execution timed out after ${fired}ms`);
+        err.code = "ERR_SCRIPT_EXECUTION_TIMEOUT";
+        throw err;
+      }
+    }
     // native 暂存的原始异常对象优先（保 vm realm 身份/原型/栈——跨域
     // `instanceof vmCtx.SyntaxError` 与栈断言点名）；信封重建只作兜底。
     let orig;
@@ -452,7 +469,8 @@ function __runArgs(contextifiedObject, options) {
   // 行列偏移只做校验之外的事：显示期加到栈位置上（真机实测，见 __vmRebuild）。
   const lineOffset = __normUint(options.lineOffset, "lineOffset") ?? 0;
   const columnOffset = __normUint(options.columnOffset, "columnOffset") ?? 0;
-  return { filename, lineOffset, columnOffset };
+  const timeout = __normTimeout(options.timeout, "timeout") ?? 0;
+  return { filename, lineOffset, columnOffset, timeout };
 }
 
 // Script.sourceMapURL（真机 26.8.1 实测）：源码中最后一个行注释形
@@ -608,9 +626,9 @@ export function createContext(contextObject = {}, options = {}) {
 
 export function runInContext(code, contextifiedObject, options) {
   const id = __validateCtx(contextifiedObject);
-  const { filename, lineOffset, columnOffset } = __runArgs(contextifiedObject, options);
+  const { filename, lineOffset, columnOffset, timeout } = __runArgs(contextifiedObject, options);
   __syncIn(id, contextifiedObject);
-  const r = __vmCall(() => __wjs2_vm_run(id, String(code), filename), lineOffset, columnOffset);
+  const r = __vmCall(() => __wjs2_vm_run(id, String(code), filename, String(timeout)), lineOffset, columnOffset, timeout);
   __syncOut(id, contextifiedObject);
   return r;
 }
@@ -635,8 +653,8 @@ export function runInNewContext(code, contextObject, options) {
 }
 
 export function runInThisContext(code, options) {
-  const { filename, lineOffset, columnOffset } = __runArgs(null, options);
-  return __vmCall(() => __wjs2_vm_run_this(String(code), filename), lineOffset, columnOffset);
+  const { filename, lineOffset, columnOffset, timeout } = __runArgs(null, options);
+  return __vmCall(() => __wjs2_vm_run_this(String(code), filename, String(timeout)), lineOffset, columnOffset, timeout);
 }
 
 export class Script {

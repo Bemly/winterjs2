@@ -539,6 +539,54 @@ try { vm.runInContext(" throw new Error()", ctx, { filename: "e.js", lineOffset:
 }
 
 #[test]
+fn vm_script_timeout_surface() {
+    // 超时中断三件（M3 中断回调 + 看门重发 + 孤儿排空）：快路正常、
+    // 同步死循环码文案逐字、嵌套取最早到期、微任务逃逸同步中止、
+    // 模块求值超时（rejected-completion 转码 + 认领）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import vm from "node:vm";
+// 正常：快路（大超时内完成）。
+console.log("to-fast", vm.runInNewContext("40 + 1", {}, { timeout: 1000 }) === 41);
+// 报错：同步死循环（码 + 文案逐字 + 快速返回）。
+const t0 = Date.now();
+try { vm.runInNewContext("while(true){}", {}, { timeout: 50 }); console.log("to-sync", "NO-THROW"); }
+catch (e) { console.log("to-sync", e.code === "ERR_SCRIPT_EXECUTION_TIMEOUT", e.message === "Script execution timed out after 50ms", Date.now() - t0 < 5000); }
+// 边界：嵌套内层短（最早到期者文案）。
+try { vm.runInNewContext("vm.runInNewContext('while(true){}', {}, { timeout: 10 })", { vm }, { timeout: 5000 }); console.log("to-nest", "NO-THROW"); }
+catch (e) { console.log("to-nest", e.code === "ERR_SCRIPT_EXECUTION_TIMEOUT", e.message === "Script execution timed out after 10ms"); }
+// 边界：微任务逃逸（同步 + 排空段双杀，无 unhandled fatal）。
+try { vm.runInNewContext("Promise.resolve().then(() => { while(true){} }); while(true){}", {}, { timeout: 50 }); console.log("to-esc", "NO-THROW"); }
+catch (e) { console.log("to-esc", e.code === "ERR_SCRIPT_EXECUTION_TIMEOUT", e.message === "Script execution timed out after 50ms"); }
+// 模块：求值超时（rejected completion 转码；状态 errored）。
+const m = new vm.SourceTextModule("while(true){}", { context: vm.createContext({}) });
+await m.link(() => {});
+try { await m.evaluate({ timeout: 50 }); console.log("to-mod", "NO-THROW"); }
+catch (e) { console.log("to-mod", e.code === "ERR_SCRIPT_EXECUTION_TIMEOUT", e.message === "Script execution timed out after 50ms", m.status === "errored"); }
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "to-fast true",
+        "to-sync true true true",
+        "to-nest true true",
+        "to-esc true true",
+        "to-mod true true true",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn vm_module_linking_surface() {
     // linkRequests/instantiate/moduleRequests/标识按 context 独立 + cachedData 存根。
     let dir = assert_fs::TempDir::new().unwrap();

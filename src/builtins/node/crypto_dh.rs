@@ -244,15 +244,18 @@ pub unsafe extern "C" fn prime_gen(
     // `(4,15,13)→13` 口径钉死）；孤 rem（无 add）两边一致忽略（node 同款）。
     // checks 轮数 fast 路径交由 OpenSSL 内置（node 同款不透传）。
     if add.is_none() {
-        let n = openssl::bn::BigNum::generate_prime(bits as i32, safe, None, None);
-        let n = match n {
-            Ok(n) => n,
+        let mut big = match openssl::bn::BigNum::new() {
+            Ok(b) => b,
             Err(_) => {
                 report_error(&mut cx, "OperationError: prime generation failed to converge");
                 return false;
             }
         };
-        return set_rval_bytes(&mut cx, &frame, &pad_be(&n.to_vec(), len));
+        if big.generate_prime(bits as i32, safe, None, None).is_err() {
+            report_error(&mut cx, "OperationError: prime generation failed to converge");
+            return false;
+        }
+        return set_rval_bytes(&mut cx, &frame, &pad_be(&big.to_vec(), len));
     }
     let add = add.expect("prime_gen: add.is_none() 已早返");
     {
@@ -290,35 +293,5 @@ pub unsafe extern "C" fn prime_gen(
         report_error(&mut cx, "OperationError: prime generation failed to converge");
         return false;
     }
-    let mut cand = vec![0u8; len];
-    // 顶两位按 OpenSSL BN_RAND_TOP_TWO 置位（顶字节整字节即 0xC0；3 位即 7，
-    // prime 套件 generatePrimeSync(3)===7n 行钉住；旧单顶位记档修）。
-    let top_bits = bits % 8;
-    for _ in 0..(bits as u64 * 1000 + 1000) {
-        if getrandom::fill(&mut cand).is_err() {
-            report_error(&mut cx, "OperationError: cannot get random values");
-            return false;
-        }
-        if top_bits == 0 {
-            cand[0] |= 0xC0;
-        } else if top_bits == 1 {
-            cand[0] &= 0x01;
-            cand[0] |= 0x01;
-            if len > 1 {
-                cand[1] |= 0x80;
-            }
-        } else {
-            cand[0] &= (1u8 << top_bits) - 1;
-            cand[0] |= 0b11 << (top_bits - 2);
-        }
-        let last = cand.len() - 1;
-        cand[last] |= 1;
-        let n = rsa::BigUint::from_bytes_be(&cand);
-        if try_prime(&n) {
-            return set_rval_bytes(&mut cx, &frame, &pad_be(&n.to_bytes_be(), len));
-        }
-    }
-    report_error(&mut cx, "OperationError: prime generation failed to converge");
-    false
 }
 

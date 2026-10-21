@@ -238,7 +238,24 @@ pub unsafe extern "C" fn prime_gen(
         }
         true
     };
-    if let Some(add) = add {
+    // DH-1024（2026-10-21）：无约束路径走 OpenSSL C 底座（真机同源
+    // `BN_generate_prime_ex`；naive BigInt 路径 1024-bit safe 素数 debug 约 12min，
+    // C 路径约 158ms）。add/rem 约束路径维持 naive（小尺寸为主，且确定性单候选
+    // `(4,15,13)→13` 口径钉死）；孤 rem（无 add）两边一致忽略（node 同款）。
+    // checks 轮数 fast 路径交由 OpenSSL 内置（node 同款不透传）。
+    if add.is_none() {
+        let n = openssl::bn::BigNum::generate_prime(bits as i32, safe, None, None);
+        let n = match n {
+            Ok(n) => n,
+            Err(_) => {
+                report_error(&mut cx, "OperationError: prime generation failed to converge");
+                return false;
+            }
+        };
+        return set_rval_bytes(&mut cx, &frame, &pad_be(&n.to_vec(), len));
+    }
+    let add = add.expect("prime_gen: add.is_none() 已早返");
+    {
         let rem = rem.unwrap_or(if safe {
             rsa::BigUint::from(3u32)
         } else {

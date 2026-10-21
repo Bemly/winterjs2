@@ -352,3 +352,53 @@ console.log("msg-timeout-done");
     }
     dir.close().unwrap();
 }
+
+#[test]
+fn worker_message_port_drain() {
+    // 正常：worker 退出前内部端口消息必排空——子输出两行 + 大数组消息在
+    // dispose 前全部进父流/监听（node test-worker-message-port-drain；
+    // WStdio 与 WMsg 同 inbox 保序，exit 冲刷点名）。
+    // 边界：双 worker 交织输出按 threadId 归户，不串线。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_node_file(
+        &dir,
+        "p.mjs",
+        r#"
+import { Worker } from "node:worker_threads";
+const workerSrc = `const { parentPort, threadId } = require('worker_threads');
+console.log("1 threadId: " + threadId);
+console.log("2 threadId: " + threadId);
+parentPort.postMessage(new Array(100).fill(1));`;
+const workerIdsToOutput = new Map();
+for (let i = 0; i < 2; i++) {
+  const worker = new Worker(workerSrc, { eval: true, stdout: true });
+  const workerOutput = [];
+  workerIdsToOutput.set(worker.threadId, workerOutput);
+  let msgGot = false;
+  worker.on("message", (m) => { if (Array.isArray(m) && m.length === 100) msgGot = true; });
+  worker.stdout.on("data", (chunk) => { workerOutput.push(chunk.toString().trim()); });
+  worker.on("exit", () => workerOutput.push("msg:" + msgGot));
+}
+process.on("exit", () => {
+  let ok = true;
+  for (const [tid, out] of workerIdsToOutput) {
+    if (!out.includes(`1 threadId: ${tid}`)) ok = false;
+    if (!out.includes(`2 threadId: ${tid}`)) ok = false;
+    if (!out.includes("msg:true")) ok = false;
+  }
+  console.log("drain", ok, workerIdsToOutput.size === 2);
+});
+"#,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.lines().any(|l| l == "drain true true"),
+        "out: {stdout}"
+    );
+    dir.close().unwrap();
+}

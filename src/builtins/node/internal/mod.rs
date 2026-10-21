@@ -23,7 +23,6 @@ pub mod crypto_keys;
 pub mod crypto_util;
 pub mod debuglog;
 pub mod encoding;
-pub mod crypto_util;
 pub mod http2_util;
 pub mod http_aliases;
 pub mod errors;
@@ -91,7 +90,6 @@ pub const INTERNALS: &[(&str, &str)] = &[
     ("node:internal/readline/utils", readline_utils::SOURCE),
     ("node:internal/readline/callbacks", readline_callbacks::SOURCE),
     ("node:internal/readline/emitKeypressEvents", readline_emit_keypress::SOURCE),
-    ("node:internal/crypto/util", crypto_util::SOURCE),
     ("node:internal/encoding", encoding::SOURCE),
     ("node:internal/buffer", buffer::SOURCE),
     // child_process 真路径（套件 `--expose-internals` 直引形；live 面由

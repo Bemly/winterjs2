@@ -162,10 +162,13 @@ pub fn drain_next_ticks(
                                     false
                                 }
                                 // R9：分发抛错（monitor 监听抛的新错）——新 pending
-                                // 即 fatal 本体，退出码 7（entry 路径同口径）。
+                                // 即 fatal 本体，退出码 7（entry 路径同口径；
+                                // worker 会话恒 1，exit-code 矩阵点名）。
                                 None => {
                                     if crate::jsapi_glue::exception_pending(cx) {
-                                        state::set_exit_code(Some(7));
+                                        if state::worker_is_main() {
+                                            state::set_exit_code(Some(7));
+                                        }
                                     } else {
                                         crate::jsapi_glue::set_pending_exception(cx, err_root.get());
                                     }
@@ -222,11 +225,12 @@ pub fn dispatch_entry_throw(
             false
         }
         // R9：分发抛错（monitor 监听抛的新错，真机口径）——保留新 pending
-        //（不恢复原错），退出码 7（monitor2 套件点名；原错路径为 1）。
+        //（不恢复原错），退出码 7（monitor2 套件点名；原错路径为 1；
+        // worker 会话恒 1，exit-code 矩阵点名）。
         None => {
             if !crate::jsapi_glue::exception_pending(cx) {
                 crate::jsapi_glue::set_pending_exception(cx, err_root.get());
-            } else {
+            } else if state::worker_is_main() {
                 state::set_exit_code(Some(7));
             }
             false
@@ -744,7 +748,7 @@ unsafe extern "C" {
 // libc 的 mach_thread_self/thread_info 系标记 deprecate（指向上游 mach2 轮子；
 // 引新 crate 须 §0.5 用户点头，libc 仍可用，属预期告警，允许）。
 #[allow(deprecated)]
-fn thread_micros() -> (f64, f64) {
+pub(crate) fn thread_micros() -> (f64, f64) {
     // SAFETY: mach port 由 mach_thread_self 当场取得、用后即 deallocate；
     // thread_info 同步写入栈上 info，无别名；flavor/count 均为常量口径。
     unsafe {
@@ -766,7 +770,7 @@ fn thread_micros() -> (f64, f64) {
     }
 }
 #[cfg(all(unix, not(target_vendor = "apple")))]
-fn thread_micros() -> (f64, f64) {
+pub(crate) fn thread_micros() -> (f64, f64) {
     // SAFETY: 同 rusage_self_micros（Linux RUSAGE_THREAD）。
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut r) } != 0 {
@@ -776,7 +780,7 @@ fn thread_micros() -> (f64, f64) {
     (tv(r.ru_utime), tv(r.ru_stime))
 }
 #[cfg(not(unix))]
-fn thread_micros() -> (f64, f64) {
+pub(crate) fn thread_micros() -> (f64, f64) {
     (0.0, 0.0)
 }
 

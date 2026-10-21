@@ -189,14 +189,18 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
         // 线程身份落地（10f 前移到 node prelude 之前：process.env 代理构建期
         // 就要读 env 快照——worker 会话带快照、主会话真 env）。纯 state 操作
         // 无 JSAPI；worker 中断钩子 cx 绑定同批（Runtime §4.8 泄漏保活）。
-        match WORKER_BOOT.with(|b| b.borrow_mut().take()) {
+        let is_worker_session = match WORKER_BOOT.with(|b| b.borrow_mut().take()) {
             Some(boot) => {
                 let wid = boot.worker_id;
                 crate::builtins::node::worker::worker_boot_from_slot(boot);
                 crate::builtins::node::worker::term_bind_cx(wid, raw_cx);
+                true
             }
-            None => state::worker_session_init(true, 0),
-        }
+            None => {
+                state::worker_session_init(true, 0);
+                false
+            }
+        };
         // Phase 4a：node 全局（process；同“语法必然正确”约定，失败即内部错）。
         let node_prelude = crate::builtins::node::node_prelude();
         let node_filename = CString::new("__wjs2_node_prelude.js").expect("no NUL");
@@ -216,6 +220,48 @@ fn init_session(argv: Vec<String>) -> Result<SessionInit, Error> {
                 "__wjs2_node_prelude.js",
                 0,
             ));
+        }
+        // worker 会话 stdio 接线（stdio 套件）：stdout/stderr 写拦截上报主会话
+        // 流（缺省本地 TEE；stdout:true/stderr:true 即管道独占不回显）+ stdin
+        // 换 fed-Readable（见 worker::WORKER_STDIO_INIT）+ `--require` 预加载
+        // 按序执行（见 worker::WORKER_PRELOAD_RUN）。独占位与预加载清单经全局
+        // 变量递入（纯 JSON 数据；const 脚本读入，无 format!-JS 拼接 §4.44）。
+        if is_worker_session {
+            let mut eval_seed = |src: &str, filename: &str| -> Result<(), Error> {
+                let cname = CString::new(filename).expect("no NUL");
+                let opts = CompileOptionsWrapper::new(&realm, cname, 1);
+                rooted!(&in(&mut realm) let mut rval = UndefinedValue());
+                let ok = evaluate_script(&mut realm, global.handle(), src, rval.handle_mut(), opts);
+                match ok {
+                    Ok(()) => Ok(()),
+                    Err(()) => Err(pending_error_in_realm(&mut realm, src, filename, 0)),
+                }
+            };
+            let pipe_flags = state::with_plain(|p| {
+                let mut s = String::new();
+                if p.worker_stdio_pipe & 1 != 0 {
+                    s.push('1');
+                }
+                if p.worker_stdio_pipe & 2 != 0 {
+                    s.push('2');
+                }
+                s
+            });
+            let preload = state::with_plain(|p| p.worker_preload.clone());
+            let seed_src = format!(
+                "globalThis.__wjs2_stdio_pipe={};globalThis.__wjs2_preload_list={};",
+                serde_json::to_string(&pipe_flags).expect("json"),
+                serde_json::to_string(&preload).expect("json"),
+            );
+            eval_seed(&seed_src, "__wjs2_worker_seed.js")?;
+            eval_seed(
+                crate::builtins::node::worker::WORKER_STDIO_INIT,
+                "__wjs2_worker_stdio.js",
+            )?;
+            eval_seed(
+                crate::builtins::node::worker::WORKER_PRELOAD_RUN,
+                "__wjs2_worker_preload.js",
+            )?;
         }
 
         // 缓存 prelude 辅助函数值（timers/structuredClone/fetch/ws 交付要用）

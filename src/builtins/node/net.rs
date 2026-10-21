@@ -246,6 +246,26 @@ pub unsafe extern "C" fn net_fd(
     true
 }
 
+/// `__wjs2_net_server_fd(id)` → 监听 fd（`server._handle.fd` 活读；
+/// cleanup-handles 套件；未知 id 回 "-1" 不抛；非 unix 恒 -1）。
+/// UNSAFE-BOUNDARY：纯数值进出；覆盖 `tests/node/worker_medium.rs::worker_cleanup_handles`。
+pub unsafe extern "C" fn net_server_fd(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同 net_fd
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let Some(id) = opt_num(&frame, 0) else {
+        report_error(&mut cx, "TypeError: server_fd: id must be a number");
+        return false;
+    };
+    let out: i32 = state::net_srv_fd_get(id as u64).unwrap_or(-1);
+    set_rval_str(&mut cx, &frame, &out.to_string());
+    true
+}
+
 /// `__wjs2_net_ref(id)` / `__wjs2_net_unref(id)`：ref 真计数（10a；未知 id 静默，
 /// Node 口径 ref/unref 不抛）。
 pub unsafe extern "C" fn net_ref(

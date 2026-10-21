@@ -418,6 +418,8 @@ E('ERR_WORKER_UNSUPPORTED_OPERATION', '%s is not supported in workers', TypeErro
 E('ERR_WORKER_INVALID_EXEC_ARGV',
   (flags, message = 'execArgv flags') => `Initiated Worker with invalid ${message}: ${flags}`,
   Error);
+// 已退出 worker 采样（node internal/errors.js 逐字；cpu-usage 套件）。
+E('ERR_WORKER_NOT_RUNNING', 'Worker instance not running', Error);
 E('ERR_USE_AFTER_CLOSE', '%s was closed', Error, HideStackFramesError);
 
 // ── Phase 9b：streams 系错误码（定义逐字自 node internal/errors.js）────────

@@ -271,6 +271,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_net_reset", Some(node::net::net_reset), 1),
             // cluster-1 传柄：dup 监听 fd（见 net_pumps::net_dup_listen）。
             ("__wjs2_net_dup_listen", Some(node::net::net_dup_listen), 1),
+            // cleanup-handles：server._handle.fd 活读（见 net_pumps::net_server_fd）。
+            ("__wjs2_net_server_fd", Some(node::net::net_server_fd), 1),
             // cluster-2 裸柄：真绑 + 预留（见 net_pumps::net_tcp_wrap_bind）。
             ("__wjs2_net_tcp_wrap_bind", Some(node::net::net_tcp_wrap_bind), 2),
             // 10a：ref 真计数（net/dgram 共用）
@@ -453,6 +455,10 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_worker_terminate", Some(node::worker::worker_terminate), 1),
             ("__wjs2_worker_set_ref", Some(node::worker::worker_set_ref), 2),
             ("__wjs2_worker_tid", Some(node::worker::worker_tid), 1),
+            ("__wjs2_worker_stdio", Some(node::worker::worker_stdio_out), 2),
+            ("__wjs2_worker_stdin", Some(node::worker::worker_stdin_to), 2),
+            ("__wjs2_worker_cpu_sample", Some(node::worker::worker_cpu_sample), 2),
+            ("__wjs2_worker_crash_silent", Some(node::worker::worker_crash_silent), 0),
             ("__wjs2_thread_bridge_attach", Some(node::worker::thread_bridge_attach), 1),
             ("__wjs2_post_to_thread", Some(node::worker::post_to_thread), 4),
             ("__wjs2_port_listen", Some(node::worker::port_listen), 1),

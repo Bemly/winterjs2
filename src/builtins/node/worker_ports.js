@@ -61,17 +61,19 @@ export class BroadcastChannel extends EventEmitter {
   }
   __flushQueue() {
     while (this.__queue.length > 0) {
-      // 逐条查关（wpt：onmessage 内 close 阻断同端口已排队任务）。
+      // 逐条查关（wpt：onmessage 内 close 阻断同端口已排队任务）+ 无监听停刷
+      //（端口 once 陷阱同款 4.326；新监听经 newListener 续刷）。
       if (this.__closed) return;
+      if (this.listenerCount("message") === 0) return;
       const raw = this.__queue.shift();
       let value;
       try {
         value = __fromWire(String(raw));
       } catch (err) {
-        this.emit("messageerror", err instanceof Error ? err : new Error("worker message is not valid JSON"));
+        __workerEmitSafe(this, "messageerror", err instanceof Error ? err : new Error("worker message is not valid JSON"));
         continue;
       }
-      this.emit("message", value);
+      __workerEmitSafe(this, "message", value);
     }
   }
   get name() {
@@ -292,9 +294,9 @@ function __workerFilePath(filename) {
 }
 
 export class Worker extends EventEmitter {
-  // 子线程标出流（M5 vitest 牵引：threads 池 `worker.stdout.pipe(logger)` 无守卫，
-  // `streamFlushed` 等 end/close；无数据流——子输出直走共享 stdio，见 `__end` 记档）。
-  // 仅 `new Worker(..., { stdout: true })` 时具现（Node 形），否则保持 null。
+  // 子线程标出流（node 真机：stdout/stderr 恒 Readable 管道——子输出经 WStdio
+  // 事件进父流并本地 TEE；stdin 仅 stdin:true 具现 Writable）。
+  __stdin = null;
   __stdout = null;
   __stderr = null;
   constructor(filename, options = {}) {
@@ -371,11 +373,47 @@ export class Worker extends EventEmitter {
       "report-signal", "heapsnapshot-signal", "trace-event-categories",
       "trace-event-file-pattern",
     ]);
+    // 预加载收集器（execArgv 校验期收集 --require/-r 值；NODE_OPTIONS 期置空）。
+    let __preload = [];
     const __workerBadExecArgv = (list) => {
       const bad = [];
-      for (const entry of list) {
+      // --require/-r/--import 带值旗（node 真机口径：长形支持 =值（须非空）与
+      // 分离值（下个条目非 -开头即消费，空串亦消费、运行时再炸）；短形 -r 仅
+      // 分离值（=形即拒）；缺值拒文案为 "<flag> requires an argument"）。
+      // 命中值即记入预加载清单（--require/-r 按序执行；--import 仅放行，ESM
+      // 预加载另案）。`__preload` 为共享收集器（execArgv + NODE_OPTIONS 同口径，
+      // 后者只校验不执行）。
+      const valueFlags = new Set(["--require", "-r", "--import"]);
+      const consume = (i, head, eq, entry) => {
+        if (eq !== -1 && head === "-r") { bad.push(entry); return i; }
+        let value = eq === -1 ? null : entry.slice(eq + 1);
+        if (value === null) {
+          const next = list[i + 1];
+          if (next === undefined || next.startsWith("-")) {
+            bad.push(`${head} requires an argument`);
+            return i;
+          }
+          value = next;
+          i++;
+        } else if (value === "") {
+          // =形空值拒文案为完整合成串（真机："--require= requires an argument"）。
+          bad.push(`${entry} requires an argument`);
+          return i;
+        }
+        if (__preload !== null && (head === "--require" || head === "-r")) {
+          __preload.push(value);
+        }
+        return i;
+      };
+      for (let i = 0; i < list.length; i++) {
+        const entry = list[i];
         const eq = entry.indexOf("=");
-        const base = (eq === -1 ? entry : entry.slice(0, eq)).replace(/^--/, "");
+        const head = eq === -1 ? entry : entry.slice(0, eq);
+        if (valueFlags.has(head)) {
+          i = consume(i, head, eq, entry);
+          continue;
+        }
+        const base = head.replace(/^--/, "");
         if (!__kWorkerExecArgvAllowed.has(base) || (eq === -1 && __kWorkerExecArgvDenyBare.has(base))) {
           bad.push(entry);
         }
@@ -386,7 +424,9 @@ export class Worker extends EventEmitter {
       const badExec = __workerBadExecArgv(options.execArgv);
       if (badExec.length > 0) throw new codes.ERR_WORKER_INVALID_EXEC_ARGV(badExec);
     }
-    // env 内 NODE_OPTIONS 同口径校验（空白切分近似；仅串形校验）。
+    const preloadJson = __preload.length > 0 ? JSON.stringify(__preload) : "";
+    __preload = null;
+    // env 内 NODE_OPTIONS 同口径校验（空白切分近似；仅串形校验，只校验不执行）。
     if (typeof envOpt === "object" && envOpt !== null && typeof envOpt.NODE_OPTIONS === "string" &&
         envOpt.NODE_OPTIONS !== "") {
       const badNodeOpts = __workerBadExecArgv(envOpt.NODE_OPTIONS.split(/\s+/).filter((s) => s !== ""));
@@ -408,15 +448,22 @@ export class Worker extends EventEmitter {
       dataJson = __toWire(options.workerData, options.transferList);
     }
     let ids;
-    ids = String(__wjs2_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs2_forkChild ? "1" : "0", envJson, argvJson)).split(" ");
+    // 第 8/9 位：stdio 管道独占位（"1"/"2"/"12"）+ --require 预加载清单（JSON）。
+    const stdioPipe = `${options.stdout ? "1" : ""}${options.stderr ? "2" : ""}`;
+    ids = String(__wjs2_worker_spawn(src, isEval, dataJson, options.name ?? "", options.__wjs2_forkChild ? "1" : "0", envJson, argvJson, stdioPipe, preloadJson)).split(" ");
     this.__id = ids[0];
     this.__tid = Number(ids[1]);
     this.__exited = null;
     this.__name = options.name ?? null;
     this.__rl = options.resourceLimits ?? null;
     this.__termWaiters = [];
-    if (options.stdout) this.__stdout = new __WorkerStdio();
-    if (options.stderr) this.__stderr = new __WorkerStdio();
+    this.__cpuWaiters = new Map();
+    // 缺省双管（node 真机：stdout/stderr 恒 Readable，stdin 仅 stdin:true 才具现；
+    // 旧"恒 null"断言已随实测翻转，见黑盒；stdout:true/stderr:true 即管道独占、
+    // 本地不回显，独占位随 spawn 第 8 参进 worker 会话）。
+    this.__stdin = options.stdin ? new __WorkerStdin(this.__id) : null;
+    this.__stdout = new __WorkerStdio();
+    this.__stderr = new __WorkerStdio();
     this.__ev = this.__ev.bind(this);
     __wjs2_worker_attach(this.__id, this);
     // 10f 对拍：新建 Worker 派发 process 'worker' 事件（worker-event 套件；
@@ -436,10 +483,10 @@ export class Worker extends EventEmitter {
         // Worker 'message' 无 ports 面——残留 offer 槽撤回收（行内已承接即 no-op）。
         __withdrawPorts(String(payload));
       } catch (e) {
-        this.emit("messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
+        __workerEmitSafe(this, "messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
         return;
       }
-      this.emit("message", value);
+      __workerEmitSafe(this, "message", value);
     } else if (kind === "error") {
       // 10f 对拍：Rust 侧 "Kind: message" 前缀还原原错误类（SyntaxError 套件
       // 断 err.constructor === SyntaxError）；裸文本回 Error（uncaught-exception
@@ -451,7 +498,7 @@ export class Worker extends EventEmitter {
         return;
       }
       const m = /^(SyntaxError|TypeError|RangeError|EvalError|ReferenceError|URIError|AggregateError): ([\s\S]*)$/.exec(text);
-      this.emit("error", m ? new globalThis[m[1]](m[2]) : new Error(text));
+      __workerEmitSafe(this, "error", m ? new globalThis[m[1]](m[2]) : new Error(text));
     } else if (kind === "exit") {
       const code = Number(payload);
       this.__exited = code;
@@ -461,9 +508,23 @@ export class Worker extends EventEmitter {
       for (const w of waiters) {
         try { w(code); } catch { /* 忽略 */ }
       }
-      this.emit("exit", code);
+      __workerEmitSafe(this, "exit", code);
     } else if (kind === "online") {
-      this.emit("online");
+      __workerEmitSafe(this, "online");
+    } else if (kind === "stdout" || kind === "stderr") {
+      // 子输出事件（WStdio；exit 前必达——同 inbox 保序，flush 套件点名）。
+      const target = kind === "stdout" ? this.__stdout : this.__stderr;
+      try { target?.__pushWire(String(payload)); } catch { /* 流已摘即丢 */ }
+    } else if (kind === "cpu-result") {
+      // CPU 采样回执（WCpuResult；nonce 对账结算，退出竞态丢弃）。
+      let obj;
+      try { obj = JSON.parse(String(payload)); } catch { return; }
+      const w = this.__cpuWaiters.get(obj?.nonce);
+      if (!w) return;
+      this.__cpuWaiters.delete(obj.nonce);
+      const cur = { user: Number(obj.user), system: Number(obj.system) };
+      if (w.prev) w.resolve({ user: cur.user - w.prev.user, system: cur.system - w.prev.system });
+      else w.resolve(cur);
     }
   }
   postMessage(value, transfer) {
@@ -494,9 +555,55 @@ export class Worker extends EventEmitter {
   // resourceLimits = 传入对象（缺省 {}，退出后 {}——resource-limits 套件）。
   get threadName() { return this.__exited === null ? (this.__name ?? null) : null; }
   get resourceLimits() { return this.__rl ?? {}; }
-  get stdin() { return null; }
+  get stdin() { return this.__stdin; }
   get stdout() { return this.__stdout; }
   get stderr() { return this.__stderr; }
+  // CPU 用量（node internal/worker.js:565-594：prev 真值即对象 + 双 numeric
+  // [0, 2^53-1] 校验，同步抛；采样走 worker 会话自采回执，promise 结算；
+  // 已退出/无路由即 ERR_WORKER_NOT_RUNNING 拒——cpu-usage 套件）。
+  cpuUsage(prev) {
+    if (prev) {
+      if (typeof prev !== "object" || prev === null) {
+        throw new codes.ERR_INVALID_ARG_TYPE("prev", "object", prev);
+      }
+      for (const k of ["user", "system"]) {
+        const v = prev[k];
+        if (typeof v !== "number") {
+          throw new codes.ERR_INVALID_ARG_TYPE(`prev.${k}`, "number", v);
+        }
+        if (!(v >= 0 && v <= 9007199254740991)) {
+          throw new codes.ERR_OUT_OF_RANGE(`prev.${k}`, ">= 0 && <= 9007199254740991", v);
+        }
+      }
+    }
+    if (this.__exited !== null) {
+      return Promise.reject(new codes.ERR_WORKER_NOT_RUNNING());
+    }
+    const nonce = `${this.__id}.${++__cpuSeq}`;
+    return new Promise((resolve, reject) => {
+      this.__cpuWaiters.set(nonce, { resolve, reject, prev: prev || null });
+      let queued = false;
+      try {
+        queued = __wjs2_worker_cpu_sample(this.__id, nonce) === true;
+      } catch {
+        queued = false;
+      }
+      if (!queued) {
+        this.__cpuWaiters.delete(nonce);
+        reject(new codes.ERR_WORKER_NOT_RUNNING());
+      }
+    });
+  }
+}
+// native 源发射安全垫（worker exit/message/error/online 监听抛错走
+// uncaughtException + 进程存活，真机口径；同步透传即 fatal，
+// exit-event-error 套件点名）。
+function __workerEmitSafe(emitter, ev, ...args) {
+  try {
+    emitter.emit(ev, ...args);
+  } catch (e) {
+    setTimeout(() => { throw e; }, 0);
+  }
 }
 // MessageEvent 的 source/ports 校验需要 MessagePort 品牌（主线程无全局
 // MessagePort，模块求值期登记到隐藏槽；求值前无从有端口，校验恒 TypeError）。
@@ -504,46 +611,60 @@ globalThis.__wjs2_MessagePort = MessagePort;
 // 10f：BroadcastChannel 是 Web 全局（node 主/worker 线程均全局，messaging
 // 套件裸 `new BroadcastChannel(...)`；与 worker_threads 导出同一类）。
 globalThis.BroadcastChannel = BroadcastChannel;
-// 无数据标出流（见 Worker 注释）：pipe/unpipe 形状 + end/close 一次性语义；
-// 数据永不流动（子输出直走共享 stdio），`__end` 在 worker 退出时由分发调用。
-class __WorkerStdio {
+// 子输出流（node 真机 Readable：WStdio 事件经 __pushWire 进流；setEncoding/
+// pipe/unpipe 全继承；`__end` 在 worker 退出时由分发调用——push(null) 收尾）。
+class __WorkerStdio extends __wjs2Readable {
   constructor() {
-    this.__listeners = {};
-    this.readableEnded = false;
-    this.destroyed = false;
+    super({ read() {} });
+    // 基类 readableEnded/destroyed 只读——终态记自有旗（旧面 readableEnded 照读基类）。
+    this.__ended = false;
   }
-  on(ev, cb) {
-    if (typeof cb !== "function") throw new TypeError("listener must be a function");
-    (this.__listeners[String(ev)] ??= []).push(cb);
-    return this;
-  }
-  once(ev, cb) {
-    if (typeof cb !== "function") throw new TypeError("listener must be a function");
-    const self = this;
-    const wrapped = (...args) => { self.off(ev, wrapped); cb(...args); };
-    wrapped.__wjs2_orig = cb;
-    return this.on(ev, wrapped);
-  }
-  off(ev, cb) {
-    const list = this.__listeners[String(ev)];
-    if (list) {
-      let i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb);
-      while (i >= 0) { list.splice(i, 1); i = list.findIndex((l) => l === cb || l.__wjs2_orig === cb); }
+  // WStdio wire（JSON：{s} 串直推 / {b} base64 转 Buffer 推；坏线即丢）。
+  __pushWire(wire) {
+    if (this.__ended) return;
+    let obj;
+    try { obj = JSON.parse(String(wire)); } catch { return; }
+    if (obj && typeof obj === "object" && typeof obj.b === "string") {
+      let buf;
+      try { buf = Buffer.from(obj.b, "base64"); } catch { return; }
+      this.push(buf);
+    } else if (obj && typeof obj === "object" && typeof obj.s === "string") {
+      this.push(obj.s);
     }
-    return this;
   }
-  pipe(dest) { return dest; }
-  unpipe() { return this; }
   __end() {
-    if (this.readableEnded) return;
-    this.readableEnded = true;
-    this.destroyed = true;
-    for (const ev of ["end", "close"]) {
-      for (const cb of [...(this.__listeners[ev] ?? [])]) {
-        try { cb(); } catch {}
-      }
-    }
-    this.__listeners = {};
+    if (this.__ended) return;
+    this.__ended = true;
+    try { this.push(null); } catch { /* 已摘即止 */ }
+  }
+}
+
+// 子输入流（stdin:true 具现；_write 经 WStdin 事件进 worker 会话）。
+class __WorkerStdin extends __wjs2Writable {
+  constructor(id) {
+    super({
+      write: (chunk, encoding, cb) => {
+        let wire;
+        try {
+          if (typeof chunk === "string") wire = JSON.stringify({ s: chunk });
+          else if (typeof Buffer !== "undefined" && Buffer.isBuffer(chunk)) {
+            wire = JSON.stringify({ b: chunk.toString("base64") });
+          } else if (chunk instanceof Uint8Array) {
+            wire = JSON.stringify({ b: Buffer.from(chunk).toString("base64") });
+          } else {
+            wire = JSON.stringify({ s: String(chunk) });
+          }
+        } catch { wire = JSON.stringify({ s: "" }); }
+        try { __wjs2_worker_stdin(id, wire); } catch { /* 对端已退即丢 */ }
+        cb();
+      },
+    });
+    this.__id = id;
+  }
+  // 显式 end 即对端 EOF（worker 侧 stdin 推 end；echo 管道收尾用）。
+  _final(cb) {
+    try { __wjs2_worker_stdin(this.__id, '{"end":1}'); } catch { /* 对端已退即丢 */ }
+    cb();
   }
 }
 
@@ -562,6 +683,8 @@ function __threadErr(code, message) {
 }
 const __threadPending = new Map();
 let __threadSeq = 0;
+// CPU 采样 nonce 序号（worker id 前缀，`__cpuWaiters` 对账用）。
+let __cpuSeq = 0;
 function __threadBridgeEv(kind, payload) {
   try {
     if (kind === "thread-ack") {

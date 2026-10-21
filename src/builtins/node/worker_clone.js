@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { codes } from "node:internal/errors";
 import { inspect as __wjs2Inspect } from "node:util";
+import { Readable as __wjs2Readable, Writable as __wjs2Writable } from "node:stream";
 
 // node util.inspect 的字符串形（单引号——BroadcastChannel inspect 定制用）。
 function __inspectQuote(s) {
@@ -530,9 +531,9 @@ export function MessagePort(__id, __tok) {
     let byType = self.__etWrap.get(fn);
     if (!byType) { byType = new Map(); self.__etWrap.set(fn, byType); }
     if (byType.has(t)) return;
-    const wrap = (value, ports) => {
+    const wrap = (value) => {
       const ev = isMsg
-        ? __portMessageEvent(self, t, value, ports)
+        ? __portMessageEvent(self, t, value, self.__lastPorts ?? [])
         : new globalThis.CustomEvent(t, { detail: value });
       fn.call(self, ev);
     };
@@ -590,15 +591,28 @@ function __portMessageEvent(port, type, value, ports) {
 }
 function __portFlushQueue(port) {
   while (port.__queue.length > 0) {
+    // 停刷留队（node 逐 task 派发语义：pump 整批排空 inbox 时多条同批到达，
+    // 同步连发会把 once() 摘除后的后继消息射进虚空；无监听即停，新监听经
+    // newListener 续刷——message-before-close 套件双 once 逐条必达）。
+    if (port.listenerCount("message") === 0) return;
     const raw = port.__queue.shift();
     let decoded;
     try {
       decoded = __fromWirePorts(raw);
     } catch (e) {
-      port.emit("messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
+      // 监听抛错走 uncaughtException（exit-code 矩阵 parentPort 回调抛错点名；
+      // `__workerEmitSafe` 住后半段 worker_ports.js，concat 同域运行时可见）。
+      __workerEmitSafe(port, "messageerror", e instanceof Error ? e : new Error("worker message is not valid JSON"));
       continue;
     }
-    port.emit("message", decoded.message, decoded.ports);
+    // EE 单参（node 真机：transfer 亦单参，once() 即 [value]；onmessage 的
+    // MessageEvent.ports 经 __lastPorts 边信道同步递达，发射内读清）。
+    port.__lastPorts = decoded.ports;
+    try {
+      __workerEmitSafe(port, "message", decoded.message);
+    } finally {
+      port.__lastPorts = null;
+    }
   }
 }
 function __portEv(port, kind, payload) {
@@ -609,7 +623,7 @@ function __portEv(port, kind, payload) {
     port.__peerClosed = true;
     if (port.__closed || port.__closeEmitted) return;
     port.__closeEmitted = true;
-    queueMicrotask(() => { try { port.emit("close"); } catch { /* 忽略 */ } });
+    queueMicrotask(() => { __workerEmitSafe(port, "close"); });
     return;
   }
   if (kind === "forwarded") {
@@ -628,7 +642,7 @@ function __portEv(port, kind, payload) {
 }
 // onmessage 兼容面（真机语义：赋值即隐式开始流动——经 addEventListener 走
 // newListener 开闸；回调收真 MessageEvent（data/target/ports，真机逐项
-// 实测），`message` EE 载荷裸值不变，ports 随第二参透传）。
+// 实测），`message` EE 载荷裸值单参，ports 经 __lastPorts 边信道进事件）。
 // 原型访问器（defineProperty：原型只留 node 同款 8 名）。
 Object.defineProperty(MessagePort.prototype, "onmessage", {
   configurable: true,
@@ -639,7 +653,8 @@ Object.defineProperty(MessagePort.prototype, "onmessage", {
     this.__onmessage = (typeof fn === "function") ? fn : null;
     if (this.__onmessage) {
       const self = this;
-      this.__onmessageWrap = (value, ports) => {
+      this.__onmessageWrap = (value) => {
+        const ports = self.__lastPorts ?? [];
         self.__onmessage(__portMessageEvent(self, "message", value, ports));
       };
       this.on("message", this.__onmessageWrap);
@@ -728,15 +743,16 @@ MessagePort.prototype.close = function close(cb) {
     return undefined;
   }
   this.__closed = true;
-  this.__queue.length = 0;
+  // 关不断流（node 口径：已排队消息照常派发，新到达才丢——close-while-receiving
+  // 套件；`__portEv` message 臂凭 __closed 挡新，老队由 flush 排空）。
   if (fn !== undefined) this.once("close", fn);
   const self = this;
   queueMicrotask(() => {
     try {
-      // 对端先到已发过即跳过（双关竞速只发一次）。
+      // 对端先到已发过即跳过（双关竞速只发一次；监听抛错走 uncaught）。
       if (!self.__closeEmitted) {
         self.__closeEmitted = true;
-        self.emit("close");
+        __workerEmitSafe(self, "close");
       }
     } finally {
       __wjs2_port_close(self.__id);

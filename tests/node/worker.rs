@@ -408,8 +408,9 @@ setTimeout(() => {
 
 #[test]
 fn worker_stdio_surface() {
-    // Worker 标出流：无选项 null；stdout:true 即有 pipe/unpipe + end/close
-    // 语义（无数据流，退出即 end）。
+    // Worker 标出流（node 真机：stdout/stderr 缺省即 Readable 管道，stdin 仅
+    // stdin:true 具现；旧 null-stdio 断言随实测翻转）：pipe/unpipe 继承形 +
+    // 数据流动 + 退出收尾（消费后 end/close，readableEnded 置位）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -417,15 +418,18 @@ fn worker_stdio_surface() {
         r#"
 import { Worker } from "node:worker_threads";
 const a = new Worker("import { parentPort } from 'node:worker_threads'; parentPort.postMessage(1);", { eval: true });
-console.log("null-stdio", a.stdout === null, a.stderr === null);
+console.log("pipe-stdio", a.stdout !== null, a.stderr !== null, a.stdin === null);
+console.log("shape-stdio", typeof a.stdout.pipe, typeof a.stdout.unpipe, typeof a.stdout.setEncoding);
 a.on("exit", () => {});
-const b = new Worker("import { parentPort } from 'node:worker_threads'; parentPort.postMessage(2);", { eval: true, stdout: true, stderr: true });
-console.log("has-stdio", b.stdout !== null, b.stderr !== null, typeof b.stdout.pipe, typeof b.stdout.unpipe);
+const b = new Worker("console.log('BMSG');", { eval: true, stdout: true, stderr: true, stdin: true });
+console.log("has-stdio", b.stdout !== null, b.stderr !== null, b.stdin !== null);
+let seen = "";
+b.stdout.setEncoding("utf8");
+b.stdout.on("data", (c) => { seen += c; });
 let ended = 0;
 b.stdout.once("end", () => { ended++; });
 b.stdout.once("close", () => { ended++; });
-b.on("message", () => {});
-b.on("exit", (c) => console.log("stdio-exit", c === 0, ended === 2, b.stdout.readableEnded));
+b.on("exit", (c) => setTimeout(() => console.log("stdio-exit", c === 0, ended === 2, b.stdout.readableEnded, seen.includes("BMSG")), 50));
 "#,
     );
     assert!(
@@ -434,7 +438,7 @@ b.on("exit", (c) => console.log("stdio-exit", c === 0, ended === 2, b.stdout.rea
         String::from_utf8_lossy(&out.stderr)
     );
     let out = String::from_utf8(out.stdout).unwrap();
-    for line in ["null-stdio true true", "has-stdio true true function function", "stdio-exit true true true"] {
+    for line in ["pipe-stdio true true true", "shape-stdio function function function", "has-stdio true true true", "stdio-exit true true true true"] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }
     dir.close().unwrap();

@@ -177,6 +177,9 @@ globalThis.__wjs2_timer_id = (id) => {
 globalThis.__wjs2_uncaught_count = () => {
   const p = globalThis.process;
   if (p && typeof p.__wjs2_captureCb === "function") return 1;
+  // `_fatalException` 置空即强制分发（监听为零亦进 `__wjs2_uncaught` 置 6，
+  // exit-code 矩阵；否则 drain 无监听直 fatal，6 语义丢失）。
+  if (p && ("_fatalException" in p) && p._fatalException === undefined) return 1;
   const ls = p && p.__wjs2_listeners ? p.__wjs2_listeners : undefined;
   // R9：monitor 亦计入（仅 monitor 监听即须分发，否则 drain 跳过致 stdout 空）。
   const n = ls && ls["uncaughtException"] ? ls["uncaughtException"].length : 0;
@@ -190,6 +193,9 @@ globalThis.__wjs2_uncaught = (err) => {
   //（fatal 侧保留 6/7，其余盖 1）。初始 process 无此属性（`in` 区分未置/置 undefined）。
   if (p && ("_fatalException" in p) && p._fatalException === undefined) {
     try { p.exitCode = 6; } catch {}
+    // worker 会话压制 WError（真机：无 error 事件、stderr 诊断、exit 6；
+    // 主会话调用无影响，见 native 注释）。
+    try { if (typeof __wjs2_worker_crash_silent === "function") __wjs2_worker_crash_silent(); } catch {}
     return false;
   }
   // R9：monitor 先行（execution.js 口径：`process.emit('uncaughtExceptionMonitor', er, type)`；

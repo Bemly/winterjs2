@@ -505,6 +505,16 @@ pub struct PlainState {
     /// worker 线程专有：fork 子进程（有 IPC 通道，`process.send` 族不装桩；10f）。
     pub worker_is_fork: bool,
     pub worker_parent_port: Option<u64>,
+    /// worker 线程专有：主会话侧 worker_id（子输出上报路由用；主会话 None）。
+    pub worker_self_id: Option<u64>,
+    /// worker 线程专有：stdio 管道独占位（bit0 stdout/bit1 stderr 为管道独占，
+    /// 本地不再回显；缺省 TEE——stdio 套件；主会话恒 0）。
+    pub worker_stdio_pipe: u8,
+    /// worker 线程专有：`--require` 预加载清单（按序，stdio-from-preload 套件）。
+    pub worker_preload: Vec<String>,
+    /// worker 线程专有：`_fatalException` 置空崩溃（WError 压制、stderr 直出、
+    /// exit 6——exit-code 矩阵；主会话置位无影响）。
+    pub worker_crash_silent: bool,
     /// worker 终止旗（`WTerminate` 到达置位；事件循环检查点退出，见 §4.18 顺序）。
     pub worker_terminated: bool,
     /// 主会话的 worker 句柄表（worker_id → 发往 worker 会话收件箱的端点等）。

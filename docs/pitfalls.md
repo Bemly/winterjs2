@@ -291,6 +291,9 @@
 - 4.326 Cli 加字段必须配 en+zh 翻译（2026-10-21，child lane）
 - 4.327 hyper CONNECT 体黑洞与隧道半关泵续命（2026-10-21，http2 lane）
 - 4.328 内嵌 JS 改后 bundle 解析挂先验二进制新鲜度（2026-10-21，console lane）
+- 4.329 pump 整批排空 + 端口同步连发丢 once 后继（2026-10-21，vm lane）
+- 4.330 info 读取消费 pending，先读后分发即永假（2026-10-21，vm lane）
+- 4.331 worker fatal 必须先派发会话内 exit 再定码（2026-10-21，vm lane）
 
 ## 条目
 

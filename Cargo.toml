@@ -254,6 +254,11 @@ secrecy = "0.10"
 getrandom = "0.4"
 rand = "0.10"
 uuid = { version = "1", features = ["v4"] }
+# DH-1024（2026-10-21 用户拍板例外引入）：`prime_gen` safe 素数底座（`BigNum::generate_prime`）。
+# AGENTS §2 纯 Rust 红线例外：openssl 系 C 绑定（`openssl-sys`→系统 OpenSSL），§14 禁令的唯一例外；
+# 纯 Rust naive 路径 1024-bit safe 素数 debug 约 12min（sweep 必 TIMEOUT），OpenSSL C 路径约 158ms。
+# 用途钉死仅 DH safe prime 生成，不碰 TLS（TLS 仍走 rustls/ring）；矩阵移动列待 CI 转正。
+openssl = "0.10"
 
 # ── §8 fs / os / 包管理工具链 ──────────────────────────────────────────
 dunce = "1"

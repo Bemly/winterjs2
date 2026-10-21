@@ -45,8 +45,10 @@ const {
 // ── CJS 包装（与 native `__wjs2_cjs_compile` 壳字节恒等；行号恒等） ──
 // 默认两片：头含单换行（用户代码物理行号 = 报错行号，现行口径）。
 // `Module.wrapper` 改写即对后续编译生效（native 编译期现读）。
-const kCjsShellHead = '((exports) => (require) => (module) => (__filename) => (__dirname) => {{\n';
-const kCjsShellTail = '\n}})';
+// 单大括号：用户代码 `'use strict'` 须落在最内箭头函数体顶部才成指令
+// （双大括号即内层块，指令退化为普通串语句，严格模式丢失，bind-store 回归）。
+const kCjsShellHead = '((exports) => (require) => (module) => (__filename) => (__dirname) => {\n';
+const kCjsShellTail = '\n})';
 
 // ── Module 类活状态（native 编译期现读；改写即对后续编译生效） ──
 // wrapper 默认即 native curried 壳两片（字节恒等，行号恒等）。

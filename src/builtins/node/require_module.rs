@@ -320,9 +320,10 @@ pub unsafe extern "C" fn require_main_url(
 
 /// CJS 包装 pieces（node `Module.wrapper` 活数组；native 编译期现读）。
 /// 前置：cx 在 realm 内。失败/缺失即回默认壳（行号恒等）。
+/// 单大括号：`'use strict'` 须在最内箭头体顶部成指令（双括号即内层块而丢失）。
 pub(crate) fn cjs_wrapper_parts(cx: &mut mozjs::context::JSContext) -> (String, String) {
-    const HEAD: &str = "((exports) => (require) => (module) => (__filename) => (__dirname) => {{\n";
-    const TAIL: &str = "\n}})";
+    const HEAD: &str = "((exports) => (require) => (module) => (__filename) => (__dirname) => {\n";
+    const TAIL: &str = "\n})";
     let arr = state::with_rooted(|s| s.cjs_wrapper.as_ref().map(|h| h.get()));
     let Some(arr) = arr else {
         return (HEAD.to_owned(), TAIL.to_owned());

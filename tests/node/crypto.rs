@@ -12,3 +12,5 @@ mod parity;
 mod x509;
 #[path = "crypto/pq.rs"]
 mod pq;
+#[path = "crypto/subtle.rs"]
+mod subtle;

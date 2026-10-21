@@ -755,10 +755,20 @@ pub(crate) fn gcm_inc32(y: &[u8; 16], n: u32) -> [u8; 16] {
     out
 }
 
-/// 手工 GCM（非 12B iv 专用）：enc=true 输入 pt 输出 ct‖tag16；
-/// enc=false 输入 ct‖tag16 输出 pt（tag 错报原文无码错，Node 同款）。
-pub(crate) fn gcm_manual(key: &[u8], iv: &[u8], aad: &[u8], input: &[u8], enc: bool) -> Result<Vec<u8>, String> {
+/// 手工 GCM（非 12B iv 专用）：enc=true 输入 pt 输出 ct‖tag；enc=false
+/// 输入 ct‖tag 输出 pt（tag 错报原文无码错，Node 同款）。tag_len 为 tag 字节数。
+pub(crate) fn gcm_manual(
+    key: &[u8],
+    iv: &[u8],
+    aad: &[u8],
+    input: &[u8],
+    enc: bool,
+    tag_len: usize,
+) -> Result<Vec<u8>, String> {
     use ghash::universal_hash::UniversalHash as _;
+    if tag_len > 16 {
+        return Err("OperationError: bad GCM tag length".to_string());
+    }
     if iv.is_empty() {
         return Err("ERR_CRYPTO_INVALID_IV: Invalid initialization vector".to_string());
     }
@@ -768,10 +778,10 @@ pub(crate) fn gcm_manual(key: &[u8], iv: &[u8], aad: &[u8], input: &[u8], enc: b
     let (ct_in, tag_in) = if enc {
         (input, None)
     } else {
-        if input.len() < 16 {
+        if input.len() < tag_len {
             return Err("Unsupported state or unable to authenticate data".to_string());
         }
-        let (c, t) = input.split_at(input.len() - 16);
+        let (c, t) = input.split_at(input.len() - tag_len);
         (c, Some(t))
     };
     // CTR（首计数器 J0+1）
@@ -799,12 +809,12 @@ pub(crate) fn gcm_manual(key: &[u8], iv: &[u8], aad: &[u8], input: &[u8], enc: b
         tag[i] = s[i] ^ e0[i];
     }
     if enc {
-        out.extend_from_slice(&tag);
+        out.extend_from_slice(&tag[..tag_len]);
         Ok(out)
     } else {
         let want = tag_in.expect("checked");
         let mut diff = 0u8;
-        for i in 0..16 {
+        for i in 0..tag_len {
             diff |= tag[i] ^ want[i];
         }
         if diff != 0 {
@@ -855,9 +865,51 @@ pub unsafe extern "C" fn gcm_anyiv(
             crate::builtins::crypto::gcm_decrypt_raw(&key, &iv, aad_ref, &data)
         }
     } else {
-        gcm_manual(&key, &iv, aad_ref, &data, enc)
+        gcm_manual(&key, &iv, aad_ref, &data, enc, 16)
     };
     match out {
+        Ok(v) => set_rval_bytes(&mut cx, &frame, &v),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs2_gcm_subtle(encNum, keyU8, ivU8, aadU8, dataU8, tagLenBytes)`：
+/// WebCrypto GCM（任意 iv + 截断 tag；enc → ct‖tag_t，dec 输入 ct‖tag_t）。
+pub unsafe extern "C" fn gcm_subtle(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 6 {
+        report_error(&mut cx, "TypeError: gcm subtle needs mode, key, iv, aad, data and tag length");
+        return false;
+    }
+    let enc = !(frame.arg(0).is_number() && frame.arg(0).to_number() == 0.0);
+    let (Some(key), Some(iv), Some(aad), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(1), "gcm key"),
+        view_bytes(&mut cx, frame.arg(2), "gcm iv"),
+        opt_view(&mut cx, frame.arg(3), "gcm aad"),
+        view_bytes(&mut cx, frame.arg(4), "gcm data"),
+    ) else {
+        return false;
+    };
+    let tag_len = frame.arg(5).to_number() as usize;
+    if key.len() != 16 && key.len() != 24 && key.len() != 32 {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_KEYLEN: Invalid key length");
+        return false;
+    }
+    if iv.is_empty() {
+        report_error(&mut cx, "ERR_CRYPTO_INVALID_IV: Invalid initialization vector");
+        return false;
+    }
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    match gcm_manual(&key, &iv, aad_ref, &data, enc, tag_len) {
         Ok(v) => set_rval_bytes(&mut cx, &frame, &v),
         Err(e) => {
             report_error(&mut cx, &e);

@@ -3074,3 +3074,112 @@ G1/G2/G3/G9 已收官。）
 - 附带好消息：parity 旧表其余偏离/⏭️行（child-process/http×2/net/
   module×4/memory-leak/web-locks/promise-unhandled/gc×2）在 base19d
   均已绿（插桩陆续落地），无需回头。
+## 2026-10-21 webcrypto 探针定级（39 件：绿 4、红 34、慢 2 无挂）
+
+- 基线：hidden-slots/no-own-symbols/getRandomValues/methods-not-async 绿；
+  sign-verify/wrap-unwrap 系慢（28/36s，RSA 堆叠）非挂（早前误判，已正）。
+- 修小（形状/校验）：constructors（Illegal constructor 加 ERR_ILLEGAL_CONSTRUCTOR
+  码）、random（非视图 TypeError；Float/DataView 报 TypeMismatchError 17）、
+  Ed 名归一（Ed25519/X25519/Ed448 保 mixed，真机实测；余者大写）、digest 注册
+  （空串/cshake/数字/ECDH 等名 NotSupportedError；数据体校验形）、ecdh 长度门、
+  rsa 消息过长形。
+- 修中（算法实现，依赖全齐零新增）：HKDF/PBKDF2（hmac 轮子在）、AES-CBC/CTR
+  （aes+cbc/ctr 在）、CHACHA20-POLY1305（轮子在）、KMAC（sha3 在）、AES-192
+  （aes 全档，透传）、SHA3-256（sha3 在）、raw-secret/pkcs8（字节透传/OCT 解包）、
+  SPKI EC/RSA/ED 导入（x509 近邻，解析器在 crypto_x509 侧）。
+- 修中（桥接）：export-import.js `keyObject.toCryptoKey`（KeyObject→CryptoKey
+  桥）、cryptokey-workers/clone-transfer（结构化克隆保 type/algorithm/usages）、
+  ml-dsa/kem PKCS#8（解析器缺位对齐）、ED448（ed448-goldilocks 已在 lock，
+  未接线）。
+- 大/另案：internal/crypto/{keys,util} 缺模块（3 件：derivekey/encap/util；
+  keys 面另议）、timers-promisified 同一性（已记 Event 轮）、sign-verify 余
+  （KMAC/ED448 落上两批即消）、wrap-unwrap 余（AES-CTR + wrapKey 面）。
+- 横切面（另议）：NotSupportedError 须 DOMException 名（现 plain Error，
+  数十处；翻转须同步黑盒断言）。
+
+## 2026-10-21 webcrypto 落地批 1（39 件 4→11 绿）
+
+- 转绿 7：constructors（Crypto/SubtleCrypto 类面 + supports）、random
+  （TypeMismatchError/QuotaExceededError/BigInt）、internal-slots（Ed 名归一 +
+  稳定视图 + OKP 无 namedCurve）、derivebits-ecdh/derivekey-ecdh（长度语义/
+  重派发/用量文案）、digest（SHA3/cshake/校验形）、sign-verify-hmac
+  （HMAC-SHA3 手工 + 算法先行）。
+- 实现：HKDF/PBKDF2 natives（RFC 向量对拍）+ subtle 接线；AES-CBC/CTR/KW
+  natives（RFC 3394 对拍）+ 接线；GCM 任意 iv/截断 tag（J0 复用既有手工
+  路径）；SHA3 全线（hmac/hkdf/pbkdf2 手工绕 digest 版本墙，零新增依赖）；
+  用量表（makeKey 集中校验 + JWK key_ops/alg/use）+ 导入导出错误形统一
+  （Invalid keyData/Unrecognized/crv-alg-use 文案逐字）。
+- 拆分（§0.9）：crypto/symm.rs → kdf.rs（纯搬移）；prelude/crypto.rs →
+  crypto_keys/import/ops 三件（concat 字节恒等，行为复验无损）。
+- node 红（止步对齐）：export-import ×4（重复键操作新旧语义漂移等，
+  真机同红）；memoryleakwarning 同理。
+- 余红：AES-OCB（无轮子）、RSA-SHA3（trait 墙，需手工）、CHACHA20/KMAC/
+  ED448（轮子在，未接）、SPKI-RSA/ED 收尾、toCryptoKey 桥、internal 模块、
+  wrapKey 方法面、timers 同一性（非 Event）。
+
+## 2026-10-21 webcrypto 落地批 2（39 件 11→14 绿）
+
+- 转绿 3：encrypt-decrypt-rsa（RSA 长度 OperationError 化）、
+  encrypt-decrypt-chacha20-poly1305（CHACHA20 整套：C20P 归一/tag 仅 128/
+  JWK 全表）、util.js（internal/crypto/{util,keys} 新模块）。
+- 实现：CHACHA20-Poly1305 natives + 接线；JWK kty/alg/use/ext 全表校验；
+  用量表补私钥 verify 面；导出钥型门（Key must be public/private）；
+  GCM 截断 tag/任意 iv（手工 J0 复用既有路径）； sign/verify/ECDH/export
+  错误形收敛至 node 真机（Duplicate/SyntaxError 序等）。
+- 黑盒 +1（crypto/subtle.rs：KDF 向量/校验/边界 + 对称往返/校验/边界）。
+- 判明：压缩 SPKI/raw 导入解压（45859）；用量校验序（子集→有效→重复）；
+  JWK ext 失配；未识名一律 Unrecognized；export-import ×4 真机同红止步。
+
+## 2026-10-21 webcrypto 落地批 3（39 件 14→15 绿）
+
+- 转绿 1：sign-verify-eddsa（ED448 全套：context 接线 + 小阶拒 + 255 门 +
+  Ed strict；RFC 向量与 node 交叉对拍）。
+- 实现：ed448 natives context 参；ED448 generate/import/export/sign/verify；
+  Ed25519 verify_strict；ED448 4P 恒等小阶判（零新增依赖）；verify 形错
+  即 false；context 超长门。
+- 判明：export-import ×4 余量皆真机同红（重复键新旧语义）；空 raw-secret
+  导入真机亦放行（对齐即止）。
+- 事故记：批 2 提交误删 journal 全文（b1c9a0b，2956 行），本轮自
+  9e3aa95 恢复 + 补批 2/3 两记；教训：大文件写后必 `wc -l` 核对。
+
+## 2026-10-21 webcrypto 落地批 4（39 件 15→16 绿）
+
+- 转绿 1：sign-verify-ecdsa（ECDSA-SHA3 经 ec_hash + 形错签名即 false +
+  无横线哈希名拒）。
+- 实现：ec_hash SHA3 臂；verify 形错签名统一回 false；normHash 去无横线形；
+  PBKDF2 迭代上限定 int32（derivebits 慢转秒过）；AES-CBC/CTR/KW 导入导出
+  补齐；RSA-OAEP 加解密 OperationError 化。
+- 判明：derivebits.js 余 X448（montgomery 无高层 DH，另案）；X448 同挡
+  derivekey-cfrg；KMAC 需 tiny-keccak kmac 特性门（零新 crate，待批）；
+  RSA-SHA3 需手工（无单独翻转）；OCB 无轮子。
+
+## 2026-10-21 webcrypto 落地批 5（39 件 16→18 绿）
+
+- 转绿 2：cryptokey-clone-transfer + cryptokey-workers（worker 结构化克隆
+  CryptoKey 门面：槽快照过线 + 收端复原）。
+- 实现：`__wjs2_makeCryptoKey` 复原桥；worker_clone pack/unpack `key` 槽
+  （binary 槽 b64，usages 拷贝）。
+- 排障：复原桥引黑盒外 `__b64dec`（IIFE 内）致 messageerror 静默丢信，
+  改内联 atob；教训：跨 scope 引用必就地验证。
+
+## 2026-10-21 webcrypto 落地批 6（39 件 18→20 绿）
+
+- 转绿 2：derivebits.js（PBKDF2 int32 上限解慢）+ derivekey-cfrg（X448 全套）。
+- 实现：X448 generate/import/export/derive（轮子本就在，纯接线；CFRG 向量
+  对拍一致）；X/ECDH public 缺失/错型码（ERR_MISSING_OPTION/
+  ERR_INVALID_ARG_TYPE）+ 错算法 mismatch；HMAC/KMAC 显式长度末 8bit 窗；
+  wrapKey/unwrapKey 通用实现（导出+加解密复用；wrapping 钥算法→用量先验；
+  非整字节 HMAC 解包保留）。
+- KMAC（特性门待批）：tiny-keccak kmac 特性（零新 crate，见 Cargo 注）+
+  natives/接线；输出与 node 逐字节一致；套件余量皆旧断言漂移（真机同红）。
+- 判明：X448 轮子直用（x448 已钉版）；wrap-unwrap 余 KMAC 旧断言 + X448；
+  sign-verify-kmac/keygen-kmac 真机同红（长度口径漂移）；encap ML-KEM 另案。
+
+## 2026-10-21 webcrypto 落地批 7（39 件 20→21 绿）
+
+- 转绿 1：derivebits-cfrg（派生长度语义全对齐 + X448 向量一致）。
+- 实现：`__wjs2_deriveLen`（空即全长/越界 WebIDL TypeError/超长
+  OperationError）+ `__wjs2_maskTail`（非整字节掩低位）；X/ECDH public
+  缺失/错型码 + 错算法 mismatch。
+- 排障：cfrg 末字节差系掩码非算法错（0x9a&0xf8=0x98），隔离复现先行；
+  教训：值差先定字节位再动算法。

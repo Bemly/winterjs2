@@ -125,6 +125,18 @@ pub(crate) fn ec_hash(hash: &str, data: &[u8]) -> Result<Vec<u8>, String> {
             use sha2::Digest as _;
             Ok(sha2::Sha512::digest(data).to_vec())
         }
+        "SHA3-256" => {
+            use sha3::Digest as _;
+            Ok(sha3::Sha3_256::digest(data).to_vec())
+        }
+        "SHA3-384" => {
+            use sha3::Digest as _;
+            Ok(sha3::Sha3_384::digest(data).to_vec())
+        }
+        "SHA3-512" => {
+            use sha3::Digest as _;
+            Ok(sha3::Sha3_512::digest(data).to_vec())
+        }
         other => Err(format!("NotSupportedError: unsupported ECDSA hash '{other}'")),
     }
 }
@@ -246,4 +258,26 @@ pub(crate) fn x509_digest(hash: &str, data: &[u8]) -> Result<Vec<u8>, String> {
         "SHA-512" => sha2::Sha512::digest(data).to_vec(),
         other => return Err(format!("NotSupportedError: unsupported cert hash '{other}'")),
     })
+}
+
+/// 手工 HMAC-SHA3（sha3 0.12 与 hmac/hkdf/pbkdf2 的 digest 0.10  trait
+/// 不互通，零新增依赖；RFC 2104，block 取 Keccak rate）。
+macro_rules! hmac_sha3_with {
+    ($hash:ty, $block:expr, $outlen:expr, $key:expr, $data:expr) => {{
+        use sha3::Digest as _;
+        let mut kb = vec![0u8; $block];
+        if $key.len() > $block {
+            kb[..$outlen].copy_from_slice(&<$hash>::digest($key));
+        } else {
+            kb[..$key.len()].copy_from_slice($key);
+        }
+        let mut inner = Vec::with_capacity($block + $data.len());
+        inner.extend(kb.iter().map(|b| b ^ 0x36));
+        inner.extend_from_slice($data);
+        let ih = <$hash>::digest(&inner);
+        let mut outer = Vec::with_capacity($block + ih.len());
+        outer.extend(kb.iter().map(|b| b ^ 0x5c));
+        outer.extend_from_slice(&ih);
+        <$hash>::digest(&outer).to_vec()
+    }};
 }

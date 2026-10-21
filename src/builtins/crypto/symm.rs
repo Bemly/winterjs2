@@ -97,6 +97,94 @@ pub unsafe extern "C" fn aesgcm_decrypt(
     }
 }
 
+/// ChaCha20-Poly1305（12B nonce + 16B tag；chacha20poly1305 0.11 直引）：
+/// `__wjs2_chacha_encrypt(keyU8, nonceU8, aadU8, dataU8)` /
+/// `__wjs2_chacha_decrypt(keyU8, nonceU8, aadU8, dataU8)` → Uint8Array。
+fn chacha_crypt(key: &[u8], nonce: &[u8], aad: &[u8], data: &[u8], enc: bool) -> Result<Vec<u8>, String> {
+    use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
+    if key.len() != 32 {
+        return Err("OperationError: ChaCha20-Poly1305 key must be 32 bytes".to_string());
+    }
+    if nonce.len() != 12 {
+        return Err("OperationError: ChaCha20-Poly1305 nonce must be 12 bytes".to_string());
+    }
+    let cipher = chacha20poly1305::ChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| format!("OperationError: bad ChaCha20-Poly1305 key: {e}"))?;
+    let n = chacha20poly1305::Nonce::try_from(nonce)
+        .map_err(|_| "OperationError: bad ChaCha20-Poly1305 nonce".to_string())?;
+    if enc {
+        cipher
+            .encrypt(&n, Payload { msg: data, aad })
+            .map_err(|e| format!("OperationError: ChaCha20-Poly1305 encrypt failed: {e}"))
+    } else {
+        cipher
+            .decrypt(&n, Payload { msg: data, aad })
+            .map_err(|_| "OperationError: ChaCha20-Poly1305 decrypt failed (bad key/nonce/tag?)".to_string())
+    }
+}
+
+/// `__wjs2_chacha_encrypt(keyU8, nonceU8, aadU8, dataU8)` → Uint8Array（ct‖tag16）。
+pub unsafe extern "C" fn chacha_encrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: ChaCha20-Poly1305 encrypt needs key, nonce, aad and data");
+        return false;
+    }
+    let (Some(key), Some(nonce), Some(aad), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "ChaCha20-Poly1305 key"),
+        view_bytes(&mut cx, frame.arg(1), "ChaCha20-Poly1305 nonce"),
+        opt_view_bytes(&mut cx, frame.arg(2), "ChaCha20-Poly1305 aad"),
+        view_bytes(&mut cx, frame.arg(3), "ChaCha20-Poly1305 data"),
+    ) else {
+        return false;
+    };
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    match chacha_crypt(&key, &nonce, aad_ref, &data, true) {
+        Ok(ct) => set_rval_bytes(&mut cx, &frame, &ct),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs2_chacha_decrypt(keyU8, nonceU8, aadU8, dataU8)` → Uint8Array（认证失败抛 OperationError）。
+pub unsafe extern "C" fn chacha_decrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: ChaCha20-Poly1305 decrypt needs key, nonce, aad and data");
+        return false;
+    }
+    let (Some(key), Some(nonce), Some(aad), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "ChaCha20-Poly1305 key"),
+        view_bytes(&mut cx, frame.arg(1), "ChaCha20-Poly1305 nonce"),
+        opt_view_bytes(&mut cx, frame.arg(2), "ChaCha20-Poly1305 aad"),
+        view_bytes(&mut cx, frame.arg(3), "ChaCha20-Poly1305 data"),
+    ) else {
+        return false;
+    };
+    let aad_ref = aad.as_deref().unwrap_or(&[]);
+    match chacha_crypt(&key, &nonce, aad_ref, &data, false) {
+        Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
 fn decrypt_with<A>(key: &[u8], iv: &[u8], aad: &[u8], data: &[u8]) -> Result<Vec<u8>, String>
 where
     A: aes_gcm::aead::KeyInit + aes_gcm::aead::Aead,
@@ -167,12 +255,16 @@ macro_rules! hmac_with {
     }};
 }
 
+
 fn hmac_bytes(hash: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     match hash {
         "SHA-1" => Ok(hmac_with!(sha1::Sha1, key, data)),
         "SHA-256" => Ok(hmac_with!(sha2::Sha256, key, data)),
         "SHA-384" => Ok(hmac_with!(sha2::Sha384, key, data)),
         "SHA-512" => Ok(hmac_with!(sha2::Sha512, key, data)),
+        "SHA3-256" => Ok(hmac_sha3_with!(sha3::Sha3_256, 136, 32, key, data)),
+        "SHA3-384" => Ok(hmac_sha3_with!(sha3::Sha3_384, 104, 48, key, data)),
+        "SHA3-512" => Ok(hmac_sha3_with!(sha3::Sha3_512, 72, 64, key, data)),
         other => Err(format!("NotSupportedError: unsupported HMAC hash '{other}'")),
     }
 }
@@ -240,6 +332,48 @@ pub unsafe extern "C" fn hmac_verify(
             false
         }
     }
+}
+
+/// KMAC（SP 800-185；tiny-keccak kmac 特性，特性门待批见 Cargo）：
+/// `__wjs2_kmac(which, keyU8, customU8, dataU8, outLen)` → Uint8Array。
+/// which: 128/256；outLen 为字节数。
+pub unsafe extern "C" fn kmac(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 5 {
+        report_error(&mut cx, "TypeError: KMAC needs variant, key, customization, data and length");
+        return false;
+    }
+    let which = frame.arg(0).to_number() as u32;
+    let (Some(key), Some(custom), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(1), "KMAC key"),
+        opt_view_bytes(&mut cx, frame.arg(2), "KMAC customization"),
+        view_bytes(&mut cx, frame.arg(3), "KMAC data"),
+    ) else {
+        return false;
+    };
+    let out_len = frame.arg(4).to_number() as usize;
+    let custom_ref = custom.as_deref().unwrap_or(&[]);
+    let mut out = vec![0u8; out_len];
+    {
+        use tiny_keccak::{Hasher, Kmac};
+        let mut h = match which {
+            128 => Kmac::v128(&key, custom_ref),
+            256 => Kmac::v256(&key, custom_ref),
+            _ => {
+                report_error(&mut cx, "NotSupportedError: KMAC variant must be 128 or 256");
+                return false;
+            }
+        };
+        h.update(&data);
+        h.finalize(&mut out);
+    }
+    set_rval_bytes(&mut cx, &frame, &out)
 }
 
 /// 上限 64KiB（规范 QuotaExceededError）。
@@ -377,6 +511,18 @@ pub unsafe extern "C" fn subtle_digest(
             use sha2::Digest as _;
             sha2::Sha512::digest(&bytes).to_vec()
         }
+        "sha3-256" => {
+            use sha3::Digest as _;
+            sha3::Sha3_256::digest(&bytes).to_vec()
+        }
+        "sha3-384" => {
+            use sha3::Digest as _;
+            sha3::Sha3_384::digest(&bytes).to_vec()
+        }
+        "sha3-512" => {
+            use sha3::Digest as _;
+            sha3::Sha3_512::digest(&bytes).to_vec()
+        }
         other => {
             report_error(&mut cx, &format!("NotSupportedError: unsupported digest algorithm '{other}'"));
             return false;
@@ -393,4 +539,405 @@ pub unsafe extern "C" fn subtle_digest(
     }
     frame.set_rval(mozjs::jsval::ObjectValue(obj.get()));
     true
+}
+
+
+/// SHAKE 一次性（tiny-keccak；cSHAKE 无定制即 SHAKE）：`__wjs2_shake_digest(which, outLen, dataU8)` → Uint8Array。
+/// which: 128/256；outLen 为字节数。
+pub unsafe extern "C" fn shake_digest(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: SHAKE digest needs which, length and data");
+        return false;
+    }
+    let which = value_to_string(&mut cx, frame.arg(0));
+    let out_len = frame.arg(1).to_number() as usize;
+    let Some(data) = view_bytes(&mut cx, frame.arg(2), "SHAKE data") else {
+        return false;
+    };
+    use tiny_keccak::Hasher as _;
+    let mut out = vec![0u8; out_len];
+    match which.as_str() {
+        "128" => {
+            let mut h = tiny_keccak::Shake::v128();
+            h.update(&data);
+            h.finalize(&mut out);
+        }
+        "256" => {
+            let mut h = tiny_keccak::Shake::v256();
+            h.update(&data);
+            h.finalize(&mut out);
+        }
+        other => {
+            report_error(&mut cx, &format!("NotSupportedError: unsupported SHAKE '{other}'"));
+            return false;
+        }
+    }
+    set_rval_bytes(&mut cx, &frame, &out)
+}
+
+/// AES-CBC 块（PKCS#7；cbc 0.2 + aes 转出的 cipher traits，零新增依赖）：
+/// `__wjs2_aescbc_encrypt(keyU8, ivU8, dataU8)` / `__wjs2_aescbc_decrypt(keyU8, ivU8, dataU8)` → Uint8Array。
+macro_rules! cbc_with {
+    ($aes:ty, $key:expr, $iv:expr, $data:expr, encrypt) => {{
+        let enc = cbc::Encryptor::<$aes>::new_from_slices($key, $iv)
+            .map_err(|e| format!("OperationError: bad AES-CBC key/iv: {e}"))?;
+        let mut buf = vec![0u8; $data.len() + 16];
+        let n = enc
+            .encrypt_padded_b2b::<Pkcs7>($data, &mut buf)
+            .map_err(|e| format!("OperationError: AES-CBC encrypt failed: {e}"))?
+            .len();
+        buf.truncate(n);
+        Ok::<Vec<u8>, String>(buf)
+    }};
+    ($aes:ty, $key:expr, $iv:expr, $data:expr, decrypt) => {{
+        let dec = cbc::Decryptor::<$aes>::new_from_slices($key, $iv)
+            .map_err(|e| format!("OperationError: bad AES-CBC key/iv: {e}"))?;
+        let mut buf = vec![0u8; $data.len()];
+        let n = dec
+            .decrypt_padded_b2b::<Pkcs7>($data, &mut buf)
+            .map_err(|_| "OperationError: AES-CBC decrypt failed (bad key/iv/padding?)".to_string())?
+            .len();
+        buf.truncate(n);
+        Ok::<Vec<u8>, String>(buf)
+    }};
+}
+
+fn cbc_crypt(key: &[u8], iv: &[u8], data: &[u8], decrypt: bool) -> Result<Vec<u8>, String> {
+    use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt as _, BlockModeEncrypt as _, KeyIvInit as _};
+    if iv.len() != 16 {
+        return Err("OperationError: AES-CBC iv must be 16 bytes".to_string());
+    }
+    match key.len() {
+        16 => {
+            if decrypt {
+                cbc_with!(aes::Aes128, key, iv, data, decrypt)
+            } else {
+                cbc_with!(aes::Aes128, key, iv, data, encrypt)
+            }
+        }
+        24 => {
+            if decrypt {
+                cbc_with!(aes::Aes192, key, iv, data, decrypt)
+            } else {
+                cbc_with!(aes::Aes192, key, iv, data, encrypt)
+            }
+        }
+        32 => {
+            if decrypt {
+                cbc_with!(aes::Aes256, key, iv, data, decrypt)
+            } else {
+                cbc_with!(aes::Aes256, key, iv, data, encrypt)
+            }
+        }
+        _ => Err("OperationError: AES-CBC key must be 16/24/32 bytes".to_string()),
+    }
+}
+
+/// `__wjs2_aescbc_encrypt(keyU8, ivU8, dataU8)` → Uint8Array。
+pub unsafe extern "C" fn aescbc_encrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: AES-CBC encrypt needs key, iv and data");
+        return false;
+    }
+    let (Some(key), Some(iv), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "AES-CBC key"),
+        view_bytes(&mut cx, frame.arg(1), "AES-CBC iv"),
+        view_bytes(&mut cx, frame.arg(2), "AES-CBC data"),
+    ) else {
+        return false;
+    };
+    match cbc_crypt(&key, &iv, &data, false) {
+        Ok(ct) => set_rval_bytes(&mut cx, &frame, &ct),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs2_aescbc_decrypt(keyU8, ivU8, dataU8)` → Uint8Array（填充错抛 OperationError）。
+pub unsafe extern "C" fn aescbc_decrypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 3 {
+        report_error(&mut cx, "TypeError: AES-CBC decrypt needs key, iv and data");
+        return false;
+    }
+    let (Some(key), Some(iv), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "AES-CBC key"),
+        view_bytes(&mut cx, frame.arg(1), "AES-CBC iv"),
+        view_bytes(&mut cx, frame.arg(2), "AES-CBC data"),
+    ) else {
+        return false;
+    };
+    match cbc_crypt(&key, &iv, &data, true) {
+        Ok(pt) => set_rval_bytes(&mut cx, &frame, &pt),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// AES-CTR 手工流（counter 低 length 位递增回绕；length 须 8 整除，JS 侧校验）：
+/// `__wjs2_aesctr_crypt(keyU8, counterU8, lengthBits, dataU8)` → Uint8Array（加解密同构）。
+macro_rules! ctr_with {
+    ($aes:ty, $key:expr, $counter:expr, $ctr_bytes:expr, $data:expr) => {{
+        use aes::cipher::block::BlockCipherEncrypt as _;
+        use aes::cipher::{Block, KeyInit as _};
+        let cipher = <$aes>::new_from_slice($key)
+            .map_err(|e| format!("OperationError: bad AES-CTR key: {e}"))?;
+        let prefix = 16 - $ctr_bytes;
+        let mut ctr_val: u128 = {
+            let mut b = [0u8; 16];
+            b[16 - $ctr_bytes..].copy_from_slice(&$counter[prefix..]);
+            u128::from_be_bytes(b)
+        };
+        let mask: u128 = if $ctr_bytes >= 16 {
+            u128::MAX
+        } else {
+            (1u128 << ($ctr_bytes * 8)) - 1
+        };
+        let mut out = Vec::with_capacity($data.len());
+        for chunk in $data.chunks(16) {
+            let mut raw = [0u8; 16];
+            raw[..prefix].copy_from_slice(&$counter[..prefix]);
+            raw[prefix..].copy_from_slice(&(ctr_val & mask).to_be_bytes()[16 - $ctr_bytes..]);
+            let mut block = Block::<$aes>::from(raw);
+            cipher.encrypt_block(&mut block);
+            let ks = block.as_slice();
+            for (i, &p) in chunk.iter().enumerate() {
+                out.push(p ^ ks[i]);
+            }
+            ctr_val = ctr_val.wrapping_add(1) & mask;
+        }
+        Ok::<Vec<u8>, String>(out)
+    }};
+}
+
+fn ctr_crypt(key: &[u8], counter: &[u8], len_bits: u32, data: &[u8]) -> Result<Vec<u8>, String> {
+    if counter.len() != 16 {
+        return Err("OperationError: AES-CTR counter must be 16 bytes".to_string());
+    }
+    if len_bits < 8 || len_bits > 128 || len_bits % 8 != 0 {
+        return Err("OperationError: AES-CTR length must be a multiple of 8 between 8 and 128".to_string());
+    }
+    let ctr_bytes = (len_bits / 8) as usize;
+    match key.len() {
+        16 => ctr_with!(aes::Aes128, key, counter, ctr_bytes, data),
+        24 => ctr_with!(aes::Aes192, key, counter, ctr_bytes, data),
+        32 => ctr_with!(aes::Aes256, key, counter, ctr_bytes, data),
+        _ => Err("OperationError: AES-CTR key must be 16/24/32 bytes".to_string()),
+    }
+}
+
+/// `__wjs2_aesctr_crypt(keyU8, counterU8, lengthBits, dataU8)` → Uint8Array。
+pub unsafe extern "C" fn aesctr_crypt(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: AES-CTR crypt needs key, counter, length and data");
+        return false;
+    }
+    let (Some(key), Some(counter), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "AES-CTR key"),
+        view_bytes(&mut cx, frame.arg(1), "AES-CTR counter"),
+        view_bytes(&mut cx, frame.arg(3), "AES-CTR data"),
+    ) else {
+        return false;
+    };
+    let len_bits = frame.arg(2).to_number() as u32;
+    match ctr_crypt(&key, &counter, len_bits, &data) {
+        Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// AES-KW 手工（RFC 3394；ECB 块经 aes 转出 traits）：`__wjs2_aeskw_wrap(keyU8, dataU8)` /
+/// `__wjs2_aeskw_unwrap(keyU8, dataU8)` → Uint8Array。
+macro_rules! kw_block {
+    ($aes:ty, $key:expr, $block:expr, encrypt) => {{
+        use aes::cipher::block::BlockCipherEncrypt as _;
+        use aes::cipher::{Block, KeyInit as _};
+        let cipher = <$aes>::new_from_slice($key)
+            .map_err(|e| format!("OperationError: bad AES-KW key: {e}"))?;
+        let mut b = Block::<$aes>::from($block);
+        cipher.encrypt_block(&mut b);
+        let mut out = [0u8; 16];
+        out.copy_from_slice(b.as_slice());
+        out
+    }};
+    ($aes:ty, $key:expr, $block:expr, decrypt) => {{
+        use aes::cipher::block::BlockCipherDecrypt as _;
+        use aes::cipher::{Block, KeyInit as _};
+        let cipher = <$aes>::new_from_slice($key)
+            .map_err(|e| format!("OperationError: bad AES-KW key: {e}"))?;
+        let mut b = Block::<$aes>::from($block);
+        cipher.decrypt_block(&mut b);
+        let mut out = [0u8; 16];
+        out.copy_from_slice(b.as_slice());
+        out
+    }};
+}
+
+macro_rules! kw_with {
+    ($aes:ty, $key:expr, $data:expr, $wrap:expr) => {{
+        if $data.len() < 16 || $data.len() % 8 != 0 {
+            return Err("OperationError: AES-KW data must be at least 16 bytes and a multiple of 8".to_string());
+        }
+        let n = $data.len() / 8;
+        if $wrap {
+            let mut a: [u8; 8] = [0xA6; 8];
+            let mut r: Vec<[u8; 8]> = $data.chunks_exact(8).map(|c| {
+                let mut b = [0u8; 8];
+                b.copy_from_slice(c);
+                b
+            }).collect();
+            for j in 0..6 {
+                for i in 0..n {
+                    let mut block = [0u8; 16];
+                    block[..8].copy_from_slice(&a);
+                    block[8..].copy_from_slice(&r[i]);
+                    let out = kw_block!($aes, $key, block, encrypt);
+                    let t = (n * j + i + 1) as u64;
+                    for (k, byte) in t.to_be_bytes().iter().enumerate() {
+                        a[k] = out[k] ^ byte;
+                    }
+                    r[i].copy_from_slice(&out[8..]);
+                }
+            }
+            let mut res = Vec::with_capacity(8 + $data.len());
+            res.extend_from_slice(&a);
+            for b in &r {
+                res.extend_from_slice(b);
+            }
+            Ok::<Vec<u8>, String>(res)
+        } else {
+            if $data.len() < 24 {
+                return Err("OperationError: AES-KW wrapped data too short".to_string());
+            }
+            let mut a: [u8; 8] = $data[..8].try_into().unwrap();
+            let mut r: Vec<[u8; 8]> = $data[8..].chunks_exact(8).map(|c| {
+                let mut b = [0u8; 8];
+                b.copy_from_slice(c);
+                b
+            }).collect();
+            let n = r.len();
+            for j in (0..6).rev() {
+                for i in (0..n).rev() {
+                    let t = (n * j + i + 1) as u64;
+                    let mut aa = [0u8; 8];
+                    for (k, byte) in t.to_be_bytes().iter().enumerate() {
+                        aa[k] = a[k] ^ byte;
+                    }
+                    let mut block = [0u8; 16];
+                    block[..8].copy_from_slice(&aa);
+                    block[8..].copy_from_slice(&r[i]);
+                    let out = kw_block!($aes, $key, block, decrypt);
+                    a.copy_from_slice(&out[..8]);
+                    r[i].copy_from_slice(&out[8..]);
+                }
+            }
+            if a != [0xA6; 8] {
+                return Err("OperationError: AES-KW unwrap failed (integrity check)".to_string());
+            }
+            let mut res = Vec::with_capacity(n * 8);
+            for b in &r {
+                res.extend_from_slice(b);
+            }
+            Ok::<Vec<u8>, String>(res)
+        }
+    }};
+}
+
+fn kw_crypt(key: &[u8], data: &[u8], wrap: bool) -> Result<Vec<u8>, String> {
+    match key.len() {
+        16 => kw_with!(aes::Aes128, key, data, wrap),
+        24 => kw_with!(aes::Aes192, key, data, wrap),
+        32 => kw_with!(aes::Aes256, key, data, wrap),
+        _ => Err("OperationError: AES-KW key must be 16/24/32 bytes".to_string()),
+    }
+}
+
+/// `__wjs2_aeskw_wrap(keyU8, dataU8)` → Uint8Array。
+pub unsafe extern "C" fn aeskw_wrap(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: AES-KW wrap needs key and data");
+        return false;
+    }
+    let (Some(key), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "AES-KW key"),
+        view_bytes(&mut cx, frame.arg(1), "AES-KW data"),
+    ) else {
+        return false;
+    };
+    match kw_crypt(&key, &data, true) {
+        Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
+}
+
+/// `__wjs2_aeskw_unwrap(keyU8, dataU8)` → Uint8Array（完整性错抛 OperationError）。
+pub unsafe extern "C" fn aeskw_unwrap(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    // SAFETY: 同上
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 2 {
+        report_error(&mut cx, "TypeError: AES-KW unwrap needs key and data");
+        return false;
+    }
+    let (Some(key), Some(data)) = (
+        view_bytes(&mut cx, frame.arg(0), "AES-KW key"),
+        view_bytes(&mut cx, frame.arg(1), "AES-KW data"),
+    ) else {
+        return false;
+    };
+    match kw_crypt(&key, &data, false) {
+        Ok(out) => set_rval_bytes(&mut cx, &frame, &out),
+        Err(e) => {
+            report_error(&mut cx, &e);
+            false
+        }
+    }
 }

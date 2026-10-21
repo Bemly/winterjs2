@@ -220,7 +220,6 @@ mod tests {
         // 表长度随注册增减（G11 +4 http 别名 + http2_util +1 + test/mock +1 + internal/http +1 + timers +1 + test/binding +1 + async_hooks +1；R2-iter + task_queues +1 + iter 系 +10；R3a + zlib_binding +1；console 轮 + node:internal/util/debuglog 别名 +1；readline 轮 + node:internal/readline/utils +1 + callbacks +1 + emitKeypressEvents +1；child 轮 + node:internal/child_process +1；crypto 轮 + node:internal/crypto/util +1；增删同步改此数）。
         // 注：console 轮落 83、utils 轮落 84、callbacks 轮落 85、child 轮落 87、crypto 轮落 88——本轮按实测 88 落数。
         assert_eq!(INTERNALS.len(), 88);
-        assert_eq!(INTERNALS.len(), 87);
         // console-formatTime 轮：node 真路径 internal/util/debuglog 可解（套件直引形）。
         assert_eq!(
             normalize_internal("internal/util/debuglog"),

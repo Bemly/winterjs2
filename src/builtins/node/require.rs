@@ -164,6 +164,10 @@ fn require_cjs_file(
     // 恒等，行号恒等）。
     let (whead, wtail) = cjs_wrapper_parts(cx);
     let wrapped = format!("{whead}{js}{wtail}");
+    // TEMP-DIAG-7171: wrapped 内容取证（bind-store strict 案）。
+    if std::env::var("WJS_DUMP_WRAP").is_ok() {
+        eprintln!("WRAP-HEAD{:?} JS-HEAD{:?}", &whead, js.chars().take(120).collect::<String>());
+    }
     // node 口径：CJS 栈帧是绝对路径（ESM 才是 file URL）——`stack.includes(__filename)` 类断言。
     let c_filename = std::ffi::CString::new(cjs_script_name(url)).unwrap_or_else(|_| c"module.js".into());
     // 起始行 0：包装头独占第 0 行，用户代码第 1 行即物理第 1 行（栈/报错行号

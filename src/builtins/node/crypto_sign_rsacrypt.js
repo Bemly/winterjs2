@@ -319,4 +319,37 @@ function ECDH(...args) { return new ECDHImpl(...args); }
 Object.setPrototypeOf(ECDH, ECDHImpl);
 ECDH.prototype = ECDHImpl.prototype;
 ECDH.prototype.constructor = ECDH;
+// ECDH.convertKey（ecdh-convert-key 套件钉死）：任意 SEC1 点形互转；校验口径
+// 与 getPublicKey 同（INVALID_FORMAT/INVALID_CURVE/ARG_TYPE）；坏点即
+// 'Failed to convert Buffer to EC_POINT'；转换失败不污染后续操作（无共享错栈）。
+function __ecdhConvertKey(key, curve, inputEncoding, outputEncoding, format) {
+  const raw = __cryptBytes(key, "key", inputEncoding);
+  __needStr(curve, "curve");
+  const c = __ecCurve(curve);
+  if (format !== undefined && format !== "uncompressed" && format !== "compressed" && format !== "hybrid") {
+    const err = new TypeError(`Invalid ECDH format: ${format}`);
+    err.code = "ERR_CRYPTO_ECDH_INVALID_FORMAT";
+    throw err;
+  }
+  const pubDer = __ecdhImportPoint(c, raw);
+  const parts = JSON.parse(__cryptCall(() => __wjs2_ec_jwk_pub(c, pubDer)));
+  const x = __b64urlDec(parts.x), y = __b64urlDec(parts.y);
+  let out;
+  if (format === "compressed") {
+    out = new Uint8Array(1 + x.length);
+    out[0] = (y[y.length - 1] & 1) ? 3 : 2;
+    out.set(x, 1);
+  } else if (format === "hybrid") {
+    out = new Uint8Array(1 + x.length + y.length);
+    out[0] = (y[y.length - 1] & 1) ? 7 : 6;
+    out.set(x, 1); out.set(y, 1 + x.length);
+  } else {
+    out = new Uint8Array(1 + x.length + y.length);
+    out[0] = 4; out.set(x, 1); out.set(y, 1 + x.length);
+  }
+  if (!outputEncoding || outputEncoding === "buffer") return Buffer.from(out);
+  return Buffer.from(out).toString(outputEncoding);
+}
+ECDH.convertKey = __ecdhConvertKey;
+
 

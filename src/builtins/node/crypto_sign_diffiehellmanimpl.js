@@ -70,9 +70,18 @@ class DiffieHellmanImpl {
     return new DiffieHellmanImpl(__cryptBytes(hex, "prime", "hex"), 2);
   }
   generateKeys(encoding) {
-    const r = JSON.parse(__cryptCall(() => __wjs2_dh_genkey(this.__prime, this.__gen, this.__prime.length)));
-    this.__priv = __b64dec(r.priv);
-    this.__pub = __b64dec(r.pub);
+    // node 口径（dh-generate-keys 套件钉死）：按需增量——缺私钥即新生成一对；
+    // 仅缺公钥/公钥过期（与私钥失配）即由私钥重算公钥；成对即无操作。
+    if (this.__priv === null) {
+      const r = JSON.parse(__cryptCall(() => __wjs2_dh_genkey(this.__prime, this.__gen, this.__prime.length)));
+      this.__priv = __b64dec(r.priv);
+      this.__pub = __b64dec(r.pub);
+    } else {
+      const expectPub = __dhPubFromPriv(this.__prime, this.__genBytes, this.__priv);
+      if (this.__pub === null || !Buffer.from(this.__pub).equals(expectPub)) {
+        this.__pub = new Uint8Array(expectPub);
+      }
+    }
     // node 口径（dhGenerateKeys）：encoding 透传 getPublicKey（hex 行钉住）。
     return this.getPublicKey(encoding);
   }
@@ -363,6 +372,27 @@ function __bytesToBigint(u8) {
   const hex = buf.toString("hex").replace(/^0+(?=[0-9a-f])/i, "");
   if (hex === "") return 0n;
   return BigInt("0x" + hex);
+}
+// DH 公钥重算（g^x mod p，二进制平方乘 BigInt 原生；generateKeys 增量语义用）。
+// 输出定长（prime 长左补零，native pad_be 同款）。
+function __dhPubFromPriv(primeB, genB, privB) {
+  const p = __bytesToBigint(primeB);
+  const g = __bytesToBigint(genB);
+  const x = __bytesToBigint(privB);
+  let r = 1n;
+  let b = g % p;
+  let e = x;
+  while (e > 0n) {
+    if (e & 1n) r = (r * b) % p;
+    b = (b * b) % p;
+    e >>= 1n;
+  }
+  let hex = r.toString(16);
+  if (hex.length % 2) hex = "0" + hex;
+  const raw = Buffer.from(hex, "hex");
+  const out = Buffer.alloc(primeB.length);
+  raw.copy(out, out.length - raw.length);
+  return out;
 }
 function __bigintToMinimalBuffer(v) {
   let hex = v.toString(16);

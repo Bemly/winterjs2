@@ -267,10 +267,22 @@ class Socket extends EventEmitter {
     // 真机缓冲至读；冲刷见 __flushData + newListener 钩）。
     this.__dataBuf = [];
     this.__flushData = () => {
-      while (this.__dataBuf.length > 0) {
+      // MCE 双 clientError（嗅探首字节转交 http 后两段垃圾各一次）：
+      // 首段 data 派发中用户同步 destroy 会清 __dataBuf，若 while 直读即丢
+      // 已缓冲次段（真机次段照发）。快照 pending，destroy 清空只影响新数组，
+      // 在途次段照发；destroy 前无派发（buffer 未快照）仍丢弃（纯 net 探针对齐）。
+      while (true) {
         if (typeof this.listenerCount !== "function" || this.listenerCount("data") === 0) return;
-        const __u = this.__dataBuf.shift();
-        try { this.emit("data", this.__dec ? this.__dec.write(__u) : Buffer.from(__u)); } catch { /* 监听抛错不阻收尾 */ }
+        const __pending = this.__dataBuf.splice(0);
+        if (__pending.length === 0) return;
+        for (let __i = 0; __i < __pending.length; __i++) {
+          if (typeof this.listenerCount !== "function" || this.listenerCount("data") === 0) {
+            this.__dataBuf.unshift(...__pending.slice(__i));
+            return;
+          }
+          const __u = __pending[__i];
+          try { this.emit("data", this.__dec ? this.__dec.write(__u) : Buffer.from(__u)); } catch { /* 监听抛错不阻收尾 */ }
+        }
       }
     };
     this.on("newListener", (__evName) => {

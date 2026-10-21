@@ -820,6 +820,12 @@ export function withHttpServer(Base) {
         // 默认分支附带 socket 'error'（真机： SockError 先于 431 到达，close
         // hadError=true）——只递送给用户监听（计数含 __httpSockOnError 兜底，
         // 故 >1 才带 err 销毁；仅兜底时递送即 tick 内裸抛走 uncaught fatal）。
+        // MCE 双错：已报告字节即消费（st.buf 清空），否则 close 处理器把同一
+        // 残段再报 EOF（真机仅两 METHOD，无第三 EOF）。下段新片重起解析。
+        try {
+          const __st0 = sock.__httpState;
+          if (__st0 !== undefined && __st0 !== null) __st0.buf = new Uint8Array(0);
+        } catch { /* 取证失败不阻派发 */ }
         this.emit("clientError", e, sock);
         if (this.listenerCount("clientError") === 0) {
           const __hasSockErr = typeof sock.listenerCount === "function" && sock.listenerCount("error") > 1;

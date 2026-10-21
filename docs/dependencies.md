@@ -364,6 +364,7 @@ serve 静态预压缩只用 `Fastest`；流式编码按 `FrameEncoder` 在实施
 | 随机数 | `getrandom` | 0.4.3 | 2019-01-19 | 2026-06-17 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 随机数 | `rand` | 0.10.2 | 2015-02-03 | 2026-08-25 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | UUID | `uuid` | 1.26.0 | 2014-11-11 | 2026-08-26 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| DH 安全素数快速底座（`prime_gen` safe 路径） | `openssl` | 0.10.81 | 2014-11-21 | 2026-06-12 | ❌（C 例外引入，见备注） | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | 待CI | 待CI | 待CI | 待CI |
 
 备注：全部 RustCrypto / Dalek 系（audited），主版本号各异是常态。
 `rsa` 用 0.9 系（0.10 在 rc）；`getrandom` 的 `*-linux-*` 支持行覆盖 OHOS。
@@ -381,6 +382,16 @@ c-4 增补（2026-09-10 用户拍板）：`sha2_010`（sha2 0.10 改名直引，
 10f crypto六轮增补（2026-09-18 用户拍板）：`sha1_010`（sha1 0.10 改名直引，
 与 `sha2_010` 同款；`rsa` 0.9 的 PSS 接口绑 `digest` 0.10，`sha1` 0.11 系
 传不进去；`lock` 内已有 0.10.7，零新增传递依赖）。
+DH-1024 增补（2026-10-21 用户拍板，AGENTS §2 例外）：`openssl = "0.10"`（caret；
+crates.io 实证 0.10.81/2014-11-21 建库/2026-06-12 维护/430M 下载/Apache-2.0/rust 1.80，
+四问中库龄✅维护✅ nightly 免，唯纯度❌——C 绑定经 `openssl-sys` 链系统 OpenSSL）。
+用途钉死：仅 DH `prime_gen` safe 素数底座（`BigNum::generate_prime`），不碰 TLS 面
+（TLS 仍全线 rustls/ring，§2 门控继续有效；`cargo tree -i openssl` 不得出现在 TLS 链）。
+偏差理由：纯 Rust naive 路径（`crypto_dh.rs` Miller-Rabin checks=64）1024-bit safe 素数
+debug 约 12min（sweep 25s 必 TIMEOUT，test-crypto-dh.js number 形永红），OpenSSL C 路径
+约 158ms（真机同源：node 即调 OpenSSL `BN_generate_prime_ex`）；固定参数表属语义偏离
+（node 每次随机生成），故选轮子例外。§14 `openssl` 禁行加"DH 素数底座例外"注；
+矩阵 win 列⚠️（需系统 OpenSSL/vcpkg）、移动列待 CI 转正。
 
 ## 8. fs / os / 包管理工具链
 
@@ -550,6 +561,10 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
 - TLS 链已豁免：`ring`（C+asm，经 `rustls`/`rcgen` 间接）是 Rust 生态无纯实现环节的最轻选项
   （经 cc、无 cmake，比 `aws-lc` 轻一个量级）。
 - `mimalloc`（C）：只出现在 `turso` 默认特性里，§2 门控禁掉，不进构建。
+- `openssl`（C，DH-1024 素数底座唯一例外，2026-10-21 用户拍板）：经 `openssl-sys`
+  链系统 OpenSSL（mac `brew install openssl` 即用；Linux 需 dev 包，
+  Windows 需 OpenSSL/vcpkg，见 §7 备注矩阵）；用途钉死 DH safe prime 生成，
+  不进 TLS 链；`vendored` 特性禁（自带 OpenSSL 源码编译，又重又慢，按需复议）。
 - `zstd`/`rusqlite` bundled/`tikv-jemallocator` 的 C 已随换轮子出局（§3/§6/§9）。
 
 ## 13. 剩下必须手写的（轮子到头的地方，刻意保持小）
@@ -590,7 +605,7 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
   出局：`limbo`（0.0 版+停更）、`turso` 的 pre 线（稳定线 0.7 系因 icu 死锁不可用，实钉 =0.6.1，见 §9）、`sled`（冻结）。
 - 压缩：`zstd` 本体出局（`ruzstd` 接管解码，编码不支持）；`bzip2`/`xz` 系（npm 不用）。
 - `wasmtime`（WASM 由 SpiderMonkey 引擎自己执行，不需要第二个运行时）。
-- `openssl`/`native-tls`/`tokio-native-tls`/`hyper-tls`（全线 rustls，躲开 VCPKG/OpenSSL 地狱）。
+- `openssl`（DH 素数底座例外除外，见 §7 备注）/`native-tls`/`tokio-native-tls`/`hyper-tls`（全线 rustls，躲开 VCPKG/OpenSSL 地狱）。
 - `async-trait`（原生 async trait 已稳定）、`tokio-tar`（`spawn_blocking`+`tar` 足够）、
   `fs_extra`（3 年半停更，walkdir+glob+remove_dir_all 顶掉）、
   `wild`（2 年半停更，见 §13 手写 15 行）、`shell-escape`（6 年已死，见 §13）、

@@ -190,8 +190,13 @@ pub unsafe extern "C" fn ecdsa_verify(
                 .map_err(|_| "DataError: bad ECDSA public key (SPKI)".to_string())?;
             let vk = Verifying::from_sec1_bytes(&pk.to_sec1_bytes())
                 .map_err(|_| "DataError: bad ECDSA public key".to_string())?;
-            let sig = Sig::try_from(sig.as_slice())
-                .map_err(|_| "OperationError: bad ECDSA signature length".to_string())?;
+            // psychic-signatures（2026-10-21，4.55 姊妹）：标量非法（全零/阶值 r‖s，
+            // `Signature::try_from` 拒收）按 OpenSSL 验签语义回 false，不抛；
+            // 长度错 JS 侧已先拦（node 路 `2*size` 门；subtle 路同"形态错回 false"惯例）。
+            let sig = match Sig::try_from(sig.as_slice()) {
+                Ok(s) => s,
+                Err(_) => return Ok(false),
+            };
             // 高 S 归一化（OpenSSL 接受可锻造签名；k256 验签拒 high-S，Node 同兼容）。
             let sig = sig.normalize_s();
             Ok(vk.verify_prehash(&digest, &sig).is_ok())

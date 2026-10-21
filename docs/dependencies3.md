@@ -149,3 +149,19 @@
 - 备选 F 的行级增补若拍板：`fast-glob = "1"`（跟锁 1.1.1，零新增传递依赖）。
 - 备选 H 若拍板：Rust 实现约 150 行（段切分 + `**` 跨段 + 段内 `*?[]` + `{}` 展开 +
   逐段 nocase + dot 规则 + 前导 `!` 字面），单测用本轮探针真值表钉住。
+
+## §6 kmac 特性门 + DH-1024 openssl 底座（2026-10-21 用户拍板两项）
+
+- **kmac 特性门（已合入）**：`tiny-keccak = { version = "2", default-features = false,
+  features = ["shake", "kmac"] }`——同包特性开关，零新增 crate/零新增传递依赖
+  （tiny-keccak 系 9h-2 已批直引，CC0）。用途：webcrypto KMAC128/256 五件套件
+  （lane/whatwg 批 6，4→21 收官战）。nodejs 对照：BoringSSL/OpenSSL 自带 KMAC，
+  RustCrypto 无纯 Rust KMAC 轮子（`tiny-keccak` 即上游实现）。若需回退：revert
+  Cargo.toml 该行 + `src/builtins/crypto/symm.rs` kmac 段（lane 已标注）。
+- **DH-1024 openssl 底座（已批准，console lane 接线中）**：`openssl` crate 直引，
+  用途：DH `createDiffieHellman(1024)` fresh safe prime 生成（真机 158ms vs
+  纯 Rust naive 搜索 ~12min debug，test-crypto-dh TIMEOUT 根因）。**例外记档**：
+  openssl 系 C 绑定（openssl-sys → 系统/vendored OpenSSL），与 §2 纯 Rust 红线
+  冲突——本次为例外引入，仅限 DH 素数生成一路；其余密码学面维持 RustCrypto
+  纯栈。回退方案（记档）：固定已知安全素数（偏离真机 fresh 语义，另议）。
+  caret 跟踪（`openssl = "0.10"`，除 mozjs 外 caret 不锁上限口径）。

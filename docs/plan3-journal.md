@@ -3074,3 +3074,43 @@ G1/G2/G3/G9 已收官。）
 - 附带好消息：parity 旧表其余偏离/⏭️行（child-process/http×2/net/
   module×4/memory-leak/web-locks/promise-unhandled/gc×2）在 base19d
   均已绿（插桩陆续落地），无需回头。
+
+## 2026-10-21 crypto DH/ECDH 批接盘（lane/console；残留审查 + DH-1024 openssl 底座 + psychic 转绿，b6cbb55 定级表）
+
+> 范围：前任残留 2 文件（M `crypto_sign_diffiehellmanimpl.js`、`crypto_sign_rsacrypt.js`）逐 hunk 审查 +
+> DH-1024 openssl 快速素数底座（用户拍板例外引入）+ EdDSA/psychic 按定级表继续（ctx 不动）。
+
+- 残留审查（`git diff` 逐 hunk）：两 hunk 皆 DH/ECDH 意图内，无 secrets，留用——
+  ① `generateKeys` 增量语义（缺私钥即新生成对；仅缺公钥/失配即由私钥重算公钥 `__dhPubFromPriv`；成对无操作；
+  dh-generate-keys 套件钉死）；② `ECDH.convertKey`（任意 SEC1 点形互转 + 四校验口径；
+  ecdh-convert-key 套件钉死）。`ecdh-convert-key` 本机复探绿。
+- DH-1024 底座（§0.5 新轮子流程走完）：crates.io 实证 `openssl` 0.10.81
+  （2014-11-21 建库/2026-06-12 维护/430M 下载/Apache-2.0/rust 1.80；四问唯纯度❌）
+  → `docs/dependencies.md` 四处落笔（§7 表格行 + §7 备注偏差理由 + §12 C 例外条 + §14 禁行例外注）
+  → `Cargo.toml` caret 引入（`openssl = "0.10"`，`prime_gen` safe 路径专用注释）
+  → `cargo build` 一次过（`Cargo.lock` 0.10.81 + `openssl-sys` 0.9.117；本机系统 OpenSSL 4.0.3
+  被 `ossl400` cfg 认出，零新增 env；与 AGENTS §2 记录的 `/opt/homebrew` 路径不同——
+  本机实为 `/usr/local` Homebrew + CommandLineTools libclang，构建按此走通）。
+  §2 门禁复核：`cargo tree -i openssl` 仅 winterjs2 直引；`aws-lc-rs`/`native-tls` 仍不在树内；
+  TLS 链 untouched（用途钉死 DH safe prime，不碰 rustls/ring）。
+  偏差双记：naive BigInt 路径（`crypto_dh.rs` Miller-Rabin checks=64）1024-bit safe 素数
+  debug 约 12min（sweep 25s 必 TIMEOUT，test-crypto-dh.js number 形永红，本地复探确认 hang 点），
+  OpenSSL C 路径约 158ms（真机同源 `BN_generate_prime_ex`）；固定参数表属语义偏离故选轮子例外。
+  接线（`prime_gen` 切 `BigNum::generate_prime`）为下一步，本轮只立底座 + 验证链接。
+- EdDSA/psychic：逐向量探针（probe 落 `~/wjs-data/tmp/eddsa-probe/`）确认 Ed25519 基向量
+  TEST 1/2/3/1024/SHA(abc) 全绿、Ed448 非 ctx 全绿；红仅 ctx 段（Ed25519ctx foo/bar/foo2/foo3、
+  Ed448 with context、`sign-verify` 559 行起 `supportsContext` 分支）——需 ed25519-ctx 原生，
+  未批，先不动（定级表原判）。
+- psychic-signatures 转绿（修中"长度门，4.55 姊妹"）：根因 `ecdsa_verify` 内
+  `Sig::try_from` 对零标量/阶值 r‖s 拒收即抛 `bad ECDSA signature length`（node/OpenSSL 语义应回 false）。
+  修法 `src/builtins/crypto/ec.rs`：标量非法即 `Ok(false)`（node 路长度已由 `2*size` 门先拦；
+  subtle 路同"形态错回 false"惯例；subtle ECDSA verify 同 native 直调，一并治愈）。
+  复探：psychic 绿；回归 dh-generate-keys/dh-curves/ecdh-setpublickey-deprecation/
+  keygen-eddsa/keygen-dh-classic/dh-group-setters/dh-modp2/ecdh-convert-key 全绿；
+  sign-verify 仅剩 559 行 ctx 段红；eddsa-variants 仅剩 ctx 向量红（上条）。
+  webcrypto-sign-verify-eddsa 仍红（`importKey ED448 needs Phase 3 c-4`，缺件，非本轮回归）。
+- 副线探针（编切等待期）：crypto stream 3 件（hash-stream-pipe/hash-stream-error/
+  authenticated-stream）皆红于 `Hash/Cipher` 无 `.on`（stream 接线大件，修中另案，非本轮面）。
+- 三件套：黑盒 tests/node crypto 35/35 绿（stale harness + 新二进制直跑；本机无 nextest，
+  走 AGENTS 兜底口径）；冒烟 5/5；`check-naming` 绿 + `check-lines` 绿
+  （net.rs 1036 系 HEAD 遗留，本轮未加重）。

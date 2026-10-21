@@ -232,6 +232,13 @@ class Socket extends EventEmitter {
     if (typeof cb === "function") this.on("message", cb);
     // 派发钩子预绑定（dispatch 以 global 为 this 调用，§4.34 坑一）
     this.__ev = this.__ev.bind(this);
+    // diagnostics `udp.socket`（node lib/dgram.js 口径：构造末同步 publish
+    // `{socket}`，hasSubscribers 守卫；两种 createSocket 形皆经此构造器）。
+    try {
+      const __dc = globalThis.require("node:diagnostics_channel");
+      const __ch = __dc.channel("udp.socket");
+      if (__ch.hasSubscribers) __ch.publish({ socket: this });
+    } catch {}
   }
   bind(...args) {
     // node 口径（test-dgram-bind）：已绑（含绑定窗口）再 bind 同步抛

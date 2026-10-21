@@ -551,12 +551,14 @@ export class ServerResponse extends Writable {
     this.socket.setTimeout(msecs);
     return this;
   }
-  writeInformation(info, headers) {
+  writeInformation(info, headers, callback) {
     let status;
     let hdrs;
+    let cb = typeof callback === "function" ? callback : undefined;
     if (info !== null && typeof info === "object") {
       status = info.statusCode;
       hdrs = info.headers;
+      if (typeof headers === "function" && cb === undefined) cb = headers;
     } else {
       status = info;
       hdrs = headers;
@@ -604,6 +606,8 @@ export class ServerResponse extends Writable {
     try {
       this.__sockWrite(__latin1Bytes(lines.join("\r\n") + "\r\n\r\n"));
     } catch { return false; /* gone */ }
+    // node 口径：cb 在 1xx 落盘后调（异步；information 套件 mustCall 点名）。
+    if (cb !== undefined) queueMicrotask(() => { try { cb(); } catch {} });
     return true;
   }
   // node setHeaders：收 Headers 实例或 Map（setheaders 套件真机实测双形；

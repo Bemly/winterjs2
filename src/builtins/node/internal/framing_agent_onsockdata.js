@@ -105,11 +105,11 @@
               if (__s.__reqSockOnData !== undefined) __s.removeListener("data", __s.__reqSockOnData);
               if (__s.__reqSockOnError !== undefined) __s.removeListener("error", __s.__reqSockOnError);
               if (__s.__reqSockOnEnd !== undefined) __s.removeListener("end", __s.__reqSockOnEnd);
-              if (__s.__agOnEnd !== undefined) { try { __s.removeListener("end", __s.__agOnEnd); } catch {} __s.__agOnEnd = undefined; }
               if (__s.__reqSockOnClose !== undefined) __s.removeListener("close", __s.__reqSockOnClose);
               if (__s.__lastTimeoutCb !== undefined) { try { __s.removeListener("timeout", __s.__lastTimeoutCb); } catch {} __s.__lastTimeoutCb = undefined; }
               if (__s.__agTimeoutSingleton !== undefined) { try { __s.removeListener("timeout", __s.__agTimeoutSingleton); } catch {} }
               if (__s.__freeSockErr !== undefined) { try { __s.removeListener("error", __s.__freeSockErr); } catch {} }
+              if (__s.__agOnFree !== undefined) { try { __s.removeListener("free", __s.__agOnFree); } catch {} __s.__agOnFree = undefined; }
               __s._httpMessage = null;
             } catch { /* 摘除失败不阻隧道 */ }
             // 摘池（101 升级同款：先摘后发；CONNECT 从不入 freeSockets，
@@ -303,6 +303,16 @@
         if (fr.type === "none") {
           this.__res.__complete();
           this.__finishResponse(false);
+          // 管线残留首字节即判（llhttp 增量语义：'H' 开外即 HPE_INVALID_CONSTANT，
+          // 不等行终结；client-parse-error 302+'hi world' 形。干净管线（'H' 开/
+          // 空/换行残留）走既有 re-feed 路径，此处不动）。
+          if (this.__resBuf.length > 0 && this.insecureHTTPParser !== true) {
+            let __i = 0;
+            while (__i + 1 < this.__resBuf.length && this.__resBuf[__i] === 13 && this.__resBuf[__i + 1] === 10) __i += 2;
+            if (__i < this.__resBuf.length && this.__resBuf[__i] !== 72) {
+              this.destroy(__hpe("HPE_INVALID_CONSTANT", "Expected HTTP/, RTSP/ or ICE/"));
+            }
+          }
           return;
         }
         if (fr.type === "close") {
@@ -327,6 +337,15 @@
         if (r.trailersRaw !== undefined) __applyTrailers(this.__res, r.trailersRaw);
         this.__res.__complete();
         this.__finishResponse(false);
+        // 管线残留首字节即判（同 none 分支；CL:0 走 cl 泵到此，client-parse-error
+        // 302+'hi world' 正在此。干净管线走既有 re-feed 路径）。
+        if (this.__resBuf.length > 0 && this.insecureHTTPParser !== true) {
+          let __i = 0;
+          while (__i + 1 < this.__resBuf.length && this.__resBuf[__i] === 13 && this.__resBuf[__i + 1] === 10) __i += 2;
+          if (__i < this.__resBuf.length && this.__resBuf[__i] !== 72) {
+            this.destroy(__hpe("HPE_INVALID_CONSTANT", "Expected HTTP/, RTSP/ or ICE/"));
+          }
+        }
         return;
       }
     }
@@ -340,6 +359,17 @@
       const __once = () => {
         if (__fired) return;
         __fired = true;
+        // node emitFreeNT 口径：正常收齐即排 socket 'free'（nextTick，用户 end
+        // 先行；agent.destroy() 不取消已排 free——keepalive-free 套件）。
+        // 只正常完成才排（complete 门；abort/error 的 close 路径不排）。
+        // 注意只排一次（gate 单发守卫）。
+        if (this.__res !== null && this.__res !== undefined && this.__res.complete === true) {
+          // socket 'free'（node emitFreeNT 口径；nextTick 递延，用户 end 先行；
+          // agent.destroy()/socket.destroy() 不取消已排 free）。agent 级 'free'
+          // 由 agent 侧 onFree 转发（见 __trackSocket），此处不直发。
+          const __fs = sock;
+          process.nextTick(() => { try { __fs.emit("free"); } catch { /* gone */ } });
+        }
         this.__finishSock(sock);
         if (!this.__closeEmitted) {
           this.__closeEmitted = true;
@@ -383,8 +413,7 @@
         // node responseOnEnd 口径：res 收齐（回池/关连前）即摘请求侧三监听
         //（socketOnEnd/socketErrorListener 对应本仓 end/error + close）——
         // 监听数契约：池态 end=1/error=1（agent-keepalive 套件 checkListeners）。
-        // agent 门同步摘（仅剩 socket 自门；隧道 detach 同）。
-        if (sock.__agOnEnd !== undefined) { try { sock.removeListener("end", sock.__agOnEnd); } catch {} sock.__agOnEnd = undefined; }
+        // 请求门同步摘（仅剩 socket 自门；隧道 detach 同）。
         if (sock.__reqSockOnEnd !== undefined) {
           try { sock.removeListener("end", sock.__reqSockOnEnd); } catch { /* gone */ }
           sock.__reqSockOnEnd = undefined;
@@ -426,15 +455,7 @@
           this.timeoutCb = null;
         }
         this.agent.__release(sock, this.__key, this, poolable);
-        try { sock.emit("free"); } catch { /* gone */ }
-        // node installListeners/onFree 口径：socket 'free' 即转 agent 'free'
-        //（additional-options 套件 globalAgent.once('free') 推进轮次；handler
-        // 内 freeSockets 已有键——__release 先行与 node agent 'free' 处理器
-        // 内建池同序）。真入池路才发（__release 内置 __inPool 旗；销毁路
-        // __release 已直毁，node 侧亦由 agent 处理器销毁，不补发）。
-        if (poolable && sock.__inPool === true && !sock.destroyed) {
-          try { this.agent.emit("free", sock, this.__connOpts ?? {}); } catch { /* gone */ }
-        }
+        // socket/agent 'free' 统一由 gate 递延双发（见上；此处直发即双发）。
       } else {
         try { sock.end(); } catch { /* closed meanwhile */ }
       }
@@ -547,17 +568,9 @@
   };
 }
 
-// node lib/_http_agent.js writeAfterFIN 逐字口径：对端 FIN 后写 → EPIPE
-//（'This socket has been ended by the other party'）+ 销毁。由 agent 的
-// onReadableStreamEnd 在非 halfOpen 时置换 socket.write。
-function __writeAfterFIN(chunk, encoding, cb) {
-  if (typeof encoding === "function") { cb = encoding; encoding = null; }
-  const er = new Error("This socket has been ended by the other party");
-  er.code = "EPIPE";
-  try { this.destroy(er); } catch { /* gone */ }
-  if (typeof cb === "function") cb(er);
-  return false;
-}
+// node lib/_http_agent.js writeAfterFIN 逐字口径见 net_socket.js（socket 自门
+// onReadableStreamEnd 内置换；此处不再另挂 agent 监听——parse-error 计数证明
+// agent 另挂即超数，node 的 onReadableStreamEnd 本就是 socket 自身的）。
 
 // Agent keylog 转发补挂（现存 + 后建；socket 侧恰 1，不重复挂）。
 Agent.prototype.__armKeylog = function (only, force) {
@@ -735,7 +748,9 @@ Agent.prototype.__dropIfEmpty = function (map, key) {
   if (map[key] !== undefined && map[key].length === 0) delete map[key];
 };
 Agent.prototype.__liveCount = function (key) {
-  const all = this.__peek(this.sockets, key).filter((s) => !s.destroyed);
+  // node 口径：按表长计（含已 destroy 未 close——槽位留到 close 才释放，
+  // agent-destroyed-socket 套件 req2 排队形；destroyed 即剔除则配额提前空出）。
+  const all = this.__peek(this.sockets, key);
   return all.length;
 };
 // 全局活 socket 数（maxTotalSockets 帽的判定口径；agent-maxtotalsockets 套件
@@ -745,19 +760,7 @@ Agent.prototype.__totalLive = function () {
   for (const key of Object.keys(this.sockets)) n += this.__liveCount(key);
   return n;
 };
-// agent 门装配（track/出池复用共用；摘除点：回池/隧道 detach，见上）。
-// 本体与旧内联一致：FIN 后写 EPIPE 置换 + 池态 EOF 即销毁。
-function __armAgOnEnd(sock) {
-  sock.__agOnEnd = function onReadableStreamEnd() {
-    if (!this.allowHalfOpen) {
-      this.write = __writeAfterFIN;
-    }
-    if (this.__inPool) {
-      this.destroy();
-    }
-  };
-  sock.on("end", sock.__agOnEnd);
-}
+// agent 门装配（track/出池复用共用；socket 自门 onReadableStreamEnd 不由 agent 挂载）。
 Agent.prototype.__trackSocket = function (sock, key) {
   this.__list(this.sockets, key).push(sock);
   this.totalSocketCount++;
@@ -766,10 +769,19 @@ Agent.prototype.__trackSocket = function (sock, key) {
   // 池键随 socket 走（__noteClosed 按 sock.__poolKey 摘表；此前只记 req 侧，
   // 关闭后 sockets/freeSockets 残留——agent-keepalive 套件断言键消失）。
   sock.__poolKey = key;
-  // node 口径：agent 托管 socket 创建即挂 onReadableStreamEnd（active 2；
-  // 回池/隧道摘除后仅剩 socket 自门（池态/detach 1），见 agent-keepalive/cli-sock）。
-  // FIN 后写 → EPIPE（writeAfterFIN 置换，真机 toString 逐字）。
-  __armAgOnEnd(sock);
+  // node installListeners 口径：agent 订阅 socket 'free' 再转 agent 'free'
+  //（additional-options/globalAgent 'free' 推进；agent-destroyed-socket 3 次）。
+  // 去重单挂；detach/close 时摘（见 __noteClosed/隧道 detach）。
+  if (!sock.__agOnFree) {
+    const __ag = this;
+    sock.__agOnFree = function onFree() {
+      try { __ag.emit("free", sock, sock.__connOpts ?? {}); } catch { /* gone */ }
+    };
+    try { sock.on("free", sock.__agOnFree); } catch { /* gone */ }
+  }
+  // node 口径：agent 不另挂 end 监听（socket 自门 onReadableStreamEnd 足矣；
+  // active 2 = 自门 + 请求门，池态/detach 1，见 agent-keepalive/cli-sock）。
+  // FIN 后写 EPIPE 置换由自门内建（net_socket.js）。
   // node agent（installListeners 口径）：onTimeout 单例无条件挂（set-timeout-
   // after-end 套件：无 timeout 的 agent，其 socket 'timeout' 监听数亦为 1）；
   // 超时且 socket 在池即销毁（agent-timeout 块 2：池 socket 不得复用）。
@@ -828,10 +840,15 @@ Agent.prototype.keepSocketAlive = function (sock) {
   }
   return true;
 };
+// node 口径可覆写 reuseSocket（keepalive-override 套件点名调用时机与实参）：
+// 复用池 socket 即调（socket, req）；默认实现 = 出池 + 重 ref（池态 unref）。
+// 用户覆写须调回原实现完成复用（套件即此用法）。
+Agent.prototype.reuseSocket = function (sock, req) {
+  this.__unpool(sock);
+  try { if (typeof sock.ref === "function") sock.ref(); } catch { /* gone */ }
+};
 Agent.prototype.__unpool = function (sock) {
   sock.__inPool = false;
-  // 出池重挂 agent 门（复用 active 回 2；handle 缺席即新建）。
-  if (sock.__agOnEnd === undefined) __armAgOnEnd(sock);
   // 出池即撤投毒 guard + 重挂解析器（node 复用即取新 parser；free 态的 null
   // 只维持到出池，见 __release）。
   try { sock.__freeGuardArmed = false; } catch { /* gone */ }
@@ -865,8 +882,15 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
   if (free !== undefined) {
     while (free.length > 0) {
       const sock = this.scheduling === "fifo" ? free.shift() : free.pop();
-      if (!sock.destroyed) {
-        this.__unpool(sock);
+      // 未排空跳过并销毁（复用门双保险；入池后又被写脏的病态形，真机同拒；
+      // 摘出即失池籍，不毁即泄漏）。
+      if (sock.destroyed) continue;
+      if (typeof sock.writableLength === "number" && sock.writableLength > 0) {
+        try { sock.destroy(); } catch { /* gone */ }
+        continue;
+      }
+      {
+        this.reuseSocket(sock, req);
         this.__list(this.sockets, key).push(sock);
         req.__poolKey = key;
         onSocket(sock, true);
@@ -908,6 +932,12 @@ Agent.prototype.__acquire = function (req, host, port, extra, onSocket) {
       return;
     }
     this.__trackSocket(sock, key);
+    // 替补连接 free 驱动（见 __resumeQueued）：建成就发 socket 'free'
+    //（node removeSocket 口径；分配经既有 onSocket 直调，free 纯可观测）。
+    if (req.__emitFreeOnConnect === true) {
+      req.__emitFreeOnConnect = false;
+      try { sock.emit("free"); } catch { /* gone */ }
+    }
     onSocket(sock, false);
   };
   this.createSocket(req, opts, oncreate);
@@ -930,6 +960,8 @@ Agent.prototype.__noteClosed = function (sock) {
   };
   drop(this.sockets);
   drop(this.freeSockets);
+  // agent 'free' 转发不随 close 摘除（排队中的 socket 'free' 仍须送达；
+  // 僵尸监听随 socket 本体 GC；隧道劫持另行摘除）。
   // 非池化关闭亦须续行排队请求（get-pipeline-problem 套件：maxSockets=1 下
   // 首连接关后排队请求永不到；此前仅回池路径续行）。
   this.__resumeQueued(key);

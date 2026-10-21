@@ -47,9 +47,12 @@ pub(crate) fn spawn_pumps<R, W>(
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 NetCmd::Write(bytes) => {
+                    let __n = bytes.len();
                     if w.write_all(&bytes).await.is_err() {
                         break;
                     }
+                    // 写落盘回执（reuse-drained：writableLength 真实化；JS 侧递减）。
+                    let _ = ev_w.send(NetEvent { id, kind: NetKind::Wrote { n: __n } });
                 }
                 NetCmd::End => {
                     let _ = w.shutdown().await;

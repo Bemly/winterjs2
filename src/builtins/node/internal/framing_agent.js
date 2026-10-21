@@ -725,8 +725,7 @@
             this.agent !== null && this.agent !== undefined) {
           this.__poolOnDestroy = false;
           try {
-            // node 计数口径：回池摘 agent 门（池态 end=1 即 socket 自门；active 2）。
-            if (__s.__agOnEnd !== undefined) { try { __s.removeListener("end", __s.__agOnEnd); } catch {} __s.__agOnEnd = undefined; }
+            // node 计数口径：回池摘请求门（池态 end=1 即 socket 自门；active 2）。
             if (__s.__reqSockOnEnd !== undefined) { try { __s.removeListener("end", __s.__reqSockOnEnd); } catch {} __s.__reqSockOnEnd = undefined; }
             if (__s.__reqSockOnError !== undefined) { try { __s.removeListener("error", __s.__reqSockOnError); } catch {} __s.__reqSockOnError = undefined; }
             if (__s.__reqSockOnClose !== undefined) { try { __s.removeListener("close", __s.__reqSockOnClose); } catch {} __s.__reqSockOnClose = undefined; }

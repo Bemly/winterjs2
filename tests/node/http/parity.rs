@@ -969,3 +969,47 @@ server.listen(0, () => {
     assert!(!out.contains("WATCHDOG"), "deadlock; out:\n{out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn http_multiple_client_error_parity() {
+    // mce 缺口（C 輪转入）：嗅探首字节转交 http 后，两段垃圾各一次 clientError。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "m.mjs",
+        r#"
+import http from "node:http";
+import net from "node:net";
+import assert from "node:assert";
+function socketListener(socket) {
+  const firstByte = socket.read(1);
+  if (firstByte === null) {
+    socket.once("readable", () => socketListener(socket));
+    return;
+  }
+  socket.unshift(firstByte);
+  httpServer.emit("connection", socket);
+}
+const netServer = net.createServer(socketListener);
+const httpServer = http.createServer(() => {});
+const got = [];
+httpServer.on("clientError", (err, socket) => {
+  got.push(`${err.code}|${err.rawPacket.toString()}`);
+  socket.destroy();
+  if (got.length === 2) {
+    console.log("CE1", got[0]);
+    console.log("CE2", got[1]);
+    netServer.close();
+  }
+});
+netServer.listen(0, () => {
+  const socket = net.createConnection(netServer.address().port);
+  socket.on("connect", () => { socket.end("123 http://example.com HTTP/1.1\r\n\r\n"); });
+  socket.resume();
+});
+"#,
+    );
+    assert!(out.lines().any(|l| l == "CE1 HPE_INVALID_METHOD|1"), "out:\n{out}");
+    assert!(out.lines().any(|l| l.starts_with("CE2 HPE_INVALID_METHOD|23 http://example.com")), "out:\n{out}");
+    dir.close().unwrap();
+}

@@ -559,6 +559,22 @@ export function withHttpServer(Base) {
         sock.__httpSockOnClose = () => {
           self.__clearReqTimers(st);
           self.__sockets.delete(sock);
+          // 截断头：FIN/close 到达时仍有未成头残字节（无在途请求）→ clientError
+          // HPE_INVALID_EOF_STATE（parser-finish-error 套件；纯空行残留不算）。
+          try {
+            const __b = st.buf;
+            if ((st.req === null || st.req === undefined) && __b !== undefined && __b !== null && __b.length > 0) {
+              let __ws = true;
+              for (let __i = 0; __i < __b.length; __i++) {
+                if (__b[__i] !== 13 && __b[__i] !== 10 && __b[__i] !== 32 && __b[__i] !== 9) { __ws = false; break; }
+              }
+              if (!__ws) {
+                const __e = __hpeServer("HPE_INVALID_EOF_STATE", "Parse Error", __b.length);
+                st.buf = new Uint8Array(0);
+                try { self.__feedError(sock, __e); } catch { /* 400 通道兜底 */ }
+              }
+            }
+          } catch { /* 取证失败不阻收尾 */ }
           // 连接关闭即释放解析器（单发守卫见 connection 段）+ kOnTimeout 清理
           // （memory-retention 套件：close 后为 null）。
           try { self.__freeSocketParser(sock); } catch { /* gone */ }
@@ -804,6 +820,12 @@ export function withHttpServer(Base) {
         // 默认分支附带 socket 'error'（真机： SockError 先于 431 到达，close
         // hadError=true）——只递送给用户监听（计数含 __httpSockOnError 兜底，
         // 故 >1 才带 err 销毁；仅兜底时递送即 tick 内裸抛走 uncaught fatal）。
+        // MCE 双错：已报告字节即消费（st.buf 清空），否则 close 处理器把同一
+        // 残段再报 EOF（真机仅两 METHOD，无第三 EOF）。下段新片重起解析。
+        try {
+          const __st0 = sock.__httpState;
+          if (__st0 !== undefined && __st0 !== null) __st0.buf = new Uint8Array(0);
+        } catch { /* 取证失败不阻派发 */ }
         this.emit("clientError", e, sock);
         if (this.listenerCount("clientError") === 0) {
           const __hasSockErr = typeof sock.listenerCount === "function" && sock.listenerCount("error") > 1;

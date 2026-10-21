@@ -200,8 +200,24 @@ function __parseHead(headText, mode, maxPairs, __trunc, joinDup) {
   // 重复 Transfer-Encoding 行计数（Test 16：relaxed/strict 下 llhttp 拒收，
   // 仅 lenient 放行；insecure 模式跳过此门）。
   let __teLines = 0;
+  // obs-fold 续行锚（multi-line-headers 套件）：上一正常头的小写名。
+  let __lastLk = null;
   for (const line of lines) {
     if (line === "") continue;
+    const __fc = line.length > 0 ? line.charCodeAt(0) : 0;
+    if ((__fc === 32 || __fc === 9) && __lastLk !== null) {
+      // obs-fold 续行（node lenient 口径：仅 insecureHTTPParser 收，
+      // 单空格连接；strict/relaxed 照旧 HPE）。
+      if (mode !== "lenient") throw __mkParseError("malformed header line");
+      const __cont = line.trim();
+      const __t = headers[__lastLk];
+      if (Array.isArray(__t)) __t[__t.length - 1] += " " + __cont;
+      else if (typeof __t === "string") headers[__lastLk] = __t + " " + __cont;
+      if (rawHeaders.length >= 2) rawHeaders[rawHeaders.length - 1] += " " + __cont;
+      const __dl = headersDistinct[__lastLk];
+      if (Array.isArray(__dl) && __dl.length > 0) __dl[__dl.length - 1] += " " + __cont;
+      continue;
+    }
     const c = line.indexOf(":");
     if (c <= 0) throw __mkParseError("malformed header line");
     // RFC 7230 §3.2.4 / node llhttp 口径：冒号前空格即 HPE 拒收（走私向量；
@@ -263,6 +279,7 @@ function __parseHead(headText, mode, maxPairs, __trunc, joinDup) {
       headers[lk] = `${headers[lk]}, ${v}`;
     }
     // else：单值表首个赢，后续丢弃（rawHeaders 照收）。
+    __lastLk = lk;
   }
   return { first, headers, rawHeaders, headersDistinct };
 }
@@ -632,7 +649,8 @@ export class IncomingMessage extends Readable {
   set client(v) { this.socket = v; }
   // node lib/_http_incoming.js _addHeaderLine（matchKnownFields 套件）：
   // 单例首个赢（含 undefined 占位）、set-cookie 数组、cookie '; '、其余 ', '。
-  // dest 缺席即落自身 headers（内部复用）。
+  // joinDuplicateHeaders:true 压过单值表（authorization 合并形），cookie/
+  // set-cookie 仍走各自通道。dest 缺席即落自身 headers（内部复用）。
   _addHeaderLine(field, value, dest) {
     const target = dest ?? this.headers;
     const lk = String(field).toLowerCase();
@@ -641,7 +659,7 @@ export class IncomingMessage extends Readable {
       target[lk].push(value);
       return;
     }
-    if (__SINGLETON_HEADERS.has(lk)) {
+    if (__SINGLETON_HEADERS.has(lk) && !this.joinDuplicateHeaders) {
       if (!Object.prototype.hasOwnProperty.call(target, lk)) target[lk] = value;
       return;
     }

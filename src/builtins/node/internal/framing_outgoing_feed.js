@@ -93,6 +93,20 @@
             req.headersDistinct = headersDistinct;
           req.socket = sock;
           req.connection = sock;
+          // node parser.incoming 口径（server-keepalive-end 套件）：派发即指向
+          // 本 req；req 'end' 后递延清零（'end' 内断言仍见 req，nextTick 后为
+          // null——clearIncoming 同款。once 自摘，不污染 listenerCount 断言）。
+          try {
+            if (sock.parser !== undefined && sock.parser !== null) {
+              sock.parser.incoming = req;
+              req.once("end", () => {
+                const __p = sock.parser;
+                process.nextTick(() => {
+                  try { if (__p !== undefined && __p !== null && __p.incoming === req) __p.incoming = null; } catch { /* gone */ }
+                });
+              });
+            }
+          } catch { /* gone */ }
           // 背压恢复钩（node IncomingMessage._read → readStart 口径）：消费端
           // 拉数据即解暂停续读（__feed 置 st.__reqPaused 后在此恢复；
           // no-read-no-dump 流控面——只 pause 不恢复即永不续读）。
@@ -387,6 +401,11 @@
             } catch (e) {
               process.nextTick(() => { throw e; });
             }
+            // llhttp abort-on-freeParser 口径（parser-freed-during-execute 套件）：
+            // handler 内同步关 socket（close→释解析器/destroy）即停，管线余段
+            // 不再解析（node：同一 execute 内余消息被弃）。释旗在 317 行刚清零，
+            // 此处真即用户关所致；正常形（res.end 异步收尾）不受影响。
+            if (sock.destroyed || sock.__parserFreed === true) return;
           } else {
             // 417 默认路径：响应立即收尾；后续体字节走丢弃泵（st.req 为 null）。
             res.end();
@@ -732,9 +751,14 @@ export function withClientRequest(openSocket, flavor) {
       this.__validation = options.httpValidation ?? (options.insecureHTTPParser === true || __cliInsecDefault ? "insecure" : undefined);
       this.insecureHTTPParser = options.insecureHTTPParser ?? __cliInsecDefault;
       this.socket = null;
-      this.agent = options.agent === undefined
-        ? (typeof flavor.__getDefaultAgent === "function" ? flavor.__getDefaultAgent() : (flavor.defaultAgent ?? null))
-        : (options.agent || null);
+      // node 口径（lib/_http_client.js）：显式 createConnection 且无显式 agent
+      // 即不挂默认 agent（sync-write-error 套件：Connection: close）——
+      // 池化无从谈起，直建直连。
+      this.agent = (options.agent === undefined || options.agent === null) && typeof options.createConnection === "function"
+        ? null
+        : (options.agent === undefined
+          ? (typeof flavor.__getDefaultAgent === "function" ? flavor.__getDefaultAgent() : (flavor.defaultAgent ?? null))
+          : (options.agent || null));
       this.__agentFalse = options.agent === false;
       this.__defaultPort = this.agent !== null && this.agent.defaultPort !== undefined
         ? this.agent.defaultPort : flavor.defaultPort;

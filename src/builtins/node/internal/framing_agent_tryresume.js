@@ -7,6 +7,10 @@ Agent.prototype.__resumeQueued = function (key) {
       const next = q.shift();
       if (next.req.destroyed) continue;
       next.req.__queued = false;
+      // node removeSocket 口径：关闭腾位后为排队请求建替补连接，
+      // 建成即在其上发 'free'（替补分配驱动；agent-destroyed-socket 套件
+      // free×3 的第 2 个——res1-end/销毁后、req2 派发前）。
+      next.req.__emitFreeOnConnect = true;
       this.__acquire(next.req, next.host, next.port, next.extra, next.onSocket);
       this.__dropIfEmpty(this.requests, k);
       return true;
@@ -21,21 +25,39 @@ Agent.prototype.__resumeQueued = function (key) {
     }
   }
 };
+// node 口径：槽位留到 'close' 才释放（destroy 不同步摘表；close 前的新请求
+// 照旧排队——agent-destroyed-socket 套件 req2 排队形；totalSocketCount 亦
+// 只在 close 时减，见 __noteClosed）。close 已发生的直接结算（cleaner 永不
+// 触发即泄漏）；on 挂载失败即直接结算。
+Agent.prototype.__noteClosedOnClose = function (sock) {
+  if (sock.destroyed && (sock.readyState === "closed" || sock.closed === true)) {
+    this.__noteClosed(sock);
+    return;
+  }
+  if (sock.__poolCleaner !== undefined) return;
+  const cleaner = () => this.__noteClosed(sock);
+  sock.__poolCleaner = cleaner;
+  try { sock.on("close", cleaner); } catch { this.__noteClosed(sock); }
+};
 Agent.prototype.__release = function (sock, key, req, poolable = true) {
   if (req !== null && req !== undefined) req.__queued = false;
   // node responseKeepAlive 口径：响应 Connection: close 即销毁不回池
   //（get-pipeline-problem 套件：close 响应入池后复用撞对端 FIN，次请求
   // ECONNRESET；此前 poolable 只门 freeSockErr，入池本身无门）。
-  if (sock.destroyed || !this.keepAlive || poolable === false) {
+  // 未排空不回池（agent-reuse-drained-socket 套件：64MB 在途写的 socket
+  // 不得复用——复用即新老请求字节交织；真机新 socket 另起）。
+  // 注意判活写计数（writableLength>0），禁 destroy 误杀已排空者。
+  const __undrained = typeof sock.writableLength === "number" && sock.writableLength > 0;
+  if (sock.destroyed || !this.keepAlive || poolable === false || __undrained) {
     if (!sock.destroyed) {
       try { sock.destroy(); } catch { /* gone */ }
     }
-    this.__noteClosed(sock);
+    this.__noteClosedOnClose(sock);
     } else {
       const free = this.__list(this.freeSockets, key);
       if (free.length >= this.maxFreeSockets) {
         try { sock.destroy(); } catch { /* gone */ }
-        this.__noteClosed(sock);
+        this.__noteClosedOnClose(sock);
       } else {
         // node 口径：入池前调可覆写的 keepSocketAlive（false 即销毁不池化；
         // 默认实现做 TCP keepalive + unref + 空闲计时重置；CustomAgent 覆写
@@ -47,7 +69,7 @@ Agent.prototype.__release = function (sock, key, req, poolable = true) {
         } catch { __keep = false; }
         if (__keep === false) {
           try { sock.destroy(); } catch { /* gone */ }
-          this.__noteClosed(sock);
+          this.__noteClosedOnClose(sock);
         } else {
         sock.__inPool = true;
         // node 口径：回池即 detach 解析器 + 武装空闲投毒 guard（free-socket-
@@ -100,12 +122,17 @@ Agent.prototype.addRequest = function (req, options, port, localAddress) {
   const free = this.freeSockets[name];
   let sock;
   if (free) {
-    while (free.length > 0 && free[0].destroyed) free.shift();
+    // 毁坏/未排空皆跳过（drained 复用门；addRequest 直调路与 agent 复用路同规）。
+    while (free.length > 0 && (free[0].destroyed ||
+        (typeof free[0].writableLength === "number" && free[0].writableLength > 0))) {
+      const __bad = this.scheduling === "fifo" ? free.shift() : free.pop();
+      try { __bad.destroy(); } catch { /* gone */ }
+    }
     sock = this.scheduling === "fifo" ? free.shift() : free.pop();
     if (free.length === 0) delete this.freeSockets[name];
   }
   if (sock) {
-    this.__unpool(sock);
+    this.reuseSocket(sock, req);
     this.__list(this.sockets, name).push(sock);
     req.__poolKey = name;
     req.__queued = false;

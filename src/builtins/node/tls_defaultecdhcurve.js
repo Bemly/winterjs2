@@ -57,10 +57,13 @@ const __api = {
   DEFAULT_CIPHERS, CLIENT_RENEG_LIMIT, CLIENT_RENEG_WINDOW,
 };
 // node 口径：rootCertificates 为只读访问器（赋值在严格模式抛 TypeError，root-certificates 套件）。
+// 另案缺口：本仓 .cjs 暂不认 "use strict" prologue（sloppy 下 getter-only 赋值静默吞，
+// 此处显式 setter 抛同款 TypeError 保可观测一致；CJS 严格模式整体归 module lane）。
 Object.defineProperty(__api, "rootCertificates", {
   __proto__: null,
   configurable: false,
   enumerable: true,
   get: () => rootCertificates,
+  set: () => { throw new TypeError('Cannot set property rootCertificates of #<Object> which has only a getter'); },
 });
 export default __api;

@@ -48,6 +48,23 @@ function __netErr(code, msg) {
   e.code = code;
   return e;
 }
+// node lib/_http_agent.js writeAfterFIN 逐字口径（原 agent 挂载，现 socket 自门）：
+// 对端 FIN 后写 → EPIPE（'This socket has been ended by the other party'）+ 销毁。
+// 已销毁优先抛 DESTROYED（write() 同序；epipe 黑盒 close 后同步写点名）。
+function __writeAfterFIN(chunk, encoding, cb) {
+  if (typeof encoding === "function") { cb = encoding; encoding = null; }
+  if (this.destroyed) {
+    const e2 = new Error("Cannot call write after a stream was destroyed");
+    e2.code = "ERR_STREAM_DESTROYED";
+    if (typeof cb === "function") { queueMicrotask(() => { try { cb.call(this, e2); } catch {} }); return false; }
+    throw e2;
+  }
+  const er = new Error("This socket has been ended by the other party");
+  er.code = "EPIPE";
+  try { this.destroy(er); } catch { /* gone */ }
+  if (typeof cb === "function") cb(er);
+  return false;
+}
 
 class Socket extends EventEmitter {
   constructor(options) {
@@ -152,12 +169,15 @@ class Socket extends EventEmitter {
     this.__connected = false;   // 完成连接（connect/attach 后 true）
     this.__pendW = [];          // 连接完成前的缓冲写（node write 语义）
     // Node 默认 allowHalfOpen=false：收到远端 FIN（'end'）后自动 end 本端。
-    // no-halfopen-enforcer 套件：内部 end 门常驻（listenerCount恒1，构造期首挂，
-    // 用户监听之后触发——node 真机序）。自动收尾走完整 end() 语义
-    // （allow-half-open 套件：无显式 end 亦发 finish；标志递延一拍，
-    // 'end' 处理器内 writable 仍真，写仍放行）。
+    // node 口径 onReadableStreamEnd（socket 自门，非 agent 挂载——parse-error/
+    // agent-keepalive 计数：新鲜/池态 end=1，请求在途 end=2；agent 另挂即超数）。
+    // 自动收尾走完整 end() 语义（allow-half-open 套件：无显式 end 亦发 finish；
+    // 标志递延一拍，'end' 处理器内 writable 仍真，写仍放行）+ FIN 后写 EPIPE 置换。
     this.allowHalfOpen = !!(options && options.allowHalfOpen);
-    this.on("end", () => {
+    this.on("end", function onReadableStreamEnd() {
+      if (!this.allowHalfOpen) {
+        this.write = __writeAfterFIN;
+      }
       if (!this.allowHalfOpen && this.__id && !this.destroyed && !this.__ended) {
         try { this.__nativeEnd(); } catch {}
         // 注：必须经 setImmediate 递延——本仓 I/O 回调内 queueMicrotask 晚于
@@ -217,26 +237,21 @@ class Socket extends EventEmitter {
       ? Number(options.readableHighWaterMark ?? options.highWaterMark) || 0 : 65536;
     this.__pendBytes = 0;
     // socket 写队列记账（Slice C：reuse-drained 套件要 socket.writableLength
-    // 可观测——同步落盘 + microtask 排空 + HWM 累计判定 + 背压后 'drain'；
-    // 原生写本身同步（内核缓冲），记账层只管可观测语义，传输不动）。
+    // 可观测——落盘回执（Rust write_all 完成发 Wrote）递减 + HWM 累计判定 +
+    // 背压后 'drain'；旧 microtask 清零系伪语义（大写恒 0），传输不动）。
     this.__sockQ = 0;
     this.__needSockDrain = false;
-    this.__sockQFlush = null;
     this.__sockQAdd = (n) => {
       this.__sockQ = (this.__sockQ ?? 0) + n;
       if (this.__sockQ > this._writableState.highWaterMark) this.__needSockDrain = true;
-      if (this.__sockQFlush === null || this.__sockQFlush === undefined) {
-        this.__sockQFlush = true;
-        queueMicrotask(() => {
-          this.__sockQFlush = null;
-          this.__sockQ = 0;
-          if (this.__needSockDrain) {
-            this.__needSockDrain = false;
-            if (!this.destroyed) { try { this.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
-          }
-        });
-      }
       return this.__sockQ < this._writableState.highWaterMark;
+    };
+    this.__sockQDrain = (n) => {
+      this.__sockQ = Math.max(0, (this.__sockQ ?? 0) - n);
+      if (this.__sockQ === 0 && this.__needSockDrain) {
+        this.__needSockDrain = false;
+        if (!this.destroyed) { try { this.emit("drain"); } catch { /* 监听抛错不阻收尾 */ } }
+      }
     };
     // _writableState 最小桩：HWM 存储随套件可变（response-drain-cork 套件
     // `socket._writableState.highWaterMark = 1000` 后 res 侧经
@@ -252,10 +267,22 @@ class Socket extends EventEmitter {
     // 真机缓冲至读；冲刷见 __flushData + newListener 钩）。
     this.__dataBuf = [];
     this.__flushData = () => {
-      while (this.__dataBuf.length > 0) {
+      // MCE 双 clientError（嗅探首字节转交 http 后两段垃圾各一次）：
+      // 首段 data 派发中用户同步 destroy 会清 __dataBuf，若 while 直读即丢
+      // 已缓冲次段（真机次段照发）。快照 pending，destroy 清空只影响新数组，
+      // 在途次段照发；destroy 前无派发（buffer 未快照）仍丢弃（纯 net 探针对齐）。
+      while (true) {
         if (typeof this.listenerCount !== "function" || this.listenerCount("data") === 0) return;
-        const __u = this.__dataBuf.shift();
-        try { this.emit("data", this.__dec ? this.__dec.write(__u) : Buffer.from(__u)); } catch { /* 监听抛错不阻收尾 */ }
+        const __pending = this.__dataBuf.splice(0);
+        if (__pending.length === 0) return;
+        for (let __i = 0; __i < __pending.length; __i++) {
+          if (typeof this.listenerCount !== "function" || this.listenerCount("data") === 0) {
+            this.__dataBuf.unshift(...__pending.slice(__i));
+            return;
+          }
+          const __u = __pending[__i];
+          try { this.emit("data", this.__dec ? this.__dec.write(__u) : Buffer.from(__u)); } catch { /* 监听抛错不阻收尾 */ }
+        }
       }
     };
     this.on("newListener", (__evName) => {

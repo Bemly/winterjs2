@@ -259,7 +259,7 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             ("__wjs2_fs_chown", Some(node::fs::fs_chown), 3),
             ("__wjs2_fs_lchown", Some(node::fs::fs_lchown), 3),
             #[cfg(target_os = "macos")]
-            ("__wjs2_fs_lchmod", Some(node::fs::fs_lchmod), 2),
+            ("__wjs2_fs_lchmod", Some(node::fs_fd::fs_lchmod), 2),
             ("__wjs2_fs_fchown", Some(node::fs::fs_fchown), 3),
             ("__wjs2_fs_futimes", Some(node::fs::fs_futimes), 3),
             ("__wjs2_fs_fsync", Some(node::fs::fs_fsync), 2),

@@ -595,7 +595,8 @@ pub unsafe extern "C" fn umask(
     #[cfg(unix)]
     {
         let set = frame.argc() >= 1 && frame.arg(0).is_number();
-        let mask = if set { frame.arg(0).to_number() as u16 } else { 0 };
+        // mode_t 双平台：macOS u16 / Linux u32（直转 libc::mode_t，两边同形）。
+        let mask = if set { frame.arg(0).to_number() as libc::mode_t } else { 0 };
         // libc umask 回旧值：读时先取后恢复，两路都回调用前的值。
         //（10f 修：旧写法回的是第二次调用前的值，读恒得 0。）
         let prev = unsafe { libc::umask(if set { mask } else { 0 }) };

@@ -135,7 +135,12 @@ pub unsafe extern "C" fn setgroups(
             }
         }
         // SAFETY: gids 存活到调用返回；errno 当场取。
-        if unsafe { libc::setgroups(gids.len() as libc::c_int, gids.as_ptr()) } == 0 {
+        // setgroups 首参双平台：Apple 系 c_int / Linux 系 size_t（直传 len，两边同形）。
+        #[cfg(target_vendor = "apple")]
+        let r = unsafe { libc::setgroups(gids.len() as libc::c_int, gids.as_ptr()) };
+        #[cfg(not(target_vendor = "apple"))]
+        let r = unsafe { libc::setgroups(gids.len(), gids.as_ptr()) };
+        if r == 0 {
             frame.set_rval(mozjs::jsval::Int32Value(0));
         } else {
             let e = -std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EPERM);

@@ -783,14 +783,13 @@ pub unsafe extern "C" fn fs_mkdtemp(
 
 pub use super::fs_fd::{
     fs_access, fs_chmod, fs_chown, fs_close, fs_fchmod, fs_fchown, fs_fstat, fs_fsync,
-    fs_ftruncate, fs_futimes, fs_lchmod, fs_lchown, fs_link, fs_lutimes, fs_open,
+    fs_ftruncate, fs_futimes, fs_lchown, fs_link, fs_lutimes, fs_open,
     fs_read_fd, fs_read_link, fs_symlink, fs_truncate, fs_utimes, fs_write_fd,
 };
 pub use super::fs_watch::{
     WatchEvent, dispatch, glob_match, watch_close,
     watch_persistent, watch_start,
 };
-
 
 /// `__wjs2_fs_unlink(path)`（`rm` 子集，单文件）。
 pub unsafe extern "C" fn fs_unlink(

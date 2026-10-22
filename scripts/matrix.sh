@@ -2,8 +2,10 @@
 # 本机 10-target 编译矩阵（plan Phase 0/8 验收；可原样搬进 GitHub Actions）。
 #
 # 每列两级：
-#   tree  —— §2 特性门控红线审计：`cargo tree -i aws-lc-rs / native-tls / openssl`
-#            必须为空（配错 feature 把 ✅ 变 ⚠️/❌ 的最终证明）。
+#   tree  —— §2 特性门控红线审计：`cargo tree -i aws-lc-rs / aws-lc-sys / native-tls`
+#            必须为空（配错 feature 把 ✅ 变 ⚠️/❌ 的最终证明）；
+#            `openssl` 为 2026-10-21 DH prime_gen 例外（用户拍板）：允许 winterjs2
+#            直引，禁进 TLS 链（反查父须仅 winterjs2，无 reqwest/rustls 中间父）。
 #   check —— `cargo check --target <t>`：全依赖在该 target 的 cfg/特性下可编译
 #            （含 mozjs_sys 按 TARGET 下载 servo release 预构建引擎）。
 #
@@ -30,7 +32,7 @@ fail=0
 for t in $TARGETS; do
     echo "=== [$t] tree audit ==="
     banned=""
-    for pkg in aws-lc-rs aws-lc-sys native-tls openssl; do
+    for pkg in aws-lc-rs aws-lc-sys native-tls; do
         # -i 按反查：命中即违规（输出非空 = 该包进了依赖闭包）
         if cargo tree --target "$t" -i "$pkg" >/dev/null 2>&1; then
             echo "  ✗ $pkg FOUND in tree"
@@ -39,6 +41,23 @@ for t in $TARGETS; do
             echo "  ✓ no $pkg"
         fi
     done
+    # openssl 例外：必须存在且仅 winterjs2 直引（禁 TLS 链中间父）。
+    if openssl_rev=$(cargo tree --target "$t" -i openssl 2>/dev/null); then
+        if echo "$openssl_rev" | grep -q "winterjs2"; then
+            if echo "$openssl_rev" | grep -Eq "reqwest|rustls|hyper|tokio-rustls|native-tls"; then
+                echo "  ✗ openssl in TLS chain"
+                banned="$banned openssl-tls-chain"
+            else
+                echo "  ✓ openssl direct-only (DH) "
+            fi
+        else
+            echo "  ✗ openssl unexpected parent"
+            banned="$banned openssl-parent"
+        fi
+    else
+        echo "  ✗ openssl MISSING (DH base requires direct dep)"
+        banned="$banned openssl-missing"
+    fi
     if [ -n "$banned" ]; then
         echo "=== [$t] TREE AUDIT FAILED:$banned ==="
         fail=1

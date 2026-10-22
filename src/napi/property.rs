@@ -27,14 +27,16 @@ const NAPI_GENERIC_FAILURE: napi_status = sys::napi_status_napi_generic_failure;
 /// 口径 = Object.defineProperty 默认：默认全否，按位解禁。
 /// napi_static（1024）不在此处理（define_class 拆分放置目标）。
 pub(crate) fn attrs_to_js(attrs: u32) -> u32 {
+    // bindgen 枚举整数符号分平台：宿主 u32 / msvc i32（win 轮实证），统一 as u32
+    //（宿主侧无操作恒等，不引入 cfg 分支）。
     let mut f = (JSPROP_READONLY | JSPROP_PERMANENT) as u32;
-    if attrs & sys::napi_property_attributes_napi_writable != 0 {
+    if attrs & sys::napi_property_attributes_napi_writable as u32 != 0 {
         f &= !JSPROP_READONLY as u32;
     }
-    if attrs & sys::napi_property_attributes_napi_enumerable != 0 {
+    if attrs & sys::napi_property_attributes_napi_enumerable as u32 != 0 {
         f |= JSPROP_ENUMERATE as u32;
     }
-    if attrs & sys::napi_property_attributes_napi_configurable != 0 {
+    if attrs & sys::napi_property_attributes_napi_configurable as u32 != 0 {
         f &= !JSPROP_PERMANENT as u32;
     }
     f
@@ -85,7 +87,7 @@ pub(crate) unsafe fn define_one(
                 return st;
             }
             let val = e(env).get(fnv);
-            return define_value(cx, obj_v, &name, val, attrs_to_js(d.attributes));
+            return define_value(cx, obj_v, &name, val, attrs_to_js(d.attributes as u32));
         }
         if d.getter.is_some() || d.setter.is_some() {
             return define_accessor(env, cx, obj_v, &name, d);
@@ -96,7 +98,7 @@ pub(crate) unsafe fn define_one(
         } else {
             e(env).get(d.value)
         };
-        define_value(cx, obj_v, &name, val, attrs_to_js(d.attributes))
+        define_value(cx, obj_v, &name, val, attrs_to_js(d.attributes as u32))
     }
 }
 

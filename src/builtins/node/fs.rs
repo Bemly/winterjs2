@@ -479,6 +479,7 @@ pub unsafe extern "C" fn fs_mkdir(
     // mode（mkdir-mode-mask 套件：0o644|0o10000 的高位由内核掩掉，原样传）；
     // recursive 建链 std 不带 mode——链上默认位、叶目录事后 set_permissions
     //（node recursive 口径：mode 生效于新建目录，链上目录取默认）。
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let mode = if frame.argc() > 2 && frame.arg(2).is_number() {
         frame.arg(2).to_number() as u32
     } else {
@@ -783,7 +784,7 @@ pub unsafe extern "C" fn fs_mkdtemp(
 
 pub use super::fs_fd::{
     fs_access, fs_chmod, fs_chown, fs_close, fs_fchmod, fs_fchown, fs_fstat, fs_fsync,
-    fs_ftruncate, fs_futimes, fs_lchown, fs_link, fs_lutimes, fs_open,
+    fs_ftruncate, fs_futimes, fs_link, fs_open,
     fs_read_fd, fs_read_link, fs_symlink, fs_truncate, fs_utimes, fs_write_fd,
 };
 pub use super::fs_watch::{

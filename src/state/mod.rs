@@ -918,6 +918,7 @@ pub fn napi_pending() -> usize {
 /// `pipes_expected/done` 保证残留输出先于 Exited 送达，见 child.rs）。
 pub struct ChildEntry {
     pub child: tokio::process::Child,
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub detached: bool,
     pub stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::builtins::node::child::StdinCmd>>,
     pub pipes_expected: u8,

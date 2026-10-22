@@ -209,6 +209,7 @@ pub unsafe extern "C" fn net_connect(
     } else {
         None
     };
+    #[cfg_attr(not(unix), allow(unused_variables))]
     if let Some(sock_path) = path_uds {
         // UDS：仅 unix；win 下 tokio UnixStream 不可用 → 直接 Error+Close 事件。
         #[cfg(unix)]
@@ -424,6 +425,7 @@ pub unsafe extern "C" fn net_listen(
     // listen path 形：frame.arg(1) 恒 "UDS:<path>[\n<modeBits>]" 标记（JS __doListen 约定；
     // modeBits 含 r 即 readableAll（0044），含 w 即 writableAll（0022），基 0600）。
     if let Some(rest) = host.strip_prefix("UDS:") {
+        #[cfg_attr(not(unix), allow(unused_variables))]
         let (sock_path, mode_bits) = match rest.split_once('\n') {
             Some((p, m)) => (p.to_string(), m.to_string()),
             None => (rest.to_string(), String::new()),
@@ -433,6 +435,7 @@ pub unsafe extern "C" fn net_listen(
             return false;
         };
         set_rval_str(&mut cx, &frame, &id2.to_string());
+        #[cfg_attr(not(unix), allow(unused_mut, unused_variables))]
         let mut cmd_rx2 = state::net_socket_add(id2, target);
         #[cfg(unix)]
         {
@@ -652,11 +655,21 @@ pub unsafe extern "C" fn net_listen(
             SyncPre::No => if reuse {
             let addr_str = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
             bind_tcp_reuseport(addr_str.as_str()).and_then(|l| {
-                use std::os::fd::{FromRawFd, IntoRawFd};
-                l.set_nonblocking(true)?;
-                // SAFETY(tokio 契约)：std listener 非阻塞 + 本 runtime 线程内接管。
-                let std_listener = unsafe { std::net::TcpListener::from_raw_fd(l.into_raw_fd()) };
-                tokio::net::TcpListener::from_std(std_listener)
+                // non-unix 版 bind_tcp_reuseport 直接回绑好的 std listener；
+                // unix 版回裸 fd（经 from_raw_fd 接管，见 net.rs）。
+                #[cfg(unix)]
+                {
+                    use std::os::fd::{FromRawFd, IntoRawFd};
+                    l.set_nonblocking(true)?;
+                    // SAFETY(tokio 契约)：std listener 非阻塞 + 本 runtime 线程内接管。
+                    let std_listener = unsafe { std::net::TcpListener::from_raw_fd(l.into_raw_fd()) };
+                    tokio::net::TcpListener::from_std(std_listener)
+                }
+                #[cfg(not(unix))]
+                {
+                    l.set_nonblocking(true)?;
+                    tokio::net::TcpListener::from_std(l)
+                }
             })
         } else {
             tokio::net::TcpListener::bind((host.as_str(), port as u16)).await
@@ -859,6 +872,7 @@ pub unsafe extern "C" fn net_dup_listen(
 ) -> bool {
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let Some(id) = opt_num(&frame, 0) else {
         report_error(&mut cx, "TypeError: dup_listen: id must be a number");
         return false;

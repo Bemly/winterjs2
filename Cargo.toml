@@ -275,7 +275,8 @@ dirs = "7"
 sysinfo = "0.39"
 if-addrs = "0.15"
 mac_address = "1"
-uzers = "0.12"
+# libc 直引（纯 FFI 声明，无 C；unix 长用 + win 轮 dgram/fs/process 直引，用点各 cfg 门控）
+libc = "0.2"
 sys-locale = "0.3"
 fs-err = "3"
 remove_dir_all = "1"
@@ -373,10 +374,10 @@ shiguredo_mp4 = { git = "https://github.com/shiguredo/mp4-rs", tag = "2026.6.0-c
 # ── 平台专用行（§8 矩阵 ❌ 的按 cfg 门控）───────────────────────────────
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["process", "signal", "fs", "ioctl", "term"] }  # 10c（2026-09-15 用户拍板）：tty winsize（TIOCGWINSZ）；空依赖列表，零新 crate；term：setRawMode 真标志（同 crate 开特性，零新 crate）
-# 10c（2026-09-15 用户拍板）：TIOCGWINSZ ioctl 的类型与常量（纯 FFI，无代码；unix-only 用）
-# 版本走 0.2（与锁内 0.2.189 同线，零新增传递依赖）
-libc = "0.2"
-
+# 10c（2026-09-15 用户拍板）：TIOCGWINSZ ioctl 的类型与常量（纯 FFI，无代码）
+# 版本走 0.2（与锁内 0.2.189 同线，零新增传递依赖）；win 轮回公共区（dgram/fs/process 等直引，unix 门控在用点）
+# os.user（unix 面 getuid/getgid 查名；Windows 面走 USERNAME/env 记档，不用它）
+uzers = "0.12"
 
 
 [target.'cfg(windows)'.dependencies]

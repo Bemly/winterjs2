@@ -74,6 +74,7 @@ fn cred_set_id(
     }
 }
 
+#[cfg(unix)]
 macro_rules! cred_set_native {
     ($name:ident, $is_user:expr, $call:expr) => {
         pub unsafe extern "C" fn $name(

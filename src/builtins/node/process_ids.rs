@@ -26,10 +26,23 @@ macro_rules! ids_native {
         }
     };
 }
+#[cfg(unix)]
 ids_native!(getuid, unsafe { libc::getuid() });
+#[cfg(unix)]
 ids_native!(getgid, unsafe { libc::getgid() });
+#[cfg(unix)]
 ids_native!(geteuid, unsafe { libc::geteuid() });
+#[cfg(unix)]
 ids_native!(getegid, unsafe { libc::getegid() });
+// Windows 无 uid/gid 语义：回 u32::MAX（= -1，与 os_user 的 -1 记档一致）。
+#[cfg(not(unix))]
+ids_native!(getuid, u32::MAX);
+#[cfg(not(unix))]
+ids_native!(getgid, u32::MAX);
+#[cfg(not(unix))]
+ids_native!(geteuid, u32::MAX);
+#[cfg(not(unix))]
+ids_native!(getegid, u32::MAX);
 
 /// `__wjs2_process_getgroups()` → group id 数组（node 口径：缺 egid 即补）。
 pub unsafe extern "C" fn getgroups(
@@ -40,6 +53,7 @@ pub unsafe extern "C" fn getgroups(
     // SAFETY: 引擎回调提供的 raw cx 有效
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut ids: Vec<i32> = Vec::new();
     #[cfg(unix)]
     {

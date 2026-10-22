@@ -880,6 +880,7 @@ pub unsafe extern "C" fn stdio_istty(
 /// 标准输入，本仓永不关闭它；若宿主关了它，fcntl/read 只回 EBADF（→"E"），
 /// 不解引用，只是整数传递，无实际 UB 风险。
 /// JS 侧 setInterval 轮询（refed，EOF 自停）——无运行时改动，供 stdin data/end。
+#[cfg(unix)]
 pub unsafe extern "C" fn stdin_poll(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -925,6 +926,21 @@ pub unsafe extern "C" fn stdin_poll(
         }
         Err(_) => set_rval_str(&mut cx, &frame, "E"),
     }
+    true
+}
+
+/// Windows 版 stdin 轮询桩：控制台句柄非 fd 语义，nonblock 轮询另案；
+/// 回空串（EAGAIN 语义：暂无数据），EOF/EPIPE 由上层另行判定。
+#[cfg(not(unix))]
+pub unsafe extern "C" fn stdin_poll(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let _ = (cx_raw, argc, vp);
+    set_rval_str(&mut cx, &frame, "");
     true
 }
 

@@ -130,19 +130,22 @@ fn net_rst_quiet() -> &'static Mutex<HashMap<u64, bool>> {
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 记录 TCP 原始 fd（resetAndDestroy 发 RST 用；connect/accept 成功点）。
+/// 记录 TCP 原始 fd（resetAndDestroy 发 RST 用；connect/accept 成功点；仅 unix）。
+#[cfg(unix)]
 pub fn net_fd_record(id: u64, fd: i32) {
     if let Ok(mut m) = net_rst_fds().lock() {
         m.insert(id, fd);
     }
 }
 
-/// 取出并摘除 TCP fd（reset 一次性；兼防 fd 号复用误伤）。
+/// 取出并摘除 TCP fd（reset 一次性；兼防 fd 号复用误伤；仅 unix）。
+#[cfg(unix)]
 pub fn net_fd_take(id: u64) -> Option<i32> {
     net_rst_fds().lock().ok().and_then(|mut m| m.remove(&id))
 }
 
-/// 置 RST 静默位（读端 EBADF 不发 Error，只走 Close 收尾）。
+/// 置 RST 静默位（读端 EBADF 不发 Error，只走 Close 收尾）；仅 unix。
+#[cfg(unix)]
 pub fn net_reset_quiet(id: u64) {
     if let Ok(mut m) = net_rst_quiet().lock() {
         m.insert(id, true);
@@ -178,7 +181,8 @@ fn net_srv_key(id: u64) -> (u64, u64) {
     (session_seq(), id)
 }
 
-/// 记录 server 监听 fd。
+/// 记录 server 监听 fd（仅 unix；调用点已同门控）。
+#[cfg(unix)]
 pub fn net_srv_fd_record(id: u64, fd: i32) {
     if let Ok(mut m) = net_srv_fds().lock() {
         m.insert(net_srv_key(id), fd);

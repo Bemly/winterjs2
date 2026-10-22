@@ -14,6 +14,7 @@ fn fd_table() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<i32, 
         std::sync::OnceLock::new();
     let table = TABLE
         .get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut t = table.lock().unwrap();
     #[cfg(unix)]
     if t.is_empty() {
@@ -116,12 +117,26 @@ pub unsafe extern "C" fn fs_symlink(
     let Some(path) = arg_path_checked(&mut cx, &frame, 1, "symlink", PermClass::Write) else {
         return false;
     };
-    match std::os::unix::fs::symlink(&target, &path) {
-        Ok(()) => true,
-        Err(e) => {
-            report_io(&mut cx, "symlink", &path, e);
-            false
+    #[cfg(unix)]
+    {
+        match std::os::unix::fs::symlink(&target, &path) {
+            Ok(()) => true,
+            Err(e) => {
+                report_io(&mut cx, "symlink", &path, e);
+                false
+            }
         }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (&target, &path);
+        report_io(
+            &mut cx,
+            "symlink",
+            &path,
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "symlink not implemented on this platform"),
+        );
+        false
     }
 }
 
@@ -262,11 +277,36 @@ pub unsafe extern "C" fn fs_chmod(
         return false;
     };
     let mode = opt_f64(&frame, 1).unwrap_or(0o644 as f64) as u32;
-    match fs_err::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(mode)) {
-        Ok(()) => true,
-        Err(e) => {
-            report_io(&mut cx, "chmod", &path, e);
-            false
+    #[cfg(unix)]
+    {
+        match fs_err::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(mode)) {
+            Ok(()) => true,
+            Err(e) => {
+                report_io(&mut cx, "chmod", &path, e);
+                false
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows 只认只读位（libuv 同口径）：写位全无即只读。
+        let ro = mode & 0o222 == 0;
+        match fs_err::metadata(&path) {
+            Ok(m) => {
+                let mut p = m.permissions();
+                p.set_readonly(ro);
+                match fs_err::set_permissions(&path, p) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        report_io(&mut cx, "chmod", &path, e);
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                report_io(&mut cx, "chmod", &path, e);
+                false
+            }
         }
     }
 }
@@ -283,6 +323,7 @@ pub unsafe extern "C" fn fs_access(
         return false;
     };
     let mode = opt_f64(&frame, 1).unwrap_or(0.0) as i32;
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let md = match fs_err::metadata(&path) {
         Ok(m) => m,
         Err(e) => {
@@ -340,6 +381,7 @@ struct OpenFlags {
     #[serde(default)]
     mode: u32,
     #[serde(default)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     nonblock: bool,
 }
 
@@ -604,16 +646,30 @@ pub unsafe extern "C" fn fs_chown(
     };
     let uid = opt_f64(&frame, 1).unwrap_or(-1.0) as i64;
     let gid = opt_f64(&frame, 2).unwrap_or(-1.0) as i64;
-    match std::os::unix::fs::chown(
-        &path,
-        if uid < 0 { None } else { Some(uid as u32) },
-        if gid < 0 { None } else { Some(gid as u32) },
-    ) {
-        Ok(()) => true,
-        Err(e) => {
-            report_io(&mut cx, "chown", &path, e);
-            false
+    #[cfg(unix)]
+    {
+        match std::os::unix::fs::chown(
+            &path,
+            if uid < 0 { None } else { Some(uid as u32) },
+            if gid < 0 { None } else { Some(gid as u32) },
+        ) {
+            Ok(()) => true,
+            Err(e) => {
+                report_io(&mut cx, "chown", &path, e);
+                false
+            }
         }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (uid, gid);
+        report_io(
+            &mut cx,
+            "chown",
+            &path,
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "chown not implemented on this platform"),
+        );
+        false
     }
 }
 
@@ -698,24 +754,38 @@ pub unsafe extern "C" fn fs_fchown(
     };
     let uid = opt_f64(&frame, 1).unwrap_or(-1.0) as i64;
     let gid = opt_f64(&frame, 2).unwrap_or(-1.0) as i64;
-    let raw = {
-        let table = fd_table();
-        match table.get(&fd) {
-            Some(f) => std::os::unix::io::AsRawFd::as_raw_fd(f),
-            None => {
-                bad_fd(&mut cx, "fchown");
-                return false;
+    #[cfg(unix)]
+    {
+        let raw = {
+            let table = fd_table();
+            match table.get(&fd) {
+                Some(f) => std::os::unix::io::AsRawFd::as_raw_fd(f),
+                None => {
+                    bad_fd(&mut cx, "fchown");
+                    return false;
+                }
             }
+        };
+        // SAFETY: libc 系统调用；raw fd 在上块作用域内取出后立即使用，
+        // uid/gid 已由 JS 侧校验为整数；-1 表示不变更（POSIX 口径）。
+        let rc = unsafe { libc::fchown(raw, uid as libc::uid_t, gid as libc::gid_t) };
+        if rc == 0 {
+            true
+        } else {
+            let err = std::io::Error::last_os_error();
+            report_io(&mut cx, "fchown", "", err);
+            false
         }
-    };
-    // SAFETY: libc 系统调用；raw fd 在上块作用域内取出后立即使用，
-    // uid/gid 已由 JS 侧校验为整数；-1 表示不变更（POSIX 口径）。
-    let rc = unsafe { libc::fchown(raw, uid as libc::uid_t, gid as libc::gid_t) };
-    if rc == 0 {
-        true
-    } else {
-        let err = std::io::Error::last_os_error();
-        report_io(&mut cx, "fchown", "", err);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (fd, uid, gid);
+        report_io(
+            &mut cx,
+            "fchown",
+            "",
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "fchown not implemented on this platform"),
+        );
         false
     }
 }
@@ -737,11 +807,33 @@ pub unsafe extern "C" fn fs_fchmod(
         bad_fd(&mut cx, "fchmod");
         return false;
     };
-    match f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode)) {
-        Ok(()) => true,
-        Err(e) => {
-            report_io(&mut cx, "fchmod", "", e);
-            false
+    #[cfg(unix)]
+    {
+        match f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode)) {
+            Ok(()) => true,
+            Err(e) => {
+                report_io(&mut cx, "fchmod", "", e);
+                false
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows 只认只读位（libuv 同口径）：写位全无即只读。
+        let mut p = match f.metadata() {
+            Ok(m) => m.permissions(),
+            Err(e) => {
+                report_io(&mut cx, "fchmod", "", e);
+                return false;
+            }
+        };
+        p.set_readonly(mode & 0o222 == 0);
+        match f.set_permissions(p) {
+            Ok(()) => true,
+            Err(e) => {
+                report_io(&mut cx, "fchmod", "", e);
+                false
+            }
         }
     }
 }

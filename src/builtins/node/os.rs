@@ -392,6 +392,7 @@ pub unsafe extern "C" fn os_prio_get(
     // SAFETY: 同上；close(-1) 必败无副作用；getpriority 只读调度器状态
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let pid = if frame.argc() > 0 && frame.arg(0).is_number() {
         frame.arg(0).to_number() as i32
     } else {
@@ -428,11 +429,13 @@ pub unsafe extern "C" fn os_prio_set(
     // SAFETY: 同上；setpriority 只改目标进程 nice 值
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let pid = if frame.argc() > 0 && frame.arg(0).is_number() {
         frame.arg(0).to_number() as i32
     } else {
         0
     };
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let prio = if frame.argc() > 1 && frame.arg(1).is_number() {
         frame.arg(1).to_number() as i32
     } else {

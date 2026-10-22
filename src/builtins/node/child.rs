@@ -228,6 +228,7 @@ fn run_command(
             // 超时杀：killSignal（缺省 SIGTERM，真机口径；detached 组杀同信号，
             // 组杀失败回退直杀）。直杀后阻塞 wait（忽略 SIGTERM 的子进程即等，
             // 与真机同）。
+            #[cfg_attr(not(unix), allow(unused_variables))]
             let signo = opts.kill_signo.unwrap_or(15);
             #[cfg(unix)]
             if opts.detached {

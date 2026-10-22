@@ -45,6 +45,7 @@ fn opt_num(frame: &Frame, i: u32) -> Option<f64> {
 /// flags 位：1 = reusePort，2 = ipv6Only（仅 v6 有意义），4 = reuseAddr
 /// （SO_REUSEADDR；macOS 双绑另需 SO_REUSEPORT，libuv 同款双落）。
 fn std_bind_flags(addr: &str, port: u16, flags: u32) -> std::io::Result<std::net::UdpSocket> {
+    #[cfg(unix)]
     use std::os::fd::{FromRawFd, OwnedFd};
     let raw = addr.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(addr);
     let is_v6 = raw.contains(':');
@@ -54,6 +55,7 @@ fn std_bind_flags(addr: &str, port: u16, flags: u32) -> std::io::Result<std::net
     if !reuse_port && !v6only && !reuse_addr {
         return std::net::UdpSocket::bind((raw, port));
     }
+    #[cfg(unix)]
     unsafe {
         let fd = libc::socket(
             if is_v6 { libc::AF_INET6 } else { libc::AF_INET },
@@ -133,8 +135,14 @@ fn std_bind_flags(addr: &str, port: u16, flags: u32) -> std::io::Result<std::net
         }
         Ok(std::net::UdpSocket::from(sock))
     }
+    #[cfg(not(unix))]
+    {
+        let _ = (is_v6, reuse_port, v6only, reuse_addr);
+        std::net::UdpSocket::bind((raw, port))
+    }
 }
 
+#[cfg(unix)]
 fn v4_in_addr(a: &std::net::Ipv4Addr) -> libc::in_addr {
     // s_addr 存网序字节：from_ne_bytes 保版式（标准写法）。
     libc::in_addr { s_addr: u32::from_ne_bytes(a.octets()) }
@@ -142,6 +150,8 @@ fn v4_in_addr(a: &std::net::Ipv4Addr) -> libc::in_addr {
 
 /// SSM 加/退组（v4 走 IP_ADD/DROP_SOURCE_MEMBERSHIP；v6 走
 /// MCAST_JOIN/LEAVE_SOURCE_GROUP；输入经 JS 侧预验，此处失败即 Error 事件）。
+/// Windows 无 SSM 语义（not unix 桩回 Unsupported，由调用方转 Error 事件）。
+#[cfg(unix)]
 fn dgram_ssm(
     sock: &tokio::net::UdpSocket,
     multi: &str,
@@ -219,8 +229,23 @@ fn dgram_ssm(
     if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
+#[cfg(not(unix))]
+fn dgram_ssm(
+    _sock: &tokio::net::UdpSocket,
+    _multi: &str,
+    _iface: &str,
+    _source: &str,
+    _join: bool,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "source-specific multicast is not implemented on this platform",
+    ))
+}
+
 /// 出站组播接口（v4 用 IP_MULTICAST_IF + in_addr；v6 用 IPV6_MULTICAST_IF +
 /// 接口索引，%scope 经 if_nametoindex，失败回 0 即系统选择——Node 口径）。
+#[cfg(unix)]
 fn dgram_mcast_if(sock: &tokio::net::UdpSocket, addr: &str, is_v4: bool) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     let fd = sock.as_raw_fd();
@@ -259,6 +284,18 @@ fn dgram_mcast_if(sock: &tokio::net::UdpSocket, addr: &str, is_v4: bool) -> std:
         )
     };
     if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+#[cfg(not(unix))]
+fn dgram_mcast_if(
+    _sock: &tokio::net::UdpSocket,
+    _addr: &str,
+    _is_v4: bool,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "setMulticastInterface is not implemented on this platform",
+    ))
 }
 
 /// `__wjs2_dgram_bind(port, address, target)` → id。bind 错误经 Error+Close 事件。
@@ -410,7 +447,8 @@ async fn dgram_task(
             kind: NetKind::DgramListening { addr: local.ip().to_string(), port: local.port() },
         });
         let sock = std::sync::Arc::new(sock);
-        // fd 登记给同步 bufsize native（task 收尾摘除，防悬垂查表）
+        // fd 登记给同步 bufsize native（task 收尾摘除，防悬垂查表；非 unix 无此表）
+        #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
             dgram_fd_add(id, sock.as_raw_fd());
@@ -589,7 +627,10 @@ async fn dgram_task(
                 }
             }
         }
-        dgram_fd_remove(id);
+        #[cfg(unix)]
+        {
+            dgram_fd_remove(id);
+        }
         if state::net_close_once(id) {
             // purge 由 dispatch 派发 Close 之后统一做（§4.34 症状三：先清后派发即丢事件）
             let _ = ev_tx.send(NetEvent { id, kind: NetKind::Close });
@@ -685,9 +726,11 @@ pub unsafe extern "C" fn dgram_sockopt(
 /// `__wjs2_dgram_bufsize` 同步 get/setsockopt 用——fd 归 task 所有，但 sockopt
 /// 系统调用只按号操作、跨线程安全；摘除后查表即 miss（JS 侧转
 /// ERR_SOCKET_BUFFER_SIZE），无悬垂窗口（§4.48：有收尾的进程内状态才可 static）。
+#[cfg(unix)]
 static DGRAM_FDS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, i32>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+#[cfg(unix)]
 fn dgram_fd_add(id: u64, fd: i32) {
     DGRAM_FDS
         .lock()
@@ -695,6 +738,7 @@ fn dgram_fd_add(id: u64, fd: i32) {
         .insert(id, fd);
 }
 
+#[cfg(unix)]
 fn dgram_fd_remove(id: u64) {
     DGRAM_FDS
         .lock()
@@ -702,6 +746,7 @@ fn dgram_fd_remove(id: u64) {
         .remove(&id);
 }
 
+#[cfg(unix)]
 fn dgram_fd_get(id: u64) -> Option<i32> {
     DGRAM_FDS
         .lock()
@@ -714,6 +759,7 @@ fn dgram_fd_get(id: u64) -> Option<i32> {
 /// JS 侧 Number() 包装）。带 size 即 setsockopt，否则 getsockopt（SO_RCVBUF/SO_SNDBUF）。
 /// fd 查表 miss 或 syscall 失败回空串（JS 侧转 ERR_SOCKET_BUFFER_SIZE，真机
 /// "Could not get or set buffer size: uv_recv_buffer_size returned EBADF …" 口径）。
+#[cfg(unix)]
 pub unsafe extern "C" fn dgram_bufsize(
     cx_raw: *mut mozjs::jsapi::JSContext,
     argc: u32,
@@ -761,6 +807,20 @@ pub unsafe extern "C" fn dgram_bufsize(
         Some(v) => set_rval_str(&mut cx, &frame, &v.to_string()),
         None => set_rval_str(&mut cx, &frame, ""),
     }
+    true
+}
+
+/// Windows 无 fd 表（unix 专有）：恒回空串（miss 语义，JS 侧转 ERR_SOCKET_BUFFER_SIZE）。
+#[cfg(not(unix))]
+pub unsafe extern "C" fn dgram_bufsize(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    let _ = (cx_raw, argc, vp);
+    set_rval_str(&mut cx, &frame, "");
     true
 }
 

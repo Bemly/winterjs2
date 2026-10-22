@@ -31,7 +31,8 @@ pub enum NetKind {
     Close,
     /// server 开始监听。
     Listening { addr: String, port: u16 },
-    /// UDS server 开始监听（payload = path 串）。
+    /// UDS server 开始监听（payload = path 串；仅 unix 构造）。
+    #[cfg_attr(not(unix), allow(dead_code))]
     ListeningUds { path: String },
     /// server 收到连接（conn 侧 entry/泵已就绪，等 JS attach target）。
     Connection {
@@ -41,7 +42,8 @@ pub enum NetKind {
         local_addr: String,
         local_port: u16,
     },
-    /// UDS server 收到连接（conn 侧 entry/泵已就绪，地址全 undefined）。
+    /// UDS server 收到连接（conn 侧 entry/泵已就绪，地址全 undefined；仅 unix 构造）。
+    #[cfg_attr(not(unix), allow(dead_code))]
     ConnectionUds { conn_id: u64 },
     ServerError { code: String, msg: String },
     ServerClose,

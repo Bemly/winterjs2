@@ -118,7 +118,8 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu-')
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm-dev libclang-dev clang libssl-dev perl make pkg-config unzip xz-utils
+          sudo apt-get install -y llvm-dev libclang-dev clang libssl-dev perl make pkg-config unzip xz-utils libasound2-dev
+          # libasound2-dev：linux 全列编 rodio/cpal（ALSA 后端）必需，runner 镜像不自带（首跑实锤）。
 
       - name: Deps (macos)
         if: startsWith(matrix.os, 'macos-')
@@ -132,6 +133,8 @@ jobs:
         run: |
           # VERIFY 首跑：choco openssl 的落盘布局若变化，此处 env 跟着改。
           choco install llvm openssl -y --params '"/InstallDir:C:\openssl"'
+          # git-bash 自带 MSYS link.exe 会盖住 MSVC link.exe（rustc 按 PATH 取到它即终链失败）：删之。
+          rm -f "/c/Program Files/Git/usr/bin/link.exe"
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
           echo "OPENSSL_DIR=C:\openssl" >> "$GITHUB_ENV"
           echo "OPENSSL_LIB_DIR=C:\openssl\lib" >> "$GITHUB_ENV"
@@ -172,6 +175,9 @@ jobs:
             echo "CC_$ENVN=$TC/$CLANG"
             echo "CXX_$ENVN=$TC/${CLANG}++"
             echo "AR_$ENVN=$TC/llvm-ar"
+            # CC_* 只管 cc crate；rustc 终链认 CARGO_TARGET_*_LINKER（本地只 check 从没链过，首跑实锤）。
+          LINKER_ENV="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
+          echo "$LINKER_ENV=$TC/$CLANG"
           } >> "$GITHUB_ENV"
           if [ ! -f "$D/$SYSR/usr/lib/libcrypto.a" ]; then
             [ -f "$D/openssl.tar.gz" ] || curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"
@@ -212,6 +218,15 @@ jobs:
             ( cd "$D" && sha256sum -c ohos-sdk.tar.gz.sha256 )
             mkdir -p "$D/sdk" && tar -xzf "$D/ohos-sdk.tar.gz" -C "$D/sdk"
           fi
+          # windows_linux 大包是分 OS 套娃（内层 zip），mac 包是直铺：先列两层，见 zip 就拆。
+          find "$D/sdk" -maxdepth 2 | head -n 30
+          while IFS= read -r z; do
+            [ -n "$z" ] || continue
+            echo "unzipping inner $z"
+            unzip -q -o "$z" -d "$(dirname "$z")"
+          done <<EOF
+          $(find "$D/sdk" -name '*.zip' | head -n 20)
+          EOF
           OHOS_LLVM="$(dirname "$(find "$D/sdk" -path '*llvm/bin/clang' -type f | head -1)")"
           [ -n "$OHOS_LLVM" ] || { echo "OHOS llvm not found under $D/sdk"; exit 1; }
           case "${{ matrix.target }}" in
@@ -222,6 +237,10 @@ jobs:
             echo "CC_$ENVN=$OHOS_LLVM/$CLANG"
             echo "CXX_$ENVN=$OHOS_LLVM/${CLANG}++"
             echo "AR_$ENVN=$OHOS_LLVM/llvm-ar"
+            # 同 NDK：rustc 终链认 CARGO_TARGET_*_LINKER。
+            TRIPLE="${{ matrix.target }}"
+            LINKER_ENV="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
+            echo "$LINKER_ENV=$OHOS_LLVM/$CLANG"
           } >> "$GITHUB_ENV"
           if [ ! -f "$D/$SYSR/usr/lib/libcrypto.a" ] && [ ! -f "$D/$SYSR/usr/lib64/libcrypto.a" ]; then
             [ -f "$D/openssl.tar.gz" ] || curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"

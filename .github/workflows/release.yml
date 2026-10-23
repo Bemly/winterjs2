@@ -99,12 +99,14 @@ jobs:
       - name: Resolve version
         run: |
           TAG="${GITHUB_REF_NAME:-}"
+          # 取 Cargo.toml 首个顶格 version（[^"]* 遇首个引号即停，注释再长也进不来）。
+          cargo_ver() { sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1; }
           if [[ "$TAG" == v* ]]; then
             VERSION="${TAG#v}"
-            CARGO_VER="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+            CARGO_VER="$(cargo_ver)"
             [ "$CARGO_VER" = "$VERSION" ] || { echo "tag $TAG != Cargo.toml $CARGO_VER"; exit 1; }
           else
-            VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+            VERSION="$(cargo_ver)"
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "version=$VERSION"
@@ -215,7 +217,9 @@ jobs:
           if [ ! -d "$D/sdk" ]; then
             curl -fsSL -o "$D/ohos-sdk.tar.gz" "$OHOS_SDK_URL"
             curl -fsSL -o "$D/ohos-sdk.tar.gz.sha256" "$OHOS_SDK_URL.sha256"
-            ( cd "$D" && sha256sum -c ohos-sdk.tar.gz.sha256 )
+            # 镜像站 .sha256 是裸 hash（65B），sha256sum -c 认不得：拼成标准行再验。
+            printf '%s  %s\n' "$(tr -d ' \t\r\n' < "$D/ohos-sdk.tar.gz.sha256")" ohos-sdk.tar.gz \
+              | ( cd "$D" && sha256sum -c - )
             mkdir -p "$D/sdk" && tar -xzf "$D/ohos-sdk.tar.gz" -C "$D/sdk"
           fi
           # windows_linux 大包是分 OS 套娃（内层 zip），mac 包是直铺：先列两层，见 zip 就拆。

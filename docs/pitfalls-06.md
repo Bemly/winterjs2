@@ -575,6 +575,27 @@
 - 复现：use 组内对平铺项写行内 cfg 即炸；改独立切片即过。
 - 推广铁律：cfg 只切整句，行数敏感处优先改引用侧不动转口。
 
+### 4.334 带 C++ 运行时的进程不能直接 exit：C++ 静态析构在等着（2026-10-23，发版轮）
+
+- 症状：linux-release `--eval '40 + 2'` 打印 `42` 后
+  `mozilla::detail::MutexImpl::~MutexImpl: pthread_mutex_destroy failed:
+  Device or resource busy`，hang 数分钟后 SEGV（exit 139）；mac 同形态干净。
+  CI linX64+linA64 双杀，`cargo check` 全绿。
+- 根因：`std::process::exit` 会跑 `__cxa_atexit` 的 C++ static/thread-local
+  析构；泄漏的 Runtime 的 GC helper 线程还活着（gdb 见 8 个 `JS Helper`
+  停在 futex），某 mozilla 静态锁仍被锁 → destroy 报 EBUSY → 炸。
+  gdb 实锤链：`main → process::exit → __GI_exit → __run_exit_handlers →
+  ~MutexImpl`。mac 的 `os_unfair_lock` 无析构检查故静默——§4.8"泄漏 + exit"
+  策略本身平台脆弱。
+- 修法：unix 面改 `libc::_exit`（跳过全部用户态析构，内存由 OS 回收），
+  收敛进 `fn exit_now(code) -> !`（safe 门面 + 前置条件注释：行缓冲已落盘、
+  sentry 已 flush、无落盘面）；Windows 维持 `process::exit`（SRWLOCK 无此检查，
+  CI smoke 复核）。本地容器（ubuntu:24.04 原生）冒烟 5/5、exit 全 0 验证。
+- 复现：`docker run ubuntu:24.04` 内 release 构建即中；`gdb --batch --ex run
+  --ex bt` 当场抓栈。
+- 推广铁律：**check 绿 ≠ 能退**——跨平台发版必须在真目标上跑退出码冒烟；
+  凡见"只在某 OS 崩的 teardown"，先查锁实现的析构检查差异，再动代码。
+
 ### 4.333 第三方 crate 的 musl 分支漏了 ohos，OHOS 直接编译不过（2026-10-23，矩阵轮）
 
 - 症状：`cargo check --target aarch64/x86_64-unknown-linux-ohos` 在 `alsa 0.11`（经 `cpal`→`rodio` 进来）报错，类型不合；host/unix 全绿。

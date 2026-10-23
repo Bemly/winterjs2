@@ -296,6 +296,7 @@
 - 4.331 worker fatal 必须先派发会话内 exit 再定码（2026-10-21，vm lane）
 - 4.332 use 组内平铺项禁行内 cfg + 转口解析失败级联 E0277（2026-10-23，矩阵轮）
 - 4.333 第三方 musl 分支漏 ohos 即编译不过 + rodio not(ohos)摘除（2026-10-23，矩阵轮）
+- 4.334 exit 跑 C++ 静态析构 + linux pthread 锁检查崩 + unix 切 _exit（2026-10-23，发版轮）
 
 ## 条目
 

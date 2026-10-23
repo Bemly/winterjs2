@@ -133,8 +133,9 @@ jobs:
       - name: Deps (windows)
         if: startsWith(matrix.os, 'windows-')
         run: |
-          # VERIFY 首跑：choco openssl 的落盘布局若变化，此处 env 跟着改。
-          choco install llvm openssl -y --params '"/InstallDir:C:\openssl"'
+          # choco 遇 warning 即非零退出（如 llvm 已装算 1/2），-e 下会误杀：放行，
+          # 真失败由下面的 libcrypto.lib 反查兜底（找不到即错）。
+          choco install llvm openssl -y --params '"/InstallDir:C:\openssl"' || true
           # git-bash 自带 MSYS link.exe 会盖住 MSVC link.exe（rustc 按 PATH 取到它即终链失败）：删之。
           rm -f "/c/Program Files/Git/usr/bin/link.exe"
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"

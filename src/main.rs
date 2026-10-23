@@ -192,13 +192,33 @@ fn main() {
     };
 
     // 已知问题（AGENTS §4.8）：引擎/运行时析构期 StoreBuffer 悬垂边 SEGV。
-    // 结果（含错误渲染）就绪后直接 process::exit 跳过 teardown，由 dispatch 返回退出码。
+    // 结果（含错误渲染）就绪后直接退出跳过 teardown，由 dispatch 返回退出码。
     error::set_render_color(settings.log.color);
     let code = tokio_rt.block_on(dispatch(cli, &matches, &settings));
     tracing::debug!(target: "winterjs2", code, "finished");
-    // §4.8：process::exit 跳过 teardown；上报事件先排空（panic 路径自身已 flush）
+    // §4.8：退出跳过 teardown；上报事件先排空（panic 路径自身已 flush）
     sentry_report::flush();
-    std::process::exit(code);
+    exit_now(code);
+}
+
+/// 进程退出（§4.8 Linux 追补，2026-10-23 CI 实锤）：
+/// `std::process::exit` 会跑 `__cxa_atexit` 的 C++ static/thread-local 析构；
+/// mozjs 的 pthread 互斥量在仍被锁时析构即 `EBUSY` 崩（泄漏的 Runtime 的 GC
+/// helper 线程还活着；mac 的 os_unfair_lock 无析构检查故静默，Windows 同理）。
+/// 此处直调 `_exit` 跳过全部用户态析构，内存由 OS 回收（§4.8 同哲学）。
+// SAFETY（`libc::_exit`）：不跑任何析构/atexit 处理器。调用方保证：
+/// ① stdout/stderr 无未刷缓冲（本仓输出一律 `println!/eprintln!` 行缓冲已落盘）；
+/// ② sentry 已 flush（上游先调）；③ 无需覆盖率/性能落盘（release 无此面）。
+/// 非 unix 面（仅 Windows）维持 `std::process::exit`（Windows 的 SRWLOCK 无此检查，CI smoke 会复核）。
+fn exit_now(code: i32) -> ! {
+    #[cfg(unix)]
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::exit(code)
+    }
 }
 
 /// CLI 旗标 → 权限集（沙箱 opt-in：任一 `--allow-*` 出现即启用）。

@@ -231,8 +231,11 @@ jobs:
           done <<EOF
           $(find "$D/sdk" -name '*.zip' | head -n 20)
           EOF
-          OHOS_LLVM="$(dirname "$(find "$D/sdk" -path '*llvm/bin/clang' -type f | head -1)")"
-          [ -n "$OHOS_LLVM" ] || { echo "OHOS llvm not found under $D/sdk"; exit 1; }
+          # 大包内 linux/windows/ohos 三套 native：只要能跑在 runner 上的 linux 那套（首跑实锤：随手 head -1 会抓到跑不起来的）。
+          OHOS_LLVM="$(dirname "$(find "$D/sdk" -path '*linux*llvm/bin/clang' -type f | head -1)")"
+          [ -n "$OHOS_LLVM" ] || OHOS_LLVM="$(dirname "$(find "$D/sdk" -path '*llvm/bin/clang' -type f -not -path '*windows*' | head -1)")"
+          [ -x "$OHOS_LLVM/clang" ] || { echo "OHOS llvm not runnable under $D/sdk:"; find "$D/sdk" -maxdepth 4 -name llvm -type d; exit 1; }
+          echo "OHOS_LLVM=$OHOS_LLVM"
           case "${{ matrix.target }}" in
             aarch64-unknown-linux-ohos) ENVN=aarch64_unknown_linux_ohos; CLANG=aarch64-unknown-linux-ohos-clang; SYSR=sysroot-ohos-arm64; CFG=linux-aarch64; CCX=aarch64-linux-ohos ;;
             *) ENVN=x86_64_unknown_linux_ohos; CLANG=x86_64-unknown-linux-ohos-clang; SYSR=sysroot-ohos-x86_64; CFG=linux-x86_64; CCX=x86_64-linux-ohos ;;

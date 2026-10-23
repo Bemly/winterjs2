@@ -142,7 +142,7 @@ jobs:
           if [ ! -f "C:/openssl/lib/libcrypto.lib" ]; then
             HIT="$(find '/c/Program Files' '/c/Program Files (x86)' '/c/tools' '/c/openssl' -maxdepth 6 -name 'libcrypto.lib' 2>/dev/null | head -1)"
             [ -n "$HIT" ] || HIT="$(find '/c/ProgramData/chocolatey/lib' -maxdepth 6 -name 'libcrypto.lib' 2>/dev/null | head -1)"
-            [ -n "$HIT" ] || { echo "openssl install not found"; choco list --local-only 2>/dev/null | grep -i ssl; exit 1; }
+            [ -n "$HIT" ] || { echo "openssl layout:"; ls -R '/c/Program Files/OpenSSL' 2>/dev/null | head -n 40; find '/c/Program Files/OpenSSL' -maxdepth 3 -name '*.lib' 2>/dev/null | head; exit 1; }
             SSL_HOME="$(cygpath -w "$(dirname "$(dirname "$HIT")")")"
             {
               echo "OPENSSL_DIR=$SSL_HOME"

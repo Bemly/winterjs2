@@ -140,8 +140,8 @@ jobs:
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
           # choco 包会无视 InstallDir（首跑实锤：C:\openssl\lib 不存在）：按 libcrypto.lib 反查真实落盘。
           if [ ! -f "C:/openssl/lib/libcrypto.lib" ]; then
-            HIT="$(find '/c/Program Files' '/c/Program Files (x86)' '/c/tools' '/c/openssl' -maxdepth 4 -name 'libcrypto.lib' 2>/dev/null | head -1)"
-            [ -n "$HIT" ] || HIT="$(find '/c/ProgramData/chocolatey/lib' -maxdepth 4 -name 'libcrypto.lib' 2>/dev/null | head -1)"
+            HIT="$(find '/c/Program Files' '/c/Program Files (x86)' '/c/tools' '/c/openssl' -maxdepth 6 -name 'libcrypto.lib' 2>/dev/null | head -1)"
+            [ -n "$HIT" ] || HIT="$(find '/c/ProgramData/chocolatey/lib' -maxdepth 6 -name 'libcrypto.lib' 2>/dev/null | head -1)"
             [ -n "$HIT" ] || { echo "openssl install not found"; choco list --local-only 2>/dev/null | grep -i ssl; exit 1; }
             SSL_HOME="$(cygpath -w "$(dirname "$(dirname "$HIT")")")"
             {

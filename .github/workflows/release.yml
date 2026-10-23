@@ -138,9 +138,23 @@ jobs:
           # git-bash 自带 MSYS link.exe 会盖住 MSVC link.exe（rustc 按 PATH 取到它即终链失败）：删之。
           rm -f "/c/Program Files/Git/usr/bin/link.exe"
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
-          echo "OPENSSL_DIR=C:\openssl" >> "$GITHUB_ENV"
-          echo "OPENSSL_LIB_DIR=C:\openssl\lib" >> "$GITHUB_ENV"
-          echo "OPENSSL_INCLUDE_DIR=C:\openssl\include" >> "$GITHUB_ENV"
+          # choco 包会无视 InstallDir（首跑实锤：C:\openssl\lib 不存在）：按 libcrypto.lib 反查真实落盘。
+          if [ ! -f "C:/openssl/lib/libcrypto.lib" ]; then
+            HIT="$(find '/c/Program Files' -maxdepth 3 -name 'libcrypto.lib' 2>/dev/null | head -1)"
+            [ -n "$HIT" ] || { echo "openssl install not found"; exit 1; }
+            SSL_HOME="$(cygpath -w "$(dirname "$(dirname "$HIT")")")"
+            {
+              echo "OPENSSL_DIR=$SSL_HOME"
+              echo "OPENSSL_LIB_DIR=$SSL_HOME\\lib"
+              echo "OPENSSL_INCLUDE_DIR=$SSL_HOME\\include"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "OPENSSL_DIR=C:\openssl"
+              echo "OPENSSL_LIB_DIR=C:\openssl\lib"
+              echo "OPENSSL_INCLUDE_DIR=C:\openssl\include"
+            } >> "$GITHUB_ENV"
+          fi
 
       - name: MSVC env (windows)
         if: startsWith(matrix.os, 'windows-')

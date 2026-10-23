@@ -773,8 +773,13 @@ pub(crate) fn thread_micros() -> (f64, f64) {
 #[cfg(all(unix, not(target_vendor = "apple")))]
 pub(crate) fn thread_micros() -> (f64, f64) {
     // SAFETY: 同 rusage_self_micros（Linux RUSAGE_THREAD）。
+    // Android 的 libc 未导出 RUSAGE_THREAD（内核值恒 1，与 Linux 同）。
+    #[cfg(target_os = "android")]
+    let who: libc::c_int = 1;
+    #[cfg(not(target_os = "android"))]
+    let who: libc::c_int = libc::RUSAGE_THREAD;
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };
-    if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut r) } != 0 {
+    if unsafe { libc::getrusage(who, &mut r) } != 0 {
         return (0.0, 0.0);
     }
     let tv = |t: libc::timeval| t.tv_sec as f64 * 1e6 + t.tv_usec as f64;

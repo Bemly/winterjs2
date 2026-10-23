@@ -196,9 +196,10 @@ jobs:
           LINKER_ENV="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
           echo "$LINKER_ENV=$TC/$CLANG"
           # bindgen 取 cargo TARGET 当 clang --target，host 头文件在交叉列上必炸：
-          # 官方口子 BINDGEN_EXTRA_CLANG_ARGS_<target> 指到 NDK 统一 sysroot。
+          # 官方口子 BINDGEN_EXTRA_CLANG_ARGS_<target> 指到 NDK 统一 sysroot；
+          # 自带 --target= 即视为显式（bindgen 不再注入无版本号的，NDK cdefs.h 拒收无版本号）。
           BINDGEN_ENV="BINDGEN_EXTRA_CLANG_ARGS_$(echo "$TRIPLE" | tr '-' '_')"
-          echo "$BINDGEN_ENV=--sysroot=$D/ndk/android-ndk-$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          echo "$BINDGEN_ENV=--sysroot=$D/ndk/android-ndk-$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/sysroot --target=${CLANG%-clang}"
           } >> "$GITHUB_ENV"
           if [ ! -f "$D/$SYSR/usr/lib/libcrypto.a" ]; then
             [ -f "$D/openssl.tar.gz" ] || curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"

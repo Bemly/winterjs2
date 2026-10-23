@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+#[cfg(not(target_env = "ohos"))]
 use std::sync::{LazyLock, Mutex};
+#[cfg(not(target_env = "ohos"))]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use mozjs::context::JSContext;
@@ -376,8 +378,10 @@ pub unsafe extern "C" fn media_audio_pcm(
 
 /// 放音台（rodio OutputStream + Player 常驻；id 递增；stop 即 drop）。
 /// 纯 Rust 侧状态，不碰 JSAPI（4.78 finalize 纪律：只做簿记）。
+#[cfg(not(target_env = "ohos"))]
 static PLAYERS: LazyLock<Mutex<HashMap<u32, (rodio::MixerDeviceSink, rodio::Player)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(not(target_env = "ohos"))]
 static NEXT_PLAY_ID: AtomicU32 = AtomicU32::new(1);
 
 /// `__wjs2_media_play(pcm, sampleRate, channels, volume?)` → id（u32）。
@@ -421,6 +425,9 @@ pub unsafe extern "C" fn media_play(
     }
     // 回落链保留（open_default_sink 先默认设备再逐个试），drop 提示关掉
     // （stop 即 drop，不刷用户 stderr 通道）。
+    // OHOS 无 cpal 后端：放音面整体缺席（发挥测走 symphonia 纯解码）。
+    #[cfg(not(target_env = "ohos"))]
+    {
     let mut stream = match rodio::DeviceSinkBuilder::open_default_sink() {
         Ok(s) => s,
         Err(e) => {
@@ -442,6 +449,12 @@ pub unsafe extern "C" fn media_play(
     set_rval_string(&mut cx, &frame, &id.to_string());
     // set_rval_string 返回字符串形 id；JS 侧 Number() 化（u32 上溢无忧：2^32 次播放）。
     true
+    }
+    #[cfg(target_env = "ohos")]
+    {
+        report_error(&mut cx, "TypeError: WinterJS2.media.play: no audio output device on this platform");
+        false
+    }
 }
 
 /// `__wjs2_media_stop(id)` → true（未知 id 即 false，不报错）。
@@ -453,12 +466,16 @@ pub unsafe extern "C" fn media_stop(
     // SAFETY: 同上
     let mut cx = unsafe { wrap_cx(cx_raw) };
     let frame = unsafe { Frame::from_raw(vp, argc) };
+    #[cfg_attr(target_env = "ohos", allow(unused_variables))]
     let id = if frame.argc() > 0 {
         value_to_string(&mut cx, frame.arg(0)).parse::<u32>().unwrap_or(0)
     } else {
         0
     };
+    #[cfg(not(target_env = "ohos"))]
     let gone = PLAYERS.lock().map(|mut m| m.remove(&id).is_some()).unwrap_or(false);
+    #[cfg(target_env = "ohos")]
+    let gone = false;
     set_rval_string(&mut cx, &frame, if gone { "true" } else { "false" });
     true
 }

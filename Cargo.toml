@@ -356,9 +356,9 @@ ml-dsa = "0.1.1"
 #   ogg/pcm/vorbis/wav/mkv/alac/aiff/caf；上游 default 全纯，照抄）
 # - rodio：只开 playback（cpal 放音；解码一律走直引 symphonia 0.6 经
 #   SamplesBuffer 喂 PCM——rodio 0.22 自带 symphonia 0.5， decoder 特性全禁，
-#   0.5 子树不进树；recording/dither/minimp3 全禁。cpal 无 ohos 后端源码但走
-#   linux 分支可编译（§1 OHOS 口径），无设备时运行期干净报错，不断构建；
-#   ohos 格照惯例 ⚠️，见 §16-6）
+#   0.5 子树不进树；recording/dither/minimp3 全禁。OHOS 无 cpal 后端（alsa 包
+#   musl Ioctl 类型不合，编译不过）：rodio 移入 not(ohos) 限定依赖，media.rs
+#   放音面 ohos 双生 stub（纯解码/视频/MP4 不受影响，见 media.rs 注释）
 # - rav1e：AV1 编码（default-features=false 必关：default 含 git2/nasm/cli；
 #   只开 threading=rayon 纯 Rust；IVF 容器手写，不另引 ivf 轮子）
 # - shiguredo_mp4：MP4 demux+mux（git tag 钉死，Apache-2.0，零依赖 no-std）
@@ -367,7 +367,6 @@ ml-dsa = "0.1.1"
 #   见 docs/dependencies.md §16-6 跟进）
 bytemuck = "1"
 symphonia = { version = "0.6", default-features = false, features = ["all-meta", "opt-simd", "aac", "adpcm", "flac", "mp3", "isomp4", "ogg", "pcm", "vorbis", "wav", "mkv", "alac", "aiff", "caf"] }
-rodio = { version = "0.22", default-features = false, features = ["playback"] }
 rav1e = { version = "0.8", default-features = false, features = ["threading"] }
 shiguredo_mp4 = { git = "https://github.com/shiguredo/mp4-rs", tag = "2026.6.0-canary.0" }
 
@@ -378,6 +377,12 @@ nix = { version = "0.31", features = ["process", "signal", "fs", "ioctl", "term"
 # 版本走 0.2（与锁内 0.2.189 同线，零新增传递依赖）；win 轮回公共区（dgram/fs/process 等直引，unix 门控在用点）
 # os.user（unix 面 getuid/getgid 查名；Windows 面走 USERNAME/env 记档，不用它）
 uzers = "0.12"
+
+
+# rodio 放音（cpal）：OHOS 无后端（alsa musl Ioctl 类型不合，编译不过）；
+# 仅非 ohos 引入，media.rs 放音面有 ohos 双生。
+[target.'cfg(not(target_env = "ohos"))'.dependencies]
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
 
 
 [target.'cfg(windows)'.dependencies]

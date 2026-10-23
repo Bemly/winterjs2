@@ -140,8 +140,9 @@ jobs:
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
           # choco 包会无视 InstallDir（首跑实锤：C:\openssl\lib 不存在）：按 libcrypto.lib 反查真实落盘。
           if [ ! -f "C:/openssl/lib/libcrypto.lib" ]; then
-            HIT="$(find '/c/Program Files' -maxdepth 3 -name 'libcrypto.lib' 2>/dev/null | head -1)"
-            [ -n "$HIT" ] || { echo "openssl install not found"; exit 1; }
+            HIT="$(find '/c/Program Files' '/c/Program Files (x86)' '/c/tools' '/c/openssl' -maxdepth 4 -name 'libcrypto.lib' 2>/dev/null | head -1)"
+            [ -n "$HIT" ] || HIT="$(find '/c/ProgramData/chocolatey/lib' -maxdepth 4 -name 'libcrypto.lib' 2>/dev/null | head -1)"
+            [ -n "$HIT" ] || { echo "openssl install not found"; choco list --local-only 2>/dev/null | grep -i ssl; exit 1; }
             SSL_HOME="$(cygpath -w "$(dirname "$(dirname "$HIT")")")"
             {
               echo "OPENSSL_DIR=$SSL_HOME"
@@ -249,10 +250,14 @@ jobs:
           done <<EOF
           $(find "$D/sdk" -name '*.zip' | head -n 20)
           EOF
+          # zip 解包会丢 +x 位（tar 包不丢，本地从没遇到）：linux native 工具链先补权限。
+          if [ -d "$D/sdk/ohos-sdk/linux/native/llvm/bin" ]; then
+            find "$D/sdk/ohos-sdk/linux/native/llvm/bin" -type f -exec chmod a+x {} +
+          fi
           # 大包内 linux/windows/ohos 三套 native：只要能跑在 runner 上的 linux 那套（首跑实锤：随手 head -1 会抓到跑不起来的）。
           OHOS_LLVM="$(dirname "$(find "$D/sdk" -path '*linux*llvm/bin/clang' -type f | head -1)")"
           [ -n "$OHOS_LLVM" ] || OHOS_LLVM="$(dirname "$(find "$D/sdk" -path '*llvm/bin/clang' -type f -not -path '*windows*' | head -1)")"
-          [ -x "$OHOS_LLVM/clang" ] || { echo "OHOS llvm not runnable under $D/sdk:"; find "$D/sdk" -maxdepth 4 -name llvm -type d; exit 1; }
+          [ -x "$OHOS_LLVM/clang" ] || { echo "OHOS llvm not runnable: [$OHOS_LLVM]"; ls -la "$OHOS_LLVM/clang" 2>/dev/null; find "$D/sdk" -maxdepth 4 -name llvm -type d; exit 1; }
           echo "OHOS_LLVM=$OHOS_LLVM"
           # bindgen 同 NDK：sysroot 指到 linux native 自带的 sysroot（musl 头，全）。
           OHOS_SYSROOT="$(dirname "$OHOS_LLVM")"

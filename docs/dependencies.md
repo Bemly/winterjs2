@@ -707,7 +707,7 @@ H1/H2 走既有 `axum::serve`，H3 走此桥接，JS handler 桥接另行设计�
    | `puremp3`（MP3 解码） | 0.1.0 / 2019-05-26 / 130K | ✅（MIT OR CC0-1.0） | MP3 解 | 下载量小 + 7 年未动；symphonia 已盖，不推荐单引 |
    | `mp4parse`（MP4 demux） | 0.17.0 / 2023-05-29 / 2.1M | ✅（Mozilla，MPL-2.0） | iso-bmff 解析（配合 symphonia-aac 用） | symphonia 的 isomp4 已含 demux；二选一 |
    | `rubato`（重采样） | 5.0.0 / 2026-08-10 / 12.0M | ✅（MIT OR Apache-2.0） | 任意采样率互转 | 解码输出采样率归一用；`dasp`（0.11/2020，5.1M，MIT OR Apache-2.0，纯 DSP 基元）可配 |
-   | `rodio`（播放） | 0.22.2 / 2026-03-05 / 11.9M | ✅ 本体（`cpal` 的 build.rs 仅 ASIO env 探测，无 C；禁 `minimp3` 特性——C bindings） | default 全家经 symphonia 解 + `cpal` 放音 | 放音才要；OHOS 无 cpal 后端（矩阵 ⚠️ 待定）；纯解码场景用 `default-features=false` + symphonia 系特性，去 cpal |
+   | `rodio`（播放） | 0.22.2 / 2026-03-05 / 11.9M | ✅ 本体（`cpal` 的 build.rs 仅 ASIO env 探测，无 C；禁 `minimp3` 特性——C bindings） | default 全家经 symphonia 解 + `cpal` 放音 | 放音才要；OHOS 无 cpal 后端（`alsa 0.11` 在 musl `Ioctl=c_int` 下编译不过，见 pitfalls 4.333）：已落地 `not(target_env="ohos")` 门控 + `media.rs` ohos 双生 stub |
    | `rav1e`（AV1 编码） | 0.8.1 / 2025-06-16 / 48.3M | ✅（BSD-2-Clause；`asm` 特性拖 nasm 汇编器，禁之即全纯） | AV1 编码（无解码） | AV1 解码纯 Rust 无轮（`dav1d` 是 C）；编慢 + 二进制大，值不值另议 |
    | `webm` / `matroska` / `mp4` / `mpeg2ts`（容器） | 2.2.1/0.30.1/0.14.0/0.6.1（2026 均有维护） | ✅（MPL-2.0/MIT 混；零 build.rs） | WebM/MKV/MP4/TS 复用解复用（无编解码） | 配合上表解码器用 |
    | `h264-reader`（H.264 解析） | 0.9.0 / 2026-09-14 / 2.1M | ✅（MIT/Apache-2.0） | H.264 NAL 解析（无完整解码） | 全解码纯 Rust 无轮，先拿它做探测/信息面也行 |

@@ -574,3 +574,11 @@
   私有子模块放行到父（本轮 fs.rs 守住 1000 线）。
 - 复现：use 组内对平铺项写行内 cfg 即炸；改独立切片即过。
 - 推广铁律：cfg 只切整句，行数敏感处优先改引用侧不动转口。
+
+### 4.333 第三方 crate 的 musl 分支漏了 ohos，OHOS 直接编译不过（2026-10-23，矩阵轮）
+
+- 症状：`cargo check --target aarch64/x86_64-unknown-linux-ohos` 在 `alsa 0.11`（经 `cpal`→`rodio` 进来）报错，类型不合；host/unix 全绿。
+- 根因：`alsa-0.11.0/src/direct/ffi.rs` 只认 `any(target_os="android", target_env="musl")` 为 `c_int`，其余走 `c_ulong`；OHOS 的 `target_env="ohos"`（`target_os` 恒 `linux`）落空取 gnu 型。而 `libc` 早把 ohos 当 musl 同族（`linux/mod.rs` 多处 `any(musl, ohos)`；musl/Android 的 `Ioctl=c_int`，gnu/uclibc 的 `c_ulong`），OHOS 实为 musl ABI——两边对不上即炸。取证：`grep Ioctl libc/.../musl/mod.rs=c_int, gnu/mod.rs=c_ulong` + `grep ohos libc/.../linux/mod.rs` 全是 `any(musl, ohos)`。
+- 修法：依赖侧摘除——`rodio` 移入 `[target.'cfg(not(target_env="ohos"))'.dependencies]`，`media.rs` 放音面做 ohos 双生（`play` 报无音频设备、`stop` 恒 miss；解码/视频/MP4 不受影响）。上游修（给 alsa 补 `target_env="ohos"`）或等 cpal 出 OHOS 后端（OHAudio 重写）之前，无中间路线。
+- 复现：`sh ~/wjs-data/check-ohos.sh arm64` 修前在 alsa 炸，修后双列 `cargo check` 0 错误 0 警告（arm64 ~27s，x86_64 ~5.5min 首编）。
+- 推广铁律：**musl 系第三方先查 ohos 分支**——凡见 `target_env="musl"` 的 cfg，必问一句"ohos 在不在里面"；`cfg(target_env="ohos")` 才是 OHOS 的正确门控（`target_os` 恒 `linux` 不可用）。

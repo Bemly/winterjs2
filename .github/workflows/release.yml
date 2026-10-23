@@ -1,0 +1,307 @@
+# 10-target release 矩阵（`scripts/matrix.sh` 的上线版：matrix 只产 check 中间件，
+# 这里产可发布的二进制 + GitHub Release）。
+#
+# 触发：tag `v*.*.*` 推送（发版）/ `workflow_dispatch`（空跑：只编不发，产物留 artifacts）。
+# 资产命名对齐 `-u` 自升级期望：`winterjs2-<ver>-<target>.tar.gz`（win 为 `.zip`）。
+# runner 依据（`actions/runner-images` 公仓免费表 + çeyrekfinans 公告）：
+#   macos-latest / ubuntu-latest / windows-latest 系 + `-arm`/`-intel` 全是公仓免费 standard，
+#   其中 macOS Intel（macos-26-intel）是最后一个 Intel 镜像，android/ohos 无 runner 只能交叉。
+# 已知首跑验证点（见各 step 内 `VERIFY` 注释）：win 的 choco openssl 布局、
+# ohos link 段 emu-tls（`__emutls_get_address`，实锤后再动 build.rs 加 `link-lib c++`，
+# 交接 handover 第 4 条；check 阶段碰不到它，故此处不预修）。
+name: Release 10-target binaries
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  OPENSSL_VERSION: "4.0.3"
+  OPENSSL_SHA256: "325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9"
+  OPENSSL_URL: "https://github.com/openssl/openssl/releases/download/openssl-4.0.3/openssl-4.0.3.tar.gz"
+  NDK_VERSION: "r30"
+  NDK_URL: "https://dl.google.com/android/repository/android-ndk-r30-linux.zip"
+  ANDROID_API: "24"
+  OHOS_SDK_URL: "https://repo.huaweicloud.com/openharmony/os/5.0.3-Release/ohos-sdk-windows_linux-public.tar.gz"
+  OHOS_SDK_VERSION: "5.0.3"
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            kind: native
+            archive: targz
+            smoke: true
+          - target: x86_64-apple-darwin
+            os: macos-26-intel
+            kind: native
+            archive: targz
+            smoke: true
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            kind: native
+            archive: targz
+            smoke: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-26.04-arm
+            kind: native
+            archive: targz
+            smoke: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            kind: native
+            archive: zip
+            smoke: true
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            kind: native
+            archive: zip
+            smoke: true
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            kind: ndk
+            archive: targz
+            smoke: false
+          - target: x86_64-linux-android
+            os: ubuntu-latest
+            kind: ndk
+            archive: targz
+            smoke: false
+          - target: aarch64-unknown-linux-ohos
+            os: ubuntu-latest
+            kind: ohos
+            archive: targz
+            smoke: false
+          - target: x86_64-unknown-linux-ohos
+            os: ubuntu-latest
+            kind: ohos
+            archive: targz
+            smoke: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          TAG="${GITHUB_REF_NAME:-}"
+          if [[ "$TAG" == v* ]]; then
+            VERSION="${TAG#v}"
+            CARGO_VER="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+            [ "$CARGO_VER" = "$VERSION" ] || { echo "tag $TAG != Cargo.toml $CARGO_VER"; exit 1; }
+          else
+            VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION"
+
+      - name: Rust toolchain + target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Deps (ubuntu)
+        if: startsWith(matrix.os, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-dev libclang-dev clang libssl-dev perl make pkg-config unzip xz-utils
+
+      - name: Deps (macos)
+        if: startsWith(matrix.os, 'macos-')
+        run: |
+          brew install llvm openssl@3
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Deps (windows)
+        if: startsWith(matrix.os, 'windows-')
+        run: |
+          # VERIFY 首跑：choco openssl 的落盘布局若变化，此处 env 跟着改。
+          choco install llvm openssl -y --params '"/InstallDir:C:\openssl"'
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+          echo "OPENSSL_DIR=C:\openssl" >> "$GITHUB_ENV"
+          echo "OPENSSL_LIB_DIR=C:\openssl\lib" >> "$GITHUB_ENV"
+          echo "OPENSSL_INCLUDE_DIR=C:\openssl\include" >> "$GITHUB_ENV"
+
+      - name: MSVC env (windows)
+        if: startsWith(matrix.os, 'windows-')
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cargo cache (per target)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Cache NDK + openssl sysroots
+        if: matrix.kind == 'ndk'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/deps-ndk
+          key: ndk-${{ env.NDK_VERSION }}-ossl-${{ env.OPENSSL_VERSION }}
+
+      - name: Setup Android NDK + openssl sysroot
+        if: matrix.kind == 'ndk'
+        run: |
+          # 本地 check-android.sh + build-openssl-android.sh 的 CI 版（linux prebuilt）。
+          D="$RUNNER_TEMP/deps-ndk"
+          mkdir -p "$D"
+          if [ ! -d "$D/ndk/android-ndk-$NDK_VERSION" ]; then
+            curl -fsSL -o "$D/ndk.zip" "$NDK_URL"
+            mkdir -p "$D/ndk" && unzip -q "$D/ndk.zip" -d "$D/ndk"
+          fi
+          TC="$D/ndk/android-ndk-$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          case "${{ matrix.target }}" in
+            aarch64-linux-android) TRIPLE=aarch64-linux-android; ENVN=aarch64_linux_android; CLANG=aarch64-linux-android${ANDROID_API}-clang; SYSR=sysroot-android-arm64; CFG=android-arm64 ;;
+            *) TRIPLE=x86_64-linux-android; ENVN=x86_64_linux_android; CLANG=x86_64-linux-android${ANDROID_API}-clang; SYSR=sysroot-android-x86_64; CFG=android-x86_64 ;;
+          esac
+          {
+            echo "CC_$ENVN=$TC/$CLANG"
+            echo "CXX_$ENVN=$TC/${CLANG}++"
+            echo "AR_$ENVN=$TC/llvm-ar"
+          } >> "$GITHUB_ENV"
+          if [ ! -f "$D/$SYSR/usr/lib/libcrypto.a" ]; then
+            [ -f "$D/openssl.tar.gz" ] || curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"
+            echo "$OPENSSL_SHA256  $D/openssl.tar.gz" | sha256sum -c -
+            export ANDROID_NDK_ROOT="$D/ndk/android-ndk-$NDK_VERSION" ANDROID_API
+            BRIDGE="$D/android-clang-bin" && mkdir -p "$BRIDGE"
+            ln -sf "$TC/llvm-ar" "$BRIDGE/${CLANG%-*}-ar" 2>/dev/null || true
+            ln -sf "$TC/llvm-ranlib" "$BRIDGE/${CLANG%-*}-ranlib" 2>/dev/null || true
+            export PATH="$BRIDGE:$TC:$PATH"
+            W="$D/work-$SYSR" && rm -rf "$W" && mkdir -p "$W"
+            tar -xzf "$D/openssl.tar.gz" -C "$W" --strip-components=1
+            ( cd "$W" && ./Configure "$CFG" --prefix="$D/$SYSR/usr" no-shared no-tests no-docs \
+              && make build_libs -j"$(nproc)" && make install_dev )
+          fi
+          {
+            echo "OPENSSL_DIR=$D/$SYSR/usr"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Cache OHOS SDK + openssl sysroots
+        if: matrix.kind == 'ohos'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/deps-ohos
+          key: ohos-${{ env.OHOS_SDK_VERSION }}-ossl-${{ env.OPENSSL_VERSION }}
+
+      - name: Setup OHOS SDK + openssl sysroot
+        if: matrix.kind == 'ohos'
+        run: |
+          # 本地 check-ohos.sh + build-openssl-ohos.sh 的 CI 版。
+          # OHOS 无 ALSA：rodio 已是 not(ohos) 门控，此处不再需要 alsa.pc 桩。
+          # VERIFY 首跑：ohos link 段若报 __emutls_get_address，实锤后再动 build.rs 加 link-lib c++。
+          D="$RUNNER_TEMP/deps-ohos"
+          mkdir -p "$D"
+          if [ ! -d "$D/sdk" ]; then
+            curl -fsSL -o "$D/ohos-sdk.tar.gz" "$OHOS_SDK_URL"
+            curl -fsSL -o "$D/ohos-sdk.tar.gz.sha256" "$OHOS_SDK_URL.sha256"
+            ( cd "$D" && sha256sum -c ohos-sdk.tar.gz.sha256 )
+            mkdir -p "$D/sdk" && tar -xzf "$D/ohos-sdk.tar.gz" -C "$D/sdk"
+          fi
+          OHOS_LLVM="$(dirname "$(find "$D/sdk" -path '*llvm/bin/clang' -type f | head -1)")"
+          [ -n "$OHOS_LLVM" ] || { echo "OHOS llvm not found under $D/sdk"; exit 1; }
+          case "${{ matrix.target }}" in
+            aarch64-unknown-linux-ohos) ENVN=aarch64_unknown_linux_ohos; CLANG=aarch64-unknown-linux-ohos-clang; SYSR=sysroot-ohos-arm64; CFG=linux-aarch64; CCX=aarch64-linux-ohos ;;
+            *) ENVN=x86_64_unknown_linux_ohos; CLANG=x86_64-unknown-linux-ohos-clang; SYSR=sysroot-ohos-x86_64; CFG=linux-x86_64; CCX=x86_64-linux-ohos ;;
+          esac
+          {
+            echo "CC_$ENVN=$OHOS_LLVM/$CLANG"
+            echo "CXX_$ENVN=$OHOS_LLVM/${CLANG}++"
+            echo "AR_$ENVN=$OHOS_LLVM/llvm-ar"
+          } >> "$GITHUB_ENV"
+          if [ ! -f "$D/$SYSR/usr/lib/libcrypto.a" ] && [ ! -f "$D/$SYSR/usr/lib64/libcrypto.a" ]; then
+            [ -f "$D/openssl.tar.gz" ] || curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"
+            echo "$OPENSSL_SHA256  $D/openssl.tar.gz" | sha256sum -c -
+            BRIDGE="$D/ohos-clang-bin" && mkdir -p "$BRIDGE"
+            ln -sf "$OHOS_LLVM/$CLANG" "$BRIDGE/$CCX-gcc"
+            ln -sf "$OHOS_LLVM/${CLANG}++" "$BRIDGE/$CCX-g++"
+            ln -sf "$OHOS_LLVM/llvm-ar" "$BRIDGE/$CCX-ar"
+            ln -sf "$OHOS_LLVM/llvm-ranlib" "$BRIDGE/$CCX-ranlib"
+            export PATH="$BRIDGE:$OHOS_LLVM:$PATH"
+            W="$D/work-$SYSR" && rm -rf "$W" && mkdir -p "$W"
+            tar -xzf "$D/openssl.tar.gz" -C "$W" --strip-components=1
+            ( cd "$W" && CROSS_COMPILE=$CCX- ./Configure "$CFG" --prefix="$D/$SYSR/usr" no-shared no-tests no-docs \
+              && make build_libs -j"$(nproc)" && make install_dev )
+          fi
+          {
+            echo "OPENSSL_DIR=$D/$SYSR/usr"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Tree audit (banned backends)
+        run: |
+          # matrix.sh §2 门控的 CI 版：aws-lc / native-tls 禁入；openssl 仅 winterjs2 直引（DH 用）。
+          for pkg in aws-lc-rs aws-lc-sys native-tls; do
+            if cargo tree --target "${{ matrix.target }}" -i "$pkg" >/dev/null 2>&1; then
+              echo "banned $pkg in tree"; exit 1;
+            fi
+          done
+          rev="$(cargo tree --target "${{ matrix.target }}" -i openssl 2>/dev/null || true)"
+          echo "$rev" | grep -q winterjs2 || { echo "openssl missing"; exit 1; }
+          echo "$rev" | grep -Eq 'reqwest|rustls|hyper|tokio-rustls|native-tls' && { echo "openssl in TLS chain"; exit 1; } || true
+
+      - name: Build release
+        run: cargo build --release --target "${{ matrix.target }}"
+
+      - name: Smoke (AGENTS §3)
+        if: matrix.smoke
+        run: |
+          EXE=""; [ "${{ matrix.archive }}" = "zip" ] && EXE=".exe"
+          BIN="target/${{ matrix.target }}/release/winterjs2$EXE"
+          "$BIN" --eval '40 + 2'
+          "$BIN" --eval 'await new Promise(r=>setTimeout(()=>r(1),10))'
+          "$BIN" --eval 'new URL("https://ex.com/?a=1").search'
+          "$BIN" --eval 'new TextEncoder().encode("hi").length'
+          "$BIN" --eval 'await (await fetch("data:text/plain,x")).text()'
+
+      - name: Package
+        run: |
+          EXE=""; PKG="tar.gz"; [ "${{ matrix.archive }}" = "zip" ] && { EXE=".exe"; PKG="zip"; }
+          STAGE="winterjs2-$VERSION-${{ matrix.target }}"
+          mkdir -p dist staging/"$STAGE"
+          cp "target/${{ matrix.target }}/release/winterjs2$EXE" staging/"$STAGE"/
+          ( cd staging && { [ "$PKG" = "zip" ] \
+            && powershell -NoProfile -Command "Compress-Archive -Path '$STAGE' -DestinationPath '../dist/$STAGE.zip'" \
+            || tar -czf "../dist/$STAGE.tar.gz" "$STAGE"; } )
+          ( cd dist && sha256sum "$STAGE.$PKG" > "$STAGE.$PKG.sha256" )
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      # 首版先 draft：人工核对 10 件资产无误后再点 Publish；跑顺后改成 draft: false。
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "dist/**/*"
+          draft: true
+          generate_release_notes: true

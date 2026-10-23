@@ -299,10 +299,10 @@ mod tests {
         // "hello GCM") → ct 0abdd127a6e4463bbe / tag 5fee9590bf890f933f19030aa67fad71。
         let key = const_hex::decode("000102030405060708090a0b0c0d0e0f").unwrap();
         let iv = const_hex::decode("0102030405060708").unwrap();
-        let out = gcm_manual(&key, &iv, b"aad", b"hello GCM", true).unwrap();
+        let out = gcm_manual(&key, &iv, b"aad", b"hello GCM", true, 16).unwrap();
         assert_eq!(const_hex::encode(&out[..9]), "0abdd127a6e4463bbe");
         assert_eq!(const_hex::encode(&out[9..]), "5fee9590bf890f933f19030aa67fad71");
-        let back = gcm_manual(&key, &iv, b"aad", &out, false).unwrap();
+        let back = gcm_manual(&key, &iv, b"aad", &out, false, 16).unwrap();
         assert_eq!(back, b"hello GCM");
         // J0 形状：12B 后缀 00..01；8B 走 GHASH（与 12B 结果不同即分路生效）
         let h = gcm_block_enc(&key, &[0u8; 16]).unwrap();
@@ -313,15 +313,15 @@ mod tests {
         let mut bad = out.clone();
         bad[10] ^= 0xFF;
         assert_eq!(
-            gcm_manual(&key, &iv, b"aad", &bad, false),
+            gcm_manual(&key, &iv, b"aad", &bad, false, 16),
             Err("Unsupported state or unable to authenticate data".to_string())
         );
-        assert!(gcm_manual(&key, &[], b"", b"x", true).is_err());
+        assert!(gcm_manual(&key, &[], b"", b"x", true, 16).is_err());
         // 192/256 档冒烟（与 crate 12B 路径同口径：12B 手工 == crate 输出）
         for kl in [16usize, 24, 32] {
             let k = vec![0x11u8; kl];
             let iv12 = vec![0x22u8; 12];
-            let a = gcm_manual(&k, &iv12, b"a", b"data", true).unwrap();
+            let a = gcm_manual(&k, &iv12, b"a", b"data", true, 16).unwrap();
             let b = crate::builtins::crypto::gcm_encrypt_raw(&k, &iv12, b"a", b"data").unwrap();
             assert_eq!(a, b);
         }

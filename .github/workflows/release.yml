@@ -333,6 +333,18 @@ jobs:
           "$BIN" --eval 'new TextEncoder().encode("hi").length'
           "$BIN" --eval 'await (await fetch("data:text/plain,x")).text()'
 
+      # win 冒烟崩溃取证：exit 139 无一行输出，按 cdb 抓首个异常栈（msvc 恒出 pdb，公共符号可解）。
+      - name: Crash stack (windows, smoke failed)
+        if: failure() && matrix.smoke && startsWith(matrix.os, 'windows-')
+        run: |
+          BIN="target/${{ matrix.target }}/release/winterjs2.exe"
+          ARCHDIR=x64; [[ "${{ matrix.target }}" == aarch64-* ]] && ARCHDIR=arm64
+          CDB="/c/Program Files (x86)/Windows Kits/10/Debuggers/$ARCHDIR/cdb.exe"
+          [ -f "$CDB" ] || CDB="$(find '/c/Program Files (x86)/Windows Kits' -path "*$ARCHDIR*" -name cdb.exe -print -quit 2>/dev/null)"
+          [ -n "$CDB" ] && [ -f "$CDB" ] || { echo "cdb not found"; exit 1; }
+          export _NT_SYMBOL_PATH="$(cygpath -w "$PWD/target/${{ matrix.target }}/release");srv*https://msdl.microsoft.com/download/symbols"
+          "$CDB" -g -G -lines -c ".lastevent; r; kn 40; q" "$(cygpath -w "$BIN")" --eval "40 + 2" || true
+
       - name: Package
         run: |
           EXE=""; PKG="tar.gz"; [ "${{ matrix.archive }}" = "zip" ] && { EXE=".exe"; PKG="zip"; }

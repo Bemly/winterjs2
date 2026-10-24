@@ -298,6 +298,7 @@
 - 4.333 第三方 musl 分支漏 ohos 即编译不过 + rodio not(ohos)摘除（2026-10-23，矩阵轮）
 - 4.334 exit 跑 C++ 静态析构 + linux pthread 锁检查崩 + unix 切 _exit（2026-10-23，发版轮）
 - 4.335 发版矩阵三处链接/安装阻塞：choco openssl 装空 / android API<26 无 libaaudio / ohos libc++ 命名空间 __h≠__n1（2026-10-24，发版轮）
+- 4.336 MSVC 按值返回 JS::Value 的 C++ API 直调错位 → win 首个微任务排空 AV，改 glue 出参形（2026-10-24，发版轮）
 
 ## 条目
 
@@ -309,7 +310,7 @@
 - `docs/pitfalls-03.md`：4.125–4.169（45 条）
 - `docs/pitfalls-04.md`：4.170–4.205（36 条）
 - `docs/pitfalls-05.md`：4.206–4.264（60 条）
-- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310 + 4.315–4.335
+- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310 + 4.315–4.336
 
 > 新坑：主索引追一行 + 正文追到末卷（当前 `docs/pitfalls-06.md`）末尾。
 

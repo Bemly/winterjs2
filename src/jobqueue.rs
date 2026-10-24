@@ -3,18 +3,22 @@
 //! 为什么不用 `js::UseInternalJobQueues`：实测（2026-09-10）在最小 Runtime 下调用即 SEGV
 //! （realm 内外皆崩，原因未深究——AGENTS §4.7 记坑）。改用 mozjs_sys 自带的 RustJobQueue
 //! glue（servo 同款）：traps 的 runJobs 由 Rust 用 MicroTask 朋友 API 排空
-//! （PeekNextMicroTask / DequeueNextMicroTask / RunJSMicroTask）。
+//! （glue `JS_DequeueNextMicroTask` 出参形 / RunJSMicroTask）。
+//!
+//! 禁直调 `PeekNextMicroTask`/`DequeueNext*MicroTask`：它们按值返回 `JS::Value`（带构造函数的
+//! C++ 类），MSVC 对此走隐藏返回指针（rcx 占位，cx 挪到 rdx），Rust `extern "C" -> JSVal`
+//! 按 rax 收——win x64/arm64 首个微任务排空即 AV（pitfalls 4.336）；SysV/AAPCS 碰巧一致。
 
-use mozjs::glue::{CallValueTracer, CreateJobQueue, JobQueueTraps};
+use mozjs::glue::{CallValueTracer, CreateJobQueue, JS_DequeueNextMicroTask, JobQueueTraps};
 use mozjs::jsapi::{
-    GetExecutionGlobalFromJSMicroTask, IsJSMicroTask, JSObject, JSTracer, PeekNextMicroTask,
-    RunJSMicroTask, SetJobQueue, ToUnwrappedJSMicroTask,
+    GetExecutionGlobalFromJSMicroTask, IsJSMicroTask, JSObject, JSTracer, RunJSMicroTask,
+    SetJobQueue, ToUnwrappedJSMicroTask,
 };
-use mozjs::jsval::JSVal;
+use mozjs::jsval::{JSVal, UndefinedValue};
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 
-use crate::jsapi_glue::{raw_handle, wrap_cx};
+use crate::jsapi_glue::{raw_handle, raw_handle_mut, wrap_cx};
 
 /// SAFETY: 引擎回调；只读陷阱，无 GC。
 unsafe extern "C" fn get_host_defined_data(
@@ -38,14 +42,16 @@ unsafe extern "C" fn get_host_defined_global(
 unsafe extern "C" fn run_jobs(cx: *mut mozjs::jsapi::JSContext) { unsafe {
     let mut drained: u64 = 0;
     let mut swallowed: u64 = 0;
+    // 出参槽 rooted：glue 写入的任务值在 Unwrap 前跨不了 GC。
+    rooted!(in(cx) let mut task: JSVal = UndefinedValue());
     loop {
-        let task: JSVal = PeekNextMicroTask(cx);
-        if task.is_null_or_undefined() {
+        // 调试队列优先、再常规队列（SM 内部队同序）；空即 NullValue。
+        JS_DequeueNextMicroTask(cx, raw_handle_mut(task.as_ptr()));
+        if task.get().is_null_or_undefined() {
             break;
         }
-        let task: JSVal = mozjs::jsapi::DequeueNextRegularMicroTask(cx);
-        if IsJSMicroTask(&task) {
-            let entry = ToUnwrappedJSMicroTask(&task);
+        if IsJSMicroTask(&task.get()) {
+            let entry = ToUnwrappedJSMicroTask(&task.get());
             // SAFETY: entry 摘自队列后立即 rooted，RunJSMicroTask 期间 GC 安全
             rooted!(in(cx) let entry_root: *mut JSObject = entry);
             // SM 内部队 runJobs 同款：先取任务执行 global 并 AutoRealm 进去再跑。

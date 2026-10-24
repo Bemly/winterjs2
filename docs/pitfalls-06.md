@@ -628,3 +628,20 @@
   `NT_ANDROID_TYPE_IDENT` API=0x1a），`std::__h`/`__ndk1` 未决 0。win 本地无法复现，以 CI 为准。
 - 推广铁律：**交叉链接预构建 C++ 库，先读它的 `.comment` 定编译器版本**，工具链对齐上游 CI（不是对齐"最新 SDK"）；
   "undefined `std::__X::`"先比命名空间再加 `-l`。包管理器装 C 库后**以产物文件存在性为准**，不信"installed"文案。
+
+### 4.336 MSVC 下按值返回 `JS::Value` 的 C++ API 直调即错位：win 首个微任务排空 AV（2026-10-24，发版轮）
+
+- 症状：win x64/arm64 release `--eval '40 + 2'` 零输出 exit 139（bash 报 Segmentation fault）；mac/linux/android/ohos 同源码全绿。
+  cdb 抓栈：`Access violation c0000005` @ `JS::DequeueNextRegularMicroTask+0x8`（`mov rdx,[rdx+0AA0h]`，rdx=8），
+  上帧 `winterjs2::jobqueue::run_jobs` ← `RustJobQueue::runJobs` ← `js::RunJobs`。
+- 根因：`PeekNextMicroTask`/`DequeueNext*MicroTask` 返回 `GenericMicroTask`（= `JS::Value`，带 constexpr 构造函数的类）。
+  MSVC x64/arm64 对"非 C++03 POD"返回值走**隐藏返回指针**：rcx(x0) 放返回槽、`cx` 挪到 rdx(x1)。bindgen 生成的
+  Rust 声明是 `extern "C" fn(cx) -> Value`，按 rax 收值——C++ 侧把垃圾 rdx 当 `cx` 解引用即 AV。SysV/AAPCS64
+  对 8 字节类按寄存器返回，故其余平台碰巧一致，本地永远测不出。
+- 修法：改走 mozjs glue 的出参形 `JS_DequeueNextMicroTask(cx, MutableHandle<GenericMicroTask>)`（servo 同款），
+  出参槽 rooted；语义=调试队列优先再常规队列（SM 内部队同序），空即 Null 跳出——Peek 一并删掉。
+  全仓扫 bindgen `jsapi.rs` 按值返回 `Value`/`GenericMicroTask` 的声明，仅此 2 处在用。
+- 复现：`release.yml` win 列 Smoke 失败即跑 `Crash stack` 步（cdb `-g -G -c ".lastevent; r; kn 40; q"`，msvc 恒出 pdb）；
+  本地 mac 冒烟 5/5 + 微任务序 `0,1,3,2` 与 node 对拍一致（只证语义未回退，证不了 ABI）。
+- 推广铁律：**Rust 直调 C++ API 禁收按值返回的 C++ 类**（`JS::Value`/`PropertyKey`/任何带构造函数的类）——一律找 glue
+  出参形或自写 out-param 薄壳；"只崩 Windows、零输出"先上 cdb 抓栈，再想调用约定。

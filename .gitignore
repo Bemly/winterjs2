@@ -1,3 +1,6 @@
 /target
 .DS_Store
 .commandcode/
+# 本地崩溃转储 / 手工拷入的 linux 发版二进制（容器探针用），永不入库
+/core
+/linbin/

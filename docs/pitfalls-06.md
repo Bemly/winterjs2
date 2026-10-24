@@ -603,3 +603,28 @@
 - 修法：依赖侧摘除——`rodio` 移入 `[target.'cfg(not(target_env="ohos"))'.dependencies]`，`media.rs` 放音面做 ohos 双生（`play` 报无音频设备、`stop` 恒 miss；解码/视频/MP4 不受影响）。上游修（给 alsa 补 `target_env="ohos"`）或等 cpal 出 OHOS 后端（OHAudio 重写）之前，无中间路线。
 - 复现：`sh ~/wjs-data/check-ohos.sh arm64` 修前在 alsa 炸，修后双列 `cargo check` 0 错误 0 警告（arm64 ~27s，x86_64 ~5.5min 首编）。
 - 推广铁律：**musl 系第三方先查 ohos 分支**——凡见 `target_env="musl"` 的 cfg，必问一句"ohos 在不在里面"；`cfg(target_env="ohos")` 才是 OHOS 的正确门控（`target_os` 恒 `linux` 不可用）。
+
+### 4.335 发版矩阵三处链接/安装阻塞：choco openssl 装空 / android API<26 无 libaaudio / ohos libc++ 命名空间不合（2026-10-24，发版轮）
+
+- 症状：`release.yml` 空跑八轮，mac×2/linux-gnu×2 绿，其余六列红。① win×2 死在 Deps：choco 报
+  `openssl has been installed`，同时 `No registry key found based on 'OpenSSL-Win'`、`OPENSSL_CONF has been set to \bin\openssl.cfg`，
+  两轮 `libcrypto.lib` 反查都找不到（`find|head` 在 pipefail 下吃 SIGPIPE，连诊断都没打出，见 301cdbe）。
+  ② android×2 终链 `ld.lld: unable to find library -laaudio`。③ ohos×2 终链整片 `undefined symbol: std::__h::*`
+  （`__call_once`/`basic_string::append`/`__next_prime`…）。
+- 根因：① Shining Light 安装器在 runner 上静默装空，InstallDir 实为空串，不是"装到别处"。② `cpal`（rodio 放音）
+  的 Android 后端经 `ndk` 硬链 AAudio，libaaudio 在 API 26 才进 NDK sysroot；我们钉的 24。另：openssl 的
+  android Configure 不认 `ANDROID_API`，缺省取 NDK 最高 API（日志 `android37-clang`）。③ mozjs 的 ohos 预构建
+  `libjs_static.a` 由 openharmony-rs 预构建 **clang 19.1.4** 编（`.comment` 实锤），libc++ 内联命名空间 `std::__h`；
+  SDK 5.0.3 自带 clang 15 的 libc++ 是 `std::__n1`——不是没链 libc++，是链了一套 ABI 不同的。
+- 修法：① win openssl 改 vcpkg `<arch>-windows-static-md`（静态库 + 动态 CRT，与 rustc msvc 缺省一致），
+  `OPENSSL_STATIC=1`，产物按 target 缓存；arm 镜像无 vcpkg 则现拉 bootstrap。② `ANDROID_API` 24→26，
+  openssl `Configure -D__ANDROID_API__=$ANDROID_API`，缓存键带 API。③ ohos 照抄 servo/mozjs `build.yml`：
+  `openharmony-rs/setup-ohos-sdk@v1.0`（6.0.0.1，只取 native sysroot）+ `cargo-ohos 0.3.0 env --download-prebuilt 19`
+  推全套 CC/CXX/LINKER/BINDGEN/RUSTFLAGS。②③ 都加 `CXXSTDLIB=static:-bundle=c++`（mozjs_sys 认此变量；
+  android 缺省链 `stdc++` 空壳、ohos 缺省 `-lc++` 走 `libc++_shared.so` 运行期依赖；`-bundle` 防 rustc 把
+  NDK 的 `libc++.a` 链接脚本 `INPUT(-lc++_static -lc++abi)` 当归档塞进 rlib）。
+- 复现：本地 `~/wjs-data/build-ohos-link.sh` / `build-android-link.sh`（x86_64 mac 宿主交叉 debug 全链）：
+  修后双绿，`llvm-readelf -d` NEEDED 无 libc++（ohos：libc/libz/hilog/time_service；android：+libaaudio/libandroid/liblog，
+  `NT_ANDROID_TYPE_IDENT` API=0x1a），`std::__h`/`__ndk1` 未决 0。win 本地无法复现，以 CI 为准。
+- 推广铁律：**交叉链接预构建 C++ 库，先读它的 `.comment` 定编译器版本**，工具链对齐上游 CI（不是对齐"最新 SDK"）；
+  "undefined `std::__X::`"先比命名空间再加 `-l`。包管理器装 C 库后**以产物文件存在性为准**，不信"installed"文案。

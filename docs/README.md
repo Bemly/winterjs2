@@ -8,11 +8,13 @@
 |---|---|
 | `plan3.md` | **唯一进度入口**（§0 口径/队列/环境）；Phase 10 Bun 高度 |
 | `plan3-journal.md` | plan3 逐轮日志（只追加） |
-| `pitfalls.md` | 踩坑主索引（正文按 `pitfalls-01..06.md` 分卷，编号到 `§4.274`，其中 `4.232` 重号两条），先看顶部索引再 grep |
+| `pitfalls.md` | 踩坑主索引（正文按 `pitfalls-01..06.md` 分卷，编号到 `§4.335`，其中 `4.232` 重号两条），先看顶部索引再 grep |
 | `bun-scope.txt` | Bun 自带 node 测试清单（范围判定，plan3 §0.2） |
 | `bun-parity.md` | 逐模块对拍明细（查某套件历史定性时用） |
 | `dependencies.md` / `dependencies2.md` / `dependencies3.md` | 依赖清单与采购记录（§0.5 找轮子时查） |
 | `metrics.md` | `--serve` `/metrics` 指标说明 |
+| `.github/workflows/release.yml` | 10-target 发版矩阵（tag `v*` 发 draft release / `workflow_dispatch` 空跑），进度见 plan3 §0.4 CI1 |
+| `.github/workflows/pages.yml` | `sample/docs` 站点部署（luoli 校验门） |
 
 ## 存档（已收官，不再更新）
 

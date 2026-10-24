@@ -6,9 +6,9 @@
 # runner 依据（`actions/runner-images` 公仓免费表 + çeyrekfinans 公告）：
 #   macos-latest / ubuntu-latest / windows-latest 系 + `-arm`/`-intel` 全是公仓免费 standard，
 #   其中 macOS Intel（macos-26-intel）是最后一个 Intel 镜像，android/ohos 无 runner 只能交叉。
-# 已知首跑验证点（见各 step 内 `VERIFY` 注释）：win 的 choco openssl 布局、
-# ohos link 段 emu-tls（`__emutls_get_address`，实锤后再动 build.rs 加 `link-lib c++`，
-# 交接 handover 第 4 条；check 阶段碰不到它，故此处不预修）。
+# 首跑八轮（2026-10-23）踩出的三处链接/安装阻塞已按 pitfalls 4.335 修：win openssl 改 vcpkg、
+# android API 26（libaaudio）+ 静态 libc++、ohos 换 mozjs 同源 clang 19 + SDK 6.0.0.1。
+# 进度与验收见 docs/plan3.md §0.4 CI1。
 name: Release 10-target binaries
 
 on:
@@ -29,9 +29,12 @@ env:
   OPENSSL_URL: "https://github.com/openssl/openssl/releases/download/openssl-4.0.3/openssl-4.0.3.tar.gz"
   NDK_VERSION: "r30"
   NDK_URL: "https://dl.google.com/android/repository/android-ndk-r30-linux.zip"
-  ANDROID_API: "24"
-  OHOS_SDK_URL: "https://repo.huaweicloud.com/openharmony/os/5.0.3-Release/ohos-sdk-windows_linux-public.tar.gz"
-  OHOS_SDK_VERSION: "5.0.3"
+  # 26 起才有 libaaudio（cpal→ndk 的 AAudio 后端硬链 -laaudio；24 链接即 unable to find，pitfalls 4.335）。
+  ANDROID_API: "26"
+  # 与 servo/mozjs 预构建同源：SDK 6.0.0.1（sysroot）+ openharmony-rs clang 19（编/链）。
+  OHOS_SDK_VERSION: "6.0.0.1"
+  OHOS_LLVM_PREBUILT: "19"
+  CARGO_OHOS_VERSION: "0.3.0"
 
 jobs:
   build:
@@ -133,30 +136,50 @@ jobs:
       - name: Deps (windows)
         if: startsWith(matrix.os, 'windows-')
         run: |
-          # choco 遇 warning 即非零退出（如 llvm 已装算 1/2），-e 下会误杀：放行，
-          # 真失败由下面的 libcrypto.lib 反查兜底（找不到即错）。
-          choco install llvm openssl -y --params '"/InstallDir:C:\openssl"' || true
+          # llvm 只给 bindgen 用；镜像多已自带（choco 已装即 warning 非零），放行，下面按 libclang.dll 兜底。
+          [ -f "/c/Program Files/LLVM/bin/libclang.dll" ] || choco install llvm -y || true
+          [ -f "/c/Program Files/LLVM/bin/libclang.dll" ] || { echo "libclang.dll missing"; exit 1; }
           # git-bash 自带 MSYS link.exe 会盖住 MSVC link.exe（rustc 按 PATH 取到它即终链失败）：删之。
           rm -f "/c/Program Files/Git/usr/bin/link.exe"
           echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
-          # choco 包会无视 InstallDir（首跑实锤：C:\openssl\lib 不存在）：按 libcrypto.lib 反查真实落盘。
-          if [ ! -f "C:/openssl/lib/libcrypto.lib" ]; then
-            HIT="$(find '/c/Program Files' '/c/Program Files (x86)' '/c/tools' '/c/openssl' -maxdepth 6 -name 'libcrypto.lib' -print -quit 2>/dev/null)"
-            [ -n "$HIT" ] || HIT="$(find '/c/ProgramData/chocolatey/lib' -maxdepth 6 -name 'libcrypto.lib' -print -quit 2>/dev/null)"
-            [ -n "$HIT" ] || { echo "openssl layout:"; ls -R '/c/Program Files/OpenSSL' 2>/dev/null | head -n 40 || true; find '/c/Program Files/OpenSSL' -maxdepth 3 -name '*.lib' 2>/dev/null || true; exit 1; }
-            SSL_HOME="$(cygpath -w "$(dirname "$(dirname "$HIT")")")"
-            {
-              echo "OPENSSL_DIR=$SSL_HOME"
-              echo "OPENSSL_LIB_DIR=$SSL_HOME\\lib"
-              echo "OPENSSL_INCLUDE_DIR=$SSL_HOME\\include"
-            } >> "$GITHUB_ENV"
-          else
-            {
-              echo "OPENSSL_DIR=C:\openssl"
-              echo "OPENSSL_LIB_DIR=C:\openssl\lib"
-              echo "OPENSSL_INCLUDE_DIR=C:\openssl\include"
-            } >> "$GITHUB_ENV"
+
+      # openssl 改走 vcpkg 静态（static-md：静态库 + 动态 CRT，与 rustc msvc 缺省一致）：
+      # choco 的 Shining Light 安装器在 runner 上静默装空（无注册表键、OPENSSL_CONF=\bin\…），
+      # 两轮反查都找不到 libcrypto.lib（pitfalls 4.335）。vcpkg 源码编，产物按 triplet 缓存。
+      - name: Cache vcpkg openssl (windows)
+        if: startsWith(matrix.os, 'windows-')
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-installed
+          key: vcpkg-openssl-${{ matrix.target }}-v1
+
+      - name: OpenSSL via vcpkg (windows)
+        if: startsWith(matrix.os, 'windows-')
+        run: |
+          case "${{ matrix.target }}" in
+            aarch64-*) TRIPLET=arm64-windows-static-md ;;
+            *) TRIPLET=x64-windows-static-md ;;
+          esac
+          ROOT="$RUNNER_TEMP/vcpkg-installed"
+          OUT="$ROOT/$TRIPLET"
+          if [ ! -f "$OUT/lib/libcrypto.lib" ]; then
+            VCPKG="${VCPKG_INSTALLATION_ROOT:-}"
+            # windows-11-arm 镜像不保证预装 vcpkg：缺则现拉现 bootstrap。
+            if [ -z "$VCPKG" ] || [ ! -f "$VCPKG/vcpkg.exe" ]; then
+              VCPKG="$RUNNER_TEMP/vcpkg"
+              git clone --depth 1 https://github.com/microsoft/vcpkg "$VCPKG"
+              cmd //c "$(cygpath -w "$VCPKG/bootstrap-vcpkg.bat")" -disableMetrics
+            fi
+            "$VCPKG/vcpkg.exe" install "openssl:$TRIPLET" --x-install-root="$(cygpath -w "$ROOT")" --disable-metrics
           fi
+          [ -f "$OUT/lib/libcrypto.lib" ] || { echo "vcpkg openssl missing:"; ls -R "$OUT" 2>/dev/null | head -n 40 || true; exit 1; }
+          W="$(cygpath -w "$OUT")"
+          {
+            echo "OPENSSL_DIR=$W"
+            echo "OPENSSL_LIB_DIR=$W\\lib"
+            echo "OPENSSL_INCLUDE_DIR=$W\\include"
+            echo "OPENSSL_STATIC=1"
+          } >> "$GITHUB_ENV"
 
       - name: MSVC env (windows)
         if: startsWith(matrix.os, 'windows-')
@@ -172,7 +195,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/deps-ndk
-          key: ndk-${{ env.NDK_VERSION }}-ossl-${{ env.OPENSSL_VERSION }}
+          key: ndk-${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-ossl-${{ env.OPENSSL_VERSION }}
 
       - name: Setup Android NDK + openssl sysroot
         if: matrix.kind == 'ndk'
@@ -201,6 +224,10 @@ jobs:
           # 自带 --target= 即视为显式（bindgen 不再注入无版本号的，NDK cdefs.h 拒收无版本号）。
           BINDGEN_ENV="BINDGEN_EXTRA_CLANG_ARGS_$(echo "$TRIPLE" | tr '-' '_')"
           echo "$BINDGEN_ENV=--sysroot=$D/ndk/android-ndk-$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/sysroot --target=${CLANG%-clang}"
+          # mozjs_sys 非 apple/ohos 缺省链 stdc++（NDK 只有空壳），预构建引擎是 libc++（__ndk1）编的：
+          # 经它认的 CXXSTDLIB 改链静态 libc++（NDK libc++.a 是 INPUT(-lc++_static -lc++abi) 脚本，
+          # -bundle 防 rustc 把脚本当归档塞进 rlib）。单二进制分发，不带 libc++_shared.so。
+          echo "CXXSTDLIB=static:-bundle=c++"
           } >> "$GITHUB_ENV"
           if [ ! -f "$D/$SYSR/usr/lib/libcrypto.a" ]; then
             [ -f "$D/openssl.tar.gz" ] || curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"
@@ -212,7 +239,9 @@ jobs:
             export PATH="$BRIDGE:$TC:$PATH"
             W="$D/work-$SYSR" && rm -rf "$W" && mkdir -p "$W"
             tar -xzf "$D/openssl.tar.gz" -C "$W" --strip-components=1
-            ( cd "$W" && ./Configure "$CFG" --prefix="$D/$SYSR/usr" no-shared no-tests no-docs \
+            # openssl 的 android Configure 缺省取 NDK 最高 API（首跑实锤 android37-clang）：
+            # 必须显式钉 __ANDROID_API__，否则可能引用低版本 libc 没有的符号。
+            ( cd "$W" && ./Configure "$CFG" -D__ANDROID_API__="$ANDROID_API" --prefix="$D/$SYSR/usr" no-shared no-tests no-docs \
               && make build_libs -j"$(nproc)" && make install_dev )
           fi
           {
@@ -220,86 +249,61 @@ jobs:
             echo "PKG_CONFIG_ALLOW_CROSS=1"
           } >> "$GITHUB_ENV"
 
-      - name: Cache OHOS SDK + openssl sysroots
+      # OHOS 列与 servo/mozjs 发版同构（其 build.yml ohos job）：SDK 6.0.0.1 只取 sysroot，
+      # 编译/链接用 openharmony-rs 预构建 clang 19——mozjs 的 libjs_static.a 就是它编的，
+      # libc++ 内联命名空间是 std::__h；SDK 5.0.3 自带 clang 15 的 libc++ 是 std::__n1，
+      # 链接即整片 undefined std::__h::*（pitfalls 4.335）。env 由 cargo-ohos 推导（不进 Cargo 依赖）。
+      - name: Setup OHOS SDK
+        if: matrix.kind == 'ohos'
+        id: ohos_sdk
+        uses: openharmony-rs/setup-ohos-sdk@v1.0
+        with:
+          version: ${{ env.OHOS_SDK_VERSION }}
+          components: native
+
+      - name: Cache OHOS openssl sysroot
         if: matrix.kind == 'ohos'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/deps-ohos
-          key: ohos-${{ env.OHOS_SDK_VERSION }}-ossl-${{ env.OPENSSL_VERSION }}
+          key: ohos-${{ env.OHOS_SDK_VERSION }}-llvm${{ env.OHOS_LLVM_PREBUILT }}-ossl-${{ env.OPENSSL_VERSION }}-${{ matrix.target }}
 
-      - name: Setup OHOS SDK + openssl sysroot
+      - name: OHOS toolchain env + openssl sysroot
         if: matrix.kind == 'ohos'
         run: |
-          # 本地 check-ohos.sh + build-openssl-ohos.sh 的 CI 版。
-          # OHOS 无 ALSA：rodio 已是 not(ohos) 门控，此处不再需要 alsa.pc 桩。
-          # VERIFY 首跑：ohos link 段若报 __emutls_get_address，实锤后再动 build.rs 加 link-lib c++。
-          D="$RUNNER_TEMP/deps-ohos"
-          mkdir -p "$D"
-          if [ ! -d "$D/sdk" ]; then
-            curl -fsSL -o "$D/ohos-sdk.tar.gz" "$OHOS_SDK_URL"
-            curl -fsSL -o "$D/ohos-sdk.tar.gz.sha256" "$OHOS_SDK_URL.sha256"
-            # 镜像站 .sha256 是裸 hash（65B），sha256sum -c 认不得：拼成标准行再验。
-            printf '%s  %s\n' "$(tr -d ' \t\r\n' < "$D/ohos-sdk.tar.gz.sha256")" ohos-sdk.tar.gz \
-              | ( cd "$D" && sha256sum -c - )
-            mkdir -p "$D/sdk" && tar -xzf "$D/ohos-sdk.tar.gz" -C "$D/sdk"
-          fi
-          # windows_linux 大包是分 OS 套娃（内层 zip），mac 包是直铺：先列两层，见 zip 就拆。
-          { find "$D/sdk" -maxdepth 2 | head -n 30; } || true
-          while IFS= read -r z; do
-            [ -n "$z" ] || continue
-            echo "unzipping inner $z"
-            unzip -q -o "$z" -d "$(dirname "$z")"
-          done <<EOF
-          $(find "$D/sdk" -name '*.zip')
-          EOF
-          # zip 解包会丢 +x 位（tar 包不丢，本地从没遇到）：linux native 工具链先补权限。
-          if [ -d "$D/sdk/ohos-sdk/linux/native/llvm/bin" ]; then
-            find "$D/sdk/ohos-sdk/linux/native/llvm/bin" -type f -exec chmod a+x {} +
-          fi
+          cargo install "cargo-ohos@$CARGO_OHOS_VERSION" --locked
+          NATIVE="${{ steps.ohos_sdk.outputs.ohos_sdk_native }}"
+          [ -d "$NATIVE/sysroot" ] || { echo "OHOS native sysroot missing under $NATIVE"; ls "$NATIVE" || true; exit 1; }
+          # sh 格式逐行 `export K='V'` → GITHUB_ENV（V 内含空格无妨；带连字符的键 sh 格式本就不吐）。
+          cargo ohos env --target "${{ matrix.target }}" --sdk "$NATIVE" \
+            --download-prebuilt "$OHOS_LLVM_PREBUILT" --format sh > "$RUNNER_TEMP/ohos-env.sh"
+          sed -n "s/^export \([A-Za-z0-9_]*\)='\(.*\)'\$/\1=\2/p" "$RUNNER_TEMP/ohos-env.sh" >> "$GITHUB_ENV"
+          # mozjs_sys 对 ohos 缺省 -lc++ 走 libc++.so（运行期要 libc++_shared.so 随包）：
+          # 经它认的 CXXSTDLIB 改静态（-bundle 防 rustc 塞进 rlib）。本地实链验证：NEEDED 只剩
+          # libc/libz/hilog/time_service，无 __h 未决、无 libc++ 运行期依赖。
+          echo "CXXSTDLIB=static:-bundle=c++" >> "$GITHUB_ENV"
+          . "$RUNNER_TEMP/ohos-env.sh"
+          ENVN="$(echo "${{ matrix.target }}" | tr '-' '_')"
+          CC_V="$(eval echo "\$CC_$ENVN")"
           case "${{ matrix.target }}" in
-            aarch64-unknown-linux-ohos) ENVN=aarch64_unknown_linux_ohos; CLANG=aarch64-unknown-linux-ohos-clang; SYSR=sysroot-ohos-arm64; CFG=linux-aarch64; CCX=aarch64-linux-ohos ;;
-            *) ENVN=x86_64_unknown_linux_ohos; CLANG=x86_64-unknown-linux-ohos-clang; SYSR=sysroot-ohos-x86_64; CFG=linux-x86_64; CCX=x86_64-linux-ohos ;;
+            aarch64-*) CFG=linux-aarch64 ;;
+            *) CFG=linux-x86_64 ;;
           esac
-          # 大包内 linux/windows/ohos 三套 native：按本 arch 的 wrapper 名直接定位
-          #（此前按 bin/clang 文件名找，linux 包里未必有这个名，空串经 dirname 变 "." 坑过一次）。
-          OHOS_CLANG_BIN="$(find "$D/sdk" -path '*linux*' -name "$CLANG" -type f -print -quit)"
-          [ -n "$OHOS_CLANG_BIN" ] || OHOS_CLANG_BIN="$(find "$D/sdk" -name "$CLANG" -type f -not -path '*windows*' -print -quit)"
-          [ -n "$OHOS_CLANG_BIN" ] || { echo "OHOS $CLANG not found:"; { find "$D/sdk" -maxdepth 5 -type d | head -n 40; } || true; exit 1; }
-          chmod +x "$OHOS_CLANG_BIN" 2>/dev/null || true
-          OHOS_LLVM="$(dirname "$OHOS_CLANG_BIN")"
-          [ -x "$OHOS_LLVM/clang" ] || chmod +x "$OHOS_LLVM"/clang* 2>/dev/null || true
-          echo "OHOS_LLVM=$OHOS_LLVM"
-          # bindgen 同 NDK：sysroot 取 llvm 的 sibling（native/ 下与 llvm 并列）。
-          OHOS_SYSROOT="$(find "$(dirname "$OHOS_LLVM")/.." -maxdepth 3 -type d -name sysroot -print -quit)"
-          [ -n "$OHOS_SYSROOT" ] || { echo "OHOS sysroot not found near $OHOS_LLVM"; exit 1; }
-          {
-            echo "CC_$ENVN=$OHOS_LLVM/$CLANG"
-            echo "CXX_$ENVN=$OHOS_LLVM/${CLANG}++"
-            echo "AR_$ENVN=$OHOS_LLVM/llvm-ar"
-            # 同 NDK：rustc 终链认 CARGO_TARGET_*_LINKER。
-            TRIPLE="${{ matrix.target }}"
-            LINKER_ENV="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_LINKER"
-            echo "$LINKER_ENV=$OHOS_LLVM/$CLANG"
-            # 同 NDK：bindgen 指到 linux native sysroot。
-            BINDGEN_ENV="BINDGEN_EXTRA_CLANG_ARGS_$(echo "$TRIPLE" | tr '-' '_')"
-            echo "$BINDGEN_ENV=--sysroot=$OHOS_SYSROOT"
-          } >> "$GITHUB_ENV"
-          if [ ! -f "$D/$SYSR/usr/lib/libcrypto.a" ] && [ ! -f "$D/$SYSR/usr/lib64/libcrypto.a" ]; then
-            [ -f "$D/openssl.tar.gz" ] || curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"
+          D="$RUNNER_TEMP/deps-ohos"
+          SYSR="$D/sysroot-${{ matrix.target }}"
+          mkdir -p "$D"
+          if [ ! -f "$SYSR/usr/lib/libcrypto.a" ] && [ ! -f "$SYSR/usr/lib64/libcrypto.a" ]; then
+            curl -fsSL -o "$D/openssl.tar.gz" "$OPENSSL_URL"
             echo "$OPENSSL_SHA256  $D/openssl.tar.gz" | sha256sum -c -
-            BRIDGE="$D/ohos-clang-bin" && mkdir -p "$BRIDGE"
-            ln -sf "$OHOS_LLVM/$CLANG" "$BRIDGE/$CCX-gcc"
-            ln -sf "$OHOS_LLVM/${CLANG}++" "$BRIDGE/$CCX-g++"
-            ln -sf "$OHOS_LLVM/llvm-ar" "$BRIDGE/$CCX-ar"
-            ln -sf "$OHOS_LLVM/llvm-ranlib" "$BRIDGE/$CCX-ranlib"
-            export PATH="$BRIDGE:$OHOS_LLVM:$PATH"
-            W="$D/work-$SYSR" && rm -rf "$W" && mkdir -p "$W"
+            W="$D/work" && rm -rf "$W" && mkdir -p "$W"
             tar -xzf "$D/openssl.tar.gz" -C "$W" --strip-components=1
-            ( cd "$W" && CROSS_COMPILE=$CCX- ./Configure "$CFG" --prefix="$D/$SYSR/usr" no-shared no-tests no-docs \
+            ( cd "$W" && CC="$CC_V" AR="$TARGET_AR" RANLIB="$TARGET_RANLIB" \
+                ./Configure "$CFG" --prefix="$SYSR/usr" no-shared no-tests no-docs \
               && make build_libs -j"$(nproc)" && make install_dev )
           fi
           {
-            echo "OPENSSL_DIR=$D/$SYSR/usr"
+            echo "OPENSSL_DIR=$SYSR/usr"
+            echo "OPENSSL_STATIC=1"
             echo "PKG_CONFIG_ALLOW_CROSS=1"
           } >> "$GITHUB_ENV"
 

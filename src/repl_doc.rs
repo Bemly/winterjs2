@@ -864,6 +864,9 @@ mod tests {
             ("WinterJS2.db", "turso"),
             ("WinterJS2.stream", "backpressure"),
             ("WinterJS2.serve", "shutdown"),
+            ("WinterJS2.cwd", "current working directory"),
+            ("WinterJS2.pid", "process id"),
+            ("WinterJS2.versions", "versions table"),
         ] {
             let s = summary(topic).unwrap_or_else(|| panic!("{topic} documented"));
             assert!(s.contains(needle), "{topic}: {s}");

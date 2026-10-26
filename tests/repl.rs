@@ -225,7 +225,7 @@ fn repl_doc_ns_pages() {
     // `.doc` 命名空间页（上游 .d.ts TSDoc 抽取）：正常出首句+Syntax节；
     // 未别名（Bun.TOML/真机无 Bun.cwd）走未知提示；非 TTY 纯文本。
     let (stdout, stderr, code) = repl_session(
-        ".doc Deno.readFile\n.doc Bun.serve\n.doc WinterJS2.version\n.doc WinterJS2.image.decode\n.doc Bun.TOML\n.doc Bun.cwd\n.exit\n",
+        ".doc Deno.readFile\n.doc Bun.serve\n.doc WinterJS2.version\n.doc WinterJS2.image.decode\n.doc WinterJS2.cwd\n.doc WinterJS2.pid\n.doc WinterJS2.versions\n.doc Bun.TOML\n.doc Bun.cwd\n.exit\n",
     );
     assert_eq!(code, 0);
     assert!(
@@ -241,6 +241,12 @@ fn repl_doc_ns_pages() {
         stdout.contains("decodes image bytes"),
         "stdout:\n{stdout}"
     );
+    assert!(
+        stdout.contains("current working directory"),
+        "stdout:\n{stdout}"
+    );
+    assert!(stdout.contains("process id"), "stdout:\n{stdout}");
+    assert!(stdout.contains("versions table"), "stdout:\n{stdout}");
     assert!(stdout.contains("Syntax"), "stdout:\n{stdout}");
     assert!(
         stderr.contains("no documentation for 'Bun.TOML'"),

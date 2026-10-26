@@ -316,12 +316,19 @@ export class Module {
   // `$HOME/.node_modules` + `$HOME/.node_libraries` + `NODE_PATH` 切分（空项
   // 丢弃，NODE_PATH 段最优先）。
   static _initPaths() {
-    const homeDir = typeof process !== 'undefined' && process.env
-      ? process.env.HOME || ''
-      : '';
-    const nodePath = typeof process !== 'undefined' && process.env
-      ? process.env.NODE_PATH || ''
-      : '';
+    // 沙箱回落（4.353）：`--allow-*` 未含 env 时 HOME/NODE_PATH 读即拒；
+    // node 口径里"未设置"即跳过该段，拒读按未设置处理（而非抛，抛会经
+    // 模块装载递延成 unhandled rejection 毒化退出码）。
+    // env_get 原语只抛权限错（键恒为串），此处 whole 兜底安全。
+    const safeEnv = (k) => {
+      try {
+        return (typeof process !== 'undefined' && process.env) ? process.env[k] || '' : '';
+      } catch {
+        return '';
+      }
+    };
+    const homeDir = safeEnv('HOME');
+    const nodePath = safeEnv('NODE_PATH');
     const prefixDir = resolve(
       typeof process !== 'undefined' ? process.execPath : '/',
       '..',

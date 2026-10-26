@@ -892,3 +892,18 @@
 - 推广铁律：**build 后禁子集 mut_arg**——要么全量归一、要么 build 前改完；
   "某 locale 全灭、另一正常"先查变序/重排类 API（remove+push、sort、HashMap 迭代），
   再查文案。
+
+### 4.353 沙箱拒读 env 须按"未设置"回落，不可抛（2026-10-26，goal round 6）
+
+- 症状：`permissions_env_run` / `permissions_fs` 在仅 `--allow-run`/`--allow-read`
+  下挂——退出码非零 + 滞后 unhandled rejection（`HOME` PermissionError），
+  stdout 断言其实全对。
+- 根因：`Module._initPaths` 直读 `process.env.HOME/NODE_PATH`；拒读抛经模块
+  装载递延成 rejection（同步 throw 会被调用方 catch，rejection 毒化退出码，
+  定位靠 unhandledRejection 堆栈 `get@prelude → _initPaths → node:module:509`）。
+- 修法：`safeEnv` 包裹，拒读按空串（node 未设置口径：跳过该路径段）。
+  env_get 原语只抛权限错，whole-try 兜底安全。
+- 复现：`--allow-run=echo` 跑 `execSync("echo run-ok")` 即现 WARN + 非零退出。
+- 推广铁律：**沙箱内读 env 永远是"可能缺席"读**——凡 `process.env.X || ''` 形
+  都须经回落包装；"stdout 对、退出码错"先查滞后 rejection（unhandled 堆栈），
+  不看 stdout。

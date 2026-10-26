@@ -3711,3 +3711,11 @@ G1/G2/G3/G9 已收官。）
   旧绿系错位误喂 `--eval`；现按 `eval_quiet_flag_never_prints` 为准）。
 - 待下轮：napi×3 / wcover / worker-hang / mapper（非闸门）/ permissions×2 /
   r20-fscry 纯跑。
+
+## 2026-10-26 goal round 6：_initPaths 沙箱回落（4.353），permissions 双绿
+
+- `permissions_env_run` / `permissions_fs`：`_initPaths` 读 HOME/NODE_PATH 被拒，
+  经装载递延成 unhandled rejection（stdout 全对、退出码错）；`safeEnv` 按
+  "未设置"回落（node 同口径跳过该段）。双测转绿。
+- napi×3 / wcover：realm/端口深水，维持定界（专轮）；worker-hang / mapper /
+  r20-fscry 待排。

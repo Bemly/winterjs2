@@ -30,13 +30,11 @@
     }
     if (options !== undefined) __validateSendOptions(options);
     if (!this.__connected) {
-      // Node 口径：显式 disconnect 后 send 回 false，异步报
-      // ERR_IPC_DISCONNECTED；自然 close 后则 ERR_IPC_CHANNEL_CLOSED
-      //（send-after-close 套件）。
-      const explicit = !!this.__explicitDisc;
-      const err = explicit
-        ? Object.assign(new Error("IPC channel is already disconnected"), { code: "ERR_IPC_DISCONNECTED" })
-        : Object.assign(new Error("Channel closed"), { code: "ERR_IPC_CHANNEL_CLOSED" });
+      // Node 口径（pin 26.8.2 实测）：显式 disconnect 后 send 同自然 close，
+      // 一律回 false + 异步 ERR_IPC_CHANNEL_CLOSED（"Channel closed"）；
+      // ERR_IPC_DISCONNECTED 只用于 disconnect() 重入（disconnect 套件
+      // assert.throws 形），不用于 send（4.347）。
+      const err = Object.assign(new Error("Channel closed"), { code: "ERR_IPC_CHANNEL_CLOSED" });
       if (cb) queueMicrotask(() => cb(err));
       else queueMicrotask(() => this.__emitForkError(err));
       return false;
@@ -67,7 +65,6 @@
       return;
     }
     this.__connected = false;
-    this.__explicitDisc = true;
     // 控制信封（单键载荷，子端 shim 解释为 disconnect，不投递给用户）。
     try { this.__worker.postMessage({ __wjs2_fork_ctl: "disconnect" }); } catch {}
     if (typeof this.#ondisconnect === "function") {
@@ -85,7 +82,6 @@
         Object.keys(m).length === 1 && m.__wjs2_fork_ctl === "disconnect") {
       if (this.__connected) {
         this.__connected = false;
-        this.__explicitDisc = true;
         if (typeof this.#ondisconnect === "function") {
           try { this.#ondisconnect(); } catch {}
         }

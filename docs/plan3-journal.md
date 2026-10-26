@@ -3637,3 +3637,14 @@ G1/G2/G3/G9 已收官。）
   `MODULE_NOT_FOUND`（与我方一致），测试按 26.8.1 记 `undefined`——版本漂移，不碰运行时，待 pin 版仲裁。
 - 待下轮：crypto subtle×3 / napi×3 / fetch byob / child×2 / wcover / worker-hang / mapper /
   is-url-nope 逐件 time-box；`r20-fscry` 腾盘后纯跑新 tag。
+
+## 2026-10-26 goal round 2：fork send 码修正 + exec 自举门控（4.347/4.348）
+
+- `child_fork_ipc`：pin 26.8.2 实测显式 disconnect 后 send 为 `ERR_IPC_CHANNEL_CLOSED`
+  （实现误给 DISCONNECTED）；`child_proc_onexit.js` 去分支一律 CHANNEL_CLOSED，
+  删 `__explicitDisc` 三处；单测转绿。
+- `child_exec_shell_self_and_timeout`：缺 `envself` 系退出竞速（自举冷启动慢于
+  sleep 链退出沿），测试改三路计数门（标签不动）；转绿，6 件联跑全绿。
+- 余红（皆基线预存）：crypto subtle×3 / napi×3 / fetch byob / wcover /
+  worker-hang / mapper（非闸门）/ permissions×2（exec/PATH 交互待专轮）/
+  pm×2（环境）/ `is-url-nope` 已翻转；`r20-fscry` 待腾盘纯跑。

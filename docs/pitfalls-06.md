@@ -813,3 +813,25 @@
 - 推广铁律：**内建模块禁用 `import.meta.url` 作 base**——meta.url 在内建域是
   `node:` 形，不可喂任何要 file/path 的 API；凡"小用例绿、完整脚本红"先查
   懒初始化路径，不查日志时序。
+
+### 4.347 显式 disconnect 后 send 的码是 CHANNEL_CLOSED，不是 DISCONNECTED（2026-10-26，goal round 2）
+
+- 症状：`child_fork_ipc` 期望 `ERR_IPC_CHANNEL_CLOSED`，实现给 `ERR_IPC_DISCONNECTED`。
+- 根因：实现注释把"显式断开→DISCONNECTED"当 node 口径；pin 26.8.2 实测：
+  显式 disconnect 后 send 回 false + 异步 `ERR_IPC_CHANNEL_CLOSED`（"Channel closed"），
+  与自然 close 同形；`ERR_IPC_DISCONNECTED` 只用于 `disconnect()` 重入（套件 assert.throws 形）。
+- 修法：`child_proc_onexit.js` send() 去显式/自然区分，一律 CHANNEL_CLOSED；删 `__explicitDisc` 三处。
+- 复现：fork→message→disconnect→send，对比 pin 版同脚本。
+- 推广铁律：**注释写的"node 口径"须有套件行号或真机探针背书**，否则视为断言待验；
+  两个近义码并存时，先写双探针再定分支。
+
+### 4.348 自举子进程测试的退出必须等齐自举回调（2026-10-26，goal round 2）
+
+- 症状：`child_exec_shell_self_and_timeout` 恒缺 `envself` 行（连带 `fileself`），
+  隔离跑各项全绿，完整脚本必挂。
+- 根因：退出沿只等 sleep 链（~0.5s），自举子进程（winterjs2 自身冷启动 ~2s+）
+  回调到时父已退——时序竞速非语义 bug；加 `import assert` 等只改分配时序，属误导项。
+- 修法：测试内三路计数门（两路自举 + sleep 链，齐了才退），标签与断言面不动。
+- 复现：完整脚本 8s 窗口即现两行；300ms 窗口必丢。
+- 推广铁律：**自举/重型子进程测试禁定时退出**——退出沿必须由全部被测回调计数门控；
+  "隔离绿、整脚本红"先拉窗口验证时序，再查语义。

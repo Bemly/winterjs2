@@ -150,13 +150,19 @@ import assert from "node:assert";
 const self = process.execPath;
 const selfFile = new URL("child-ran.mjs", import.meta.url).pathname;
 // env 间接形（escapePOSIXShell 口径）+ 裸文件自举：子进程即自身
+// 退出门控：两路自举回调 + sleep 链三方齐才退（自举冷启动慢于 sleep 链，
+// 不等齐即丢行；标签与断言面不动，只改退出沿）。
+let doneCount = 0;
+const maybeExit = () => { if (doneCount === 3) setTimeout(() => process.exit(0), 300); };
 const env = { ...process.env, ESC: self, ESCF: selfFile };
 exec(`"${"$"}{ESC}" "${"$"}{ESCF}" child`, { env }, (e, stdout) => {
   console.log("envself", e === null, stdout.trim() === "child-ran");
+  doneCount++; maybeExit();
 });
 // 裸文件形（直接路径）：--run 翻译 + argv[2] 可见
 execFile(self, [selfFile, "arg-child"], (e, stdout) => {
   console.log("fileself", e === null, stdout.trim() === "arg-child");
+  doneCount++; maybeExit();
 });
 // timeout 到点：killed=true、code=null、signal 缺省 SIGTERM
 exec("sleep 5", { timeout: 60 }, (e) => {
@@ -175,7 +181,7 @@ exec("sleep 5", { timeout: 60 }, (e) => {
           // 无回调：live child（真机 exec/execFile 口径，不抛）
           const c = exec("echo nocb");
           console.log("nocb", typeof c.pid === "number", typeof c.stdout.on === "function");
-          setTimeout(() => process.exit(0), 300);
+          doneCount++; maybeExit();
         });
       });
     });

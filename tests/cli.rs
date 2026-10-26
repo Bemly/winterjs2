@@ -329,8 +329,9 @@ fn i18n_unknown_env_falls_back_to_en() {
 
 #[test]
 fn cli_flag_spec_single_action() {
-    // 正常：短 flag 全套（-r/-e/-a/-i）与子命令等价
-    assert_eq!(stdout_of(&mut winterjs2().args(["-e", "40 + 2"])), "42\n");
+    // 正常：短 flag 全套（-r/-e/-a/-i）；-e 恒静默（3d8b07e 起 node -e 同形，
+    // eval_quiet_flag_never_prints 钉死；此处只验动作互斥面，不复断回显）
+    assert_eq!(stdout_of(&mut winterjs2().args(["-e", "40 + 2"])), "");
     // 报错：多动作互斥（exit=1，可读）
     let out = winterjs2()
         .args(["--run", "a.js", "--eval", "1"])

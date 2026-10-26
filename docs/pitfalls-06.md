@@ -875,3 +875,20 @@
 - 复现：同脚本跑 pin 版（服务端零事件）vs 本仓（uncaught 崩）。
 - 推广铁律：**自家注入的破坏，其回声一律静默**——注入点与上报点分属两处时，
   必须有显式旗连接两者；"上报无条件"默认只适用于对端原生错误。
+
+### 4.352 clap `mut_arg` 实为 remove+push：build 后子集变序即解析错位（2026-10-26，goal round 5）
+
+- 症状：en locale 下 `--help` 仅 80 字节版本行、`--config` 错报缺 `--completions`
+  值；zh 全正常。7 件 cli 黑盒同红，看似"英文 Command 坏了"。
+- 根因：`with_localized_args` 在 `build()` 后 `mut_arg`；该 API 源码即
+  remove_by_name+push——en 下仅 1 个 arg 真变更（eval_quiet help 文案漂移），
+  子集变序改 build 后内部索引，解析错位；zh 全量 56 个逐个 remove+push 恰转
+  回初始序故无恙（raw `Cli::command()` 双 locale 皆 OK 作证）。
+- 修法：无变更也过一遍恒等 `mut_arg` 做顺序归一（内容零改动、不新增泄漏）；
+  另翻 `cli_flag_spec_single_action` 旧断言（3d8b07e 起 `-e` 恒静默，
+  旧 "42" 期望系错位解析误喂 `--eval` 才绿）。
+- 复现：`WINTERJS2_LANG=en --config` / `--help | wc -c`（80 vs 6117）；
+  单元级 `localized_command().try_get_matches_from(["w","--config"])` 双 locale 对比。
+- 推广铁律：**build 后禁子集 mut_arg**——要么全量归一、要么 build 前改完；
+  "某 locale 全灭、另一正常"先查变序/重排类 API（remove+push、sort、HashMap 迭代），
+  再查文案。

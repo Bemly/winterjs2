@@ -368,6 +368,11 @@ fn with_localized_args(mut cmd: clap::Command) -> clap::Command {
             None => (None, None),
         };
         if new_help.is_none() && new_value.is_none() {
+            // 顺序归一（4.352）：`mut_arg` 实为 remove+push（clap 源码），子集变序
+            // 即改 build 后内部索引，解析错位（en 下仅 eval_quiet 被改即全灭）；
+            // 全量过一遍恒等变换即回到初始序，与中文全量变序同构。内容零改动，
+            // 亦不泄漏（`value_name` 只在真变更时 leak）。
+            cmd = cmd.mut_arg(id.as_str(), |a| a);
             continue;
         }
         cmd = cmd.mut_arg(id.as_str(), |a| {

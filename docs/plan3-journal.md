@@ -3701,3 +3701,13 @@ G1/G2/G3/G9 已收官。）
   `locales/` 自基线零改动 → 预存（round1 尾部截断误判为新增）。
   根因待查（en 下 clap 解析腐坏，zh 正常；`93beb5f` 曾有 -l en 错位回退史），
   记档另轮，不碰 i18n/clap 面。
+
+## 2026-10-26 goal round 5：en locale 解析腐坏根因+全绿（4.352）
+
+- 根因：`mut_arg` = remove+push；en 仅 eval_quiet 真变更→子集变序→build 后
+  索引错位（验证：裸 command 双 locale OK；全量恒等 mut_arg 即 OK）。
+  修法：无变更亦恒等 mut_arg 顺序归一。cli 域 21/21 绿。
+- 另翻 `cli_flag_spec_single_action`（`-e` 静默设计与旧 "42" 期望矛盾，
+  旧绿系错位误喂 `--eval`；现按 `eval_quiet_flag_never_prints` 为准）。
+- 待下轮：napi×3 / wcover / worker-hang / mapper（非闸门）/ permissions×2 /
+  r20-fscry 纯跑。

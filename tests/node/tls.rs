@@ -933,3 +933,47 @@ setTimeout(() => console.log("end-ok"), 500);
     assert!(out.contains("end-ok"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn tls_connect_family_honored() {
+    // node lib/net.js onlookup 口径：family 指定即先 lookup 定向再建连；
+    // 正常：127.0.0.1 + family:4 经 lookup 直达，remoteAddress 为 IPv4；
+    // 边界：字面 IP + family 不走 lookup（同步直连不断言 lookup 形）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let (cert_path, key_path) = write_self_signed(&dir);
+    let out = run_fs_file(
+        &dir,
+        "f.mjs",
+        &format!(
+            r#"
+import tls from "node:tls";
+import fs from "node:fs";
+const key = fs.readFileSync({key_path:?}, "utf8");
+const cert = fs.readFileSync({cert_path:?}, "utf8");
+const server = tls.createServer({{ key, cert }});
+server.listen(0, "127.0.0.1", () => {{
+  const port = server.address().port;
+  const a = tls.connect({{ port, host: "127.0.0.1", family: 4, rejectUnauthorized: false }}, () => {{
+    console.log("v4", a.remoteAddress, a.remoteFamily);
+    const b = tls.connect({{ port, host: "localhost", family: 4, rejectUnauthorized: false }}, () => {{
+      console.log("lname", b.remoteAddress);
+      b.end();
+      a.end();
+      server.close();
+    }});
+    b.on("error", (e) => console.log("unexpected", e.code));
+  }});
+  a.on("error", (e) => console.log("unexpected", e.code));
+}});
+server.on("close", () => console.log("srv-close"));
+setTimeout(() => console.log("end-ok"), 2500);
+"#
+        ),
+    );
+    assert!(out.contains("v4 127.0.0.1 IPv4"), "out: {out}");
+    assert!(out.contains("lname 127.0.0.1"), "out: {out}");
+    assert!(out.contains("srv-close"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    assert!(!out.contains("unexpected"), "out: {out}");
+    dir.close().unwrap();
+}

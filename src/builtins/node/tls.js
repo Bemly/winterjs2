@@ -260,9 +260,14 @@ class TLSSocket extends Socket {
     }
     // tls.connect() 直拨面（既有底座：Rust 侧握手后连体，读写泵共用 net 泵）。
     if (cb) this.once("secureConnect", cb);
+    // family 定向（address-family 套件）：直拨 native 只认字面地址，指定即先 lookup 再连（tls_context.js；SNI 取原 host）。
+    if (__tlsFamilyOf(mo.family) !== 0 && !__isIP(String(host))) { __tlsDirectDialFamily(this, mo, String(host), Number(port), cb); return this; }
+    return this.__dialDirect(port, String(host), cb, mo, String(host));
+  }
+  __dialDirect(port, host, cb, mo, sniHost) {
     const sc = mo.secureContext?.context ?? {};
     const wire = {};
-    const servername = mo.servername || (host && !__isIP(host) ? host : undefined);
+    const servername = mo.servername || (sniHost && !__isIP(sniHost) ? sniHost : undefined);
     if (servername !== undefined) wire.servername = String(servername);
     // N2：SNI 实发旗（直拨面；无名/IP 即未发，finishInit 口径回 false 不回灌 host）。
     this.__sniSent = (servername !== undefined);

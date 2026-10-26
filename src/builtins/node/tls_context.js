@@ -667,3 +667,27 @@ export function checkServerIdentity(hostname, cert) {
   e.cert = cert;
   return e;
 }
+
+// ── tls.connect family 定向（connect-address-family 套件）─────────────────
+// node 口径（lib/net.js onlookup）：family 指定即先经 lookup 定向解析再建连；
+// 直拨 native 只认字面地址，故在此下沉（SNI 仍取原 host，不回灌解析 IP）。
+// `sock` 为 TLSSocket（`__dialDirect` 由 tls.js 提供：wire 置名 + native 建连）。
+function __tlsFamilyOf(f) {
+  if (f === 4 || f === "IPv4") return 4;
+  if (f === 6 || f === "IPv6") return 6;
+  return 0;
+}
+function __tlsDirectDialFamily(sock, mo, host, port, cb) {
+  let lookup = mo.lookup;
+  if (typeof lookup !== "function") {
+    try { lookup = globalThis.require("node:dns").lookup; } catch { lookup = null; }
+  }
+  if (typeof lookup !== "function") { sock.__dialDirect(port, host, cb, mo, host); return; }
+  const fam = __tlsFamilyOf(mo.family);
+  try {
+    lookup(String(host), { family: fam, hints: 0, all: false }, (err, address) => {
+      if (err) { queueMicrotask(() => sock.destroy(err)); return; }
+      sock.__dialDirect(port, String(address), cb, mo, String(host));
+    });
+  } catch (e) { queueMicrotask(() => sock.destroy(e)); }
+}

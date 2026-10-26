@@ -430,6 +430,10 @@ function __mkSessionSocket(session, peerObj, localObj) {
   sock.encrypted = !!session.encrypted;
   sock.connecting = false;
   sock.destroyed = false;
+  // respond-with-file-connection-abort 套件：`net.Socket.prototype.destroy.call(
+  // client.socket)` 借用——net 销毁经 `this.__nativeKill()` 拆底层，此处桥接
+  // 会话销毁（自有 sock.destroy 同效；net 侧 close 自发）。
+  sock.__nativeKill = () => { try { session.destroy(); } catch {} };
   sock.readable = true;
   sock.writable = true;
   sock.destroy = (err) => {
@@ -855,6 +859,13 @@ class Http2Session extends EventEmitter {
   }
   __unregisterStream(stream) {
     this.__streams.delete(stream.id);
+    // graceful-close 套件：server.close() 后在途流排空即拆会话（node
+    // closeAllSessions + kMaybeDestroy 口径；排空钩见 server.close）。
+    if (this.__streams.size === 0 && this.__closeOnDrain &&
+        !this.closed && !this.destroyed) {
+      this.__closeOnDrain = false;
+      this.close();
+    }
   }
   close(cb) {
     if (typeof cb === "function") this.once("close", cb);

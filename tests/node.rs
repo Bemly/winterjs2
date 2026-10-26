@@ -37,6 +37,8 @@ mod http2;
 mod http2_faces;
 #[path = "node/http2_tunnel.rs"]
 mod http2_tunnel;
+#[path = "node/http2_server_opts.rs"]
+mod http2_server_opts;
 #[path = "node/https.rs"]
 mod https;
 #[path = "node/inspector.rs"]

@@ -1,6 +1,7 @@
 
-// ── 服务端流对象（node ServerHttp2Stream：真 Duplex）────────────────────────
-class Http2ServerStream extends Duplex {
+import { inspect as __http2StreamInspect } from "node:util";
+// ── 服务端流对象（node Http2Stream：真 Duplex；类名 node 同形，stream-client 套件点名）────────────────────────
+class Http2Stream extends Duplex {
   constructor(session, connId, id, options) {
     super(options ?? {});
     this.__session = session;
@@ -22,6 +23,7 @@ class Http2ServerStream extends Duplex {
     this.__trailers = null;
     this.sendDate = true;
     this.endAfterHeaders = false;
+    this.__respEndedAtHeaders = false;
     this.__reqEnded = false;
     this.__rstSent = false;
     // 实例数据属性遮蔽 Duplex 原型只读 getter（socket.set 套件直写直读）
@@ -58,6 +60,18 @@ class Http2ServerStream extends Duplex {
       remoteClose,
       localWindowSize: 65535,
     };
+  }
+  // node kInspect 口径（core.js [kInspect]）：`Http2Stream {id/closed/
+  // destroyed/state/readableState/writableState}`（stream-client 套件点名三键）。
+  [Symbol.for("nodejs.util.inspect.custom")]() {
+    return `Http2Stream ${__http2StreamInspect({
+      id: this.id,
+      closed: this.closed,
+      destroyed: this.destroyed,
+      state: this.state,
+      readableState: this._readableState,
+      writableState: this._writableState,
+    })}`;
   }
   // 伪头合成由 req 承担；stream 可读侧 = 请求体
   _read() {}
@@ -151,6 +165,8 @@ class Http2ServerStream extends Duplex {
     const sent = { __proto__: null };
     const sentPseudo = { __proto__: null };
     sentPseudo[":status"] = String(status);
+    // sent-headers 套件点名：sentHeaders 含数字形 ':status'（node 真机同）。
+    sent[":status"] = status;
     if (this.sendDate && headers["date"] === undefined && headers["Date"] === undefined) {
       entries.push(["date", new Date().toUTCString()]);
       sent["date"] = new Date().toUTCString();
@@ -174,7 +190,9 @@ class Http2ServerStream extends Duplex {
     __wjs2_h2_respond(this.__conn, this.id, status, JSON.stringify(entries),
       (options.endStream || endStreamAuto) ? 1 : 0);
     if (options.endStream || endStreamAuto) {
-      this.endAfterHeaders = true;
+      // 响应随头终结（_final wantTrailers 门读此旗；请求侧 endAfterHeaders
+      // 保持 node 只读语义，见 __ev request）。
+      this.__respEndedAtHeaders = true;
       this.__finishWritable();
     }
     return undefined;
@@ -309,7 +327,7 @@ class Http2ServerStream extends Duplex {
   _final(cb) {
     if (this.__destroyed) { cb(); return; }
     this.__implicitRespond();
-    if (this.__waitForTrailers && !this.__trailersSent && !this.endAfterHeaders) {
+    if (this.__waitForTrailers && !this.__trailersSent && !this.__respEndedAtHeaders) {
       // wantTrailers 窗口：用户 sendTrailers 后回填收尾
       this.__finalCb = cb;
       queueMicrotask(() => {

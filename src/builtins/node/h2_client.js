@@ -327,6 +327,8 @@ class ClientHttp2Session extends EventEmitter {
         if (err) sock.emit("error", err);
         s.destroy();
       };
+      // 服务端代理同理（h2_head.js __mkSessionSocket）：net 借用销毁经此拆会话。
+      sock.__nativeKill = () => { try { s.destroy(); } catch {} };
       sock.end = () => { s.close(); return sock; };
       sock.write = () => true;
       sock.setTimeout = (m, cb) => { s.setTimeout(m, cb); return sock; };

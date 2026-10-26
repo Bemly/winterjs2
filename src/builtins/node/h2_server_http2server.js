@@ -13,6 +13,13 @@ class Http2Server extends EventEmitter {
     this.__sessions = new Map();
     this.__sockBag = {};
     this.__opts = options;
+    // node initializeOptions 口径（core.js:3673-3674）：custom Req/Res 类默认。
+    // options-server-request/response 套件：用户子类实例化 + 方法可见。
+    if (this.__opts.Http2ServerRequest === undefined) this.__opts.Http2ServerRequest = Http2ServerRequest;
+    if (this.__opts.Http2ServerResponse === undefined) this.__opts.Http2ServerResponse = Http2ServerResponse;
+    // node Http2Server 构造即 `this.timeout = 0`（core.js:3716/3766）；
+    // `server.timeout = ms` 纯赋值，新会话在 __sessionFor 按此武装（core.js:3604-3605）。
+    this.timeout = 0;
     this[kPendingOptions] = this.__opts;
     // node setupCompat 口径：compat 路由（'connect'/405、'request'）只在
     // 'request' 监听器出现过后才接线（connect-method[-extended] 套件：
@@ -68,17 +75,13 @@ class Http2Server extends EventEmitter {
     if (callback !== undefined && typeof callback !== "function") {
       throw __code("ERR_INVALID_ARG_TYPE", "callback", "function", callback);
     }
-    // node Http2Server.setTimeout：记 `this.timeout`，返回 this。
+    // node Http2Server.setTimeout（core.js:3730-3736）：只记 `this.timeout` +
+    // 回调接 'timeout'，不追溯武装已存会话（新会话在 __sessionFor 按此值武装）。
     this.timeout = msecs;
     if (typeof callback === "function") this.once("timeout", callback);
-    const ms = Number(msecs) || 0;
-    if (this.__timeoutTimer !== undefined) clearTimeout(this.__timeoutTimer);
-    if (ms > 0) {
-      this.__timeoutTimer = setTimeout(() => {
-        this.__timeoutTimer = undefined;
-        for (const [, s] of this.__sessions) s.emit("timeout");
-        this.emit("timeout");
-      }, ms);
+    if (this.__timeoutTimer !== undefined) {
+      clearTimeout(this.__timeoutTimer);
+      this.__timeoutTimer = undefined;
     }
     return this;
   }
@@ -115,6 +118,11 @@ class Http2Server extends EventEmitter {
         }
       }, 250);
     }
+    // node closeAllSessions 口径（core.js:3701）：有在途流的会话不受影响，
+    // 流排空后拆连（graceful-close 套件；钩子见 __unregisterStream）。
+    for (const s of this.__sessions.values()) {
+      if (s.__streams.size !== 0 && !s.closed && !s.destroyed) s.__closeOnDrain = true;
+    }
     return this;
   }
   __emitClose() {
@@ -127,6 +135,17 @@ class Http2Server extends EventEmitter {
     if (s === undefined) {
       s = new Http2Session(this, connId, peerObj);
       this.__sessions.set(connId, s);
+      // node connectionListener 口径（core.js:3604-3605）：新会话按
+      // server.timeout 武装超时；到点 server.emit('timeout', session)，
+      // 无人监听即 session.destroy()（server-timeout 套件双形）。
+      if (this.timeout) {
+        s.setTimeout(this.timeout, () => {
+          if (s.destroyed || s.closed) return;
+          if (!this.emit("timeout", s)) {
+            try { s.destroy(); } catch {}
+          }
+        });
+      }
       this.emit("session", s);
     }
     return s;
@@ -157,16 +176,24 @@ class Http2Server extends EventEmitter {
           port: peer.includes(":") ? Number(peer.slice(peer.lastIndexOf(":") + 1)) : 0,
         };
         const session = this.__sessionFor(Number(o.connId), peerObj);
-        const stream = new Http2ServerStream(session, Number(o.connId), id);
+        const stream = new Http2Stream(session, Number(o.connId), id);
         const streaming = o.streaming === true;
         const bodyEmpty = !streaming && (o.body ?? "") === "";
         const trailersEmpty = !streaming && (o.trailers ?? "[]") === "[]";
         const flags = bodyEmpty && trailersEmpty ? 5 : 4;
+        // node 口径（core.js:445）：请求 HEADERS 带 END_STREAM 即请求侧
+        // endAfterHeaders（compat-header 套件点名 `req.stream.endAfterHeaders`
+        // 为 true）。响应侧"随头终结"另记 __respEndedAtHeaders（见 respond），
+        // _final 只读后者——此前同名致 wantTrailers 永不触发（sent-headers）。
         stream.endAfterHeaders = bodyEmpty && trailersEmpty;
         const sock = __mkSocketProxy(stream, this, peerObj);
         const scheme = this.__secure ? "https" : "http";
-        const req = new Http2ServerRequest(stream, o, scheme, sock);
-        const res = new Http2ServerResponse(req, stream);
+        // node setupCompat 口径（core.js:3837-3838）：custom 类随 options 进
+        // onServerStream 绑定；此处逐请求取类（同一 options 对象，等价）。
+        const ReqClass = this.__opts.Http2ServerRequest ?? Http2ServerRequest;
+        const ResClass = this.__opts.Http2ServerResponse ?? Http2ServerResponse;
+        const req = new ReqClass(stream, o, scheme, sock);
+        const res = new ResClass(req, stream);
         this.__streams.set(id, { stream, req, res });
         stream.once("close", () => this.__streams.delete(id));
             const method = req.headers[":method"];

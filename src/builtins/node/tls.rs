@@ -599,7 +599,7 @@ pub unsafe extern "C" fn tls_listen(
         .map(|s| s.as_bytes().to_vec())
         .collect();
     // SNI 选择器版（addContext 下沉；无 key/cert 即缺省空，握手无证书可出示 → tlsClientError）。
-    let (mut cfg, selector) = match server_config_sni(opts.cert.as_deref(), opts.key.as_deref()) {
+    let (cfg, selector) = match server_config_sni(opts.cert.as_deref(), opts.key.as_deref()) {
         Ok((mut c, sel)) => {
             c.alpn_protocols = alpn;
             (c, sel)

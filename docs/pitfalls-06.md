@@ -664,3 +664,23 @@
 - 推广铁律：**正则与处理函数同改**——凡"匹配集 drives 处理函数"的转义/校验对，
   加码只改一侧即埋漏转义；共享原语（inspect/format/escape）的 2 行修必须配全域回归，
   禁搭车小轮。
+
+### 4.338 release/pages actions Node20 弃用告警：升 node24 major 线（2026-10-26，CI1 收尾）
+
+- 症状：tag 推送 run 40258918071 全绿但每 job 带 `Node.js 20 is deprecated … forced to run on Node.js 24`
+  annotations（checkout/cache/upload/download/msvc-dev-cmd）。
+- 根因：各 action 的 `runs.using` 钉死运行时：checkout@v4/cache@v4/upload@v4/download@v4/
+  msvc-dev-cmd@v1/gh-release@v2/setup-node@v4/configure-pages@v5 皆 `node20`。
+  注意 upload@v5/download@v5 仍是 node20（"v5 即 node24"是错觉，须逐个验 `action.yml`），
+  download@v6 亦 node20——node24 线是 upload@v6 / download@v7。
+- 修法：`gh api repos/<owner>/<repo>/contents/action.yml?ref=<tag>` 逐个验 `runs.using` 后 bump：
+  checkout@v5、cache@v5、upload-artifact@v6、download-artifact@v7、
+  softprops/action-gh-release@v3（纯 runtime 升级，`files/draft/generate_release_notes` 输入全在）、
+  setup-node@v5；upload/download v4+ 同 artifact 后端，跨 major 互通。
+  `ilammy/msvc-dev-cmd`（最新 v1.13.0）与 `configure-pages@v5` 无 node24 线，原样留余量。
+  对应 `uses:` 改 9 行（release.yml 7 + pages.yml 2），零输入变更；release.yml 改动按铁律走
+  `workflow_dispatch` 空跑验证（只编不发），pages.yml 走其自带 dispatch 验证。
+- 复现：任一 tag/push run 的 Annotations 即全量清单。
+- 推广铁律：**actions 大版本先验 `runs.using` 再 bump**——major 号与 node 运行时无固定对应，
+  同一 action 的连续 major 可能同运行时（upload v4/v5、download v4/v5/v6 皆 node20）；
+  无 node24 线的 action（msvc-dev-cmd/configure-pages）记余量不硬追。

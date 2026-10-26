@@ -3318,3 +3318,66 @@ G1/G2/G3/G9 已收官。）
   禁搭车）；`%o showHidden` 函数内部槽（模块头既有忽略注记）；test-util.js:58
   跨 realm isNativeError（4.57 同族）；builtins 版本钉死（release lane）。
 - 转绿：test-whatwg-url-custom-searchparams.js（base19d→now，4/4 稳定）。
+## 2026-10-26 CI1 收尾验收 + Node20 告警修 + W1 语料小件（CI1/W1 协作轮）
+
+### CI1：v26.10.23 发版验收 ✅（tag/构建/发布全链已通）
+
+- 链路：空跑 run 40110883733（10/24，workflow_dispatch）**10/10 绿** →
+  `git tag v26.10.23`（=17a845a）推送 → run 40258918071（push tag，
+  10 build + Publish job **11/11 绿**，冒烟 6/6 原生列，交叉 4 列只编不测）→
+  Release `v26.10.23` 已 **Published**（draft:false，2026-10-26T03:05:41Z，
+  `generate_release_notes` 自动体）。
+- 10 件资产（`winterjs2-26.10.23-<target>.tar.gz/.zip` + `.sha256`，待人工核对表）：
+  aarch64-apple-darwin 40.1MB / x86_64-apple-darwin 41.9MB /
+  x86_64-unknown-linux-gnu 57.8MB / aarch64-unknown-linux-gnu 60.7MB /
+  x86_64-pc-windows-msvc 41.1MB（.zip）/ aarch64-pc-windows-msvc 39.2MB（.zip）/
+  aarch64-linux-android 60.1MB / x86_64-linux-android 61.0MB /
+  aarch64-unknown-linux-ohos 59.6MB / x86_64-unknown-linux-ohos 60.1MB。
+- 余量记档（本次不追）：① openssl 大版本跨平台不一（mac brew 3.x / win vcpkg 3.x /
+  NDK-OHOS sysroot 现编 4.0.3）；② android/ohos 4 列无运行层冒烟（只编不测，
+  运行层需真机/模拟器，另案）；③ Node20 告警本轮修（下段），
+  `ilammy/msvc-dev-cmd@v1` 与 `configure-pages@v5` 无 node24 线留余。
+- 发版相关 Rust 改动：本轮零（workflow pin + 文档页 only），不碰 exit/jobqueue，
+  无新增 `UNSAFE-BOUNDARY`，无需 panic 用例（§0.7 条件未触发）。
+
+### CI1 余：Node20 弃用告警修（小，4.338；待 dispatch 空跑验证后合入主干记账）
+
+- 范围：release.yml 7 处 + pages.yml 2 处（`uses:` pin only，零输入变更）：
+  checkout@v4→v5、cache@v4→v5（×3）、upload-artifact@v4→v6、
+  download-artifact@v4→v7、softprops/action-gh-release@v2→v3、
+  setup-node@v4→v5。逐个验过新 major 的 `action.yml`（`runs.using: node24` +
+  所用输入全在：path/key、name/path/retention-days、pattern/path/merge-multiple、
+  files/draft/generate_release_notes、node-version）。
+- 坑：upload@v5/download@v5/v6 仍 node20，node24 线是 upload@v6/download@v7
+  （major≠运行时，详 4.338）；v4+ artifact 同后端，跨 major 互通。
+- 验证计划：push 后 `gh workflow run release.yml`（workflow_dispatch，只编不发，
+  ~25min）+ `gh workflow run pages.yml`（自带 dispatch，~1min，含 luoli 校验与部署门）；
+  双绿即本轮记账完，否则回滚 pin。
+
+### W1 小件：`.doc` 语料补 cwd/pid/versions + image 计数行文同步
+
+- 缺口定位：`Object.keys(WinterJS2)` 69 键 vs `content/winterjs2/` 页，
+  仅缺 `cwd`/`pid`/`versions`（`bun`/`deno` 另有 content/bun、content/deno 语料覆盖）。
+  语义实测：`cwd()`→进程 cwd 字符串、`pid`→进程号（启动期 `__wjs2_ns_sync` 刷新）、
+  `versions`→`process.versions` 快照 + `winterjs2`（probe：node 22.12.0 等）。
+- 落地：`content/winterjs2/{cwd,pid,versions}/index.md` 三页（version 页同形：
+  frontmatter title/slug + Syntax 节）→ `.doc` 与浮窗（同源实时读）即通，
+  非 TTY 三页实测可读；`src/repl_doc.rs` 单测表 +3 行（needle：current working
+  directory / process id / versions table）；`tests/repl.rs::repl_doc_ns_pages`
+  黑盒 +3 页断言。验证：repl 面 strict **46/46** + 冒烟 5/5。
+- 行文同步：`WinterJS2.image.formats()` 实测 **16 项**（15 编解码 + dds 双 false
+  占位行，见 10-03 盘点），plan3 §0.4 W1 行"15 格式"已同步为"16 项"。
+  media.formats() 12 项复验无差。
+
+### 本轮环境注记（与 sibling R19 lane 同树协作）
+
+- 本轮开工时树干净（17a845a），中途 sibling 落在途改动（dsa/crypto_cipher/
+  fs_base/h2×4/tests/node 系 16 改 + http2_server_opts 新文件；HEAD 推到
+  6146b5c，pitfalls 4.337 被占，本轮新坑顺延 4.338）。
+- 其 `tests/node/fs/basic.rs` 半成品 import 致全树暂不可编译，全量 strict
+  5 红（tls_v1×3/internal_spec_table/pm pick_asset）均不在本轮改动面，
+  待其合入修绿后复判；本轮两提交与其零文件重叠。
+  （flake-classify.py 只适用于套件件，Rust 单测红走重跑复判口径。）
+- Intel 本机构建口径：`LIBCLANG_PATH=/usr/local/opt/llvm/lib`
+ （AGENTS §3 的 `/opt/homebrew` 系 Apple Silicon 路径，本机 x86_64。
+  DH 批 journal（10-21 crypto 批接盘段）已有同记录，不另开坑。）

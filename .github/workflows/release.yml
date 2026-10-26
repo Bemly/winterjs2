@@ -97,7 +97,7 @@ jobs:
             smoke: false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve version
         run: |
@@ -148,7 +148,7 @@ jobs:
       # 两轮反查都找不到 libcrypto.lib（pitfalls 4.335）。vcpkg 源码编，产物按 triplet 缓存。
       - name: Cache vcpkg openssl (windows)
         if: startsWith(matrix.os, 'windows-')
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/vcpkg-installed
           key: vcpkg-openssl-${{ matrix.target }}-v1
@@ -192,7 +192,7 @@ jobs:
 
       - name: Cache NDK + openssl sysroots
         if: matrix.kind == 'ndk'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/deps-ndk
           key: ndk-${{ env.NDK_VERSION }}-api${{ env.ANDROID_API }}-ossl-${{ env.OPENSSL_VERSION }}
@@ -263,7 +263,7 @@ jobs:
 
       - name: Cache OHOS openssl sysroot
         if: matrix.kind == 'ohos'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/deps-ohos
           key: ohos-${{ env.OHOS_SDK_VERSION }}-llvm${{ env.OHOS_LLVM_PREBUILT }}-ossl-${{ env.OPENSSL_VERSION }}-${{ matrix.target }}
@@ -357,7 +357,7 @@ jobs:
           ( cd dist && sha256sum "$STAGE.$PKG" > "$STAGE.$PKG.sha256" )
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dist-${{ matrix.target }}
           path: dist/
@@ -370,14 +370,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: dist-*
           path: dist
           merge-multiple: true
       # 首版先 draft：人工核对 10 件资产无误后再点 Publish；跑顺后改成 draft: false。
       - name: Create draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: "dist/**/*"
           draft: true

@@ -304,15 +304,15 @@ class __StatsFs {
     this.ffree = B(j.ffree ?? 0);
   }
 }
-// flags 字符串 → OpenFlags JSON（Node 口径子集；`s` 后缀忽略；数字只认本运行时
-// constants 暴露的位值，O_CREAT/O_EXCL/O_TRUNC/O_APPEND 用 Linux 位值，记档）。
+// flags 字符串 → OpenFlags JSON（Node 口径子集；`s` 后缀忽略；数字面与下表
+// constants 同位值（macOS 真机口径；fmap 1537/0 套件点名）。
 function __fsFlags(flag, what) {
   if (typeof flag === "number") {
     const rd = (flag & 3) !== 1;
     const wr = (flag & 3) !== 0;
     return JSON.stringify({
-      read: rd, write: wr, append: (flag & 1024) !== 0,
-      truncate: (flag & 512) !== 0, create: (flag & 64) !== 0, createNew: (flag & 128) !== 0,
+      read: rd, write: wr, append: (flag & 8) !== 0,
+      truncate: (flag & 1024) !== 0, create: (flag & 512) !== 0, createNew: (flag & 2048) !== 0,
     });
   }
   let f = String(flag ?? "r").replace(/s/g, "");
@@ -437,9 +437,12 @@ export function writeFileSync(p, data, opts) {
       if (needFlush) __fsFlushFile(p);
       return;
     }
-    const fd = Number(__wjs2_fs_open(p, __fsFlags(flag, "writeFile")));
+    const fj = JSON.parse(__fsFlags(flag, "writeFile"));
+    const fd = Number(__wjs2_fs_open(p, JSON.stringify(fj)));
     try {
-      __wjs2_fs_write_fd(fd, bytes, flag.startsWith("a") ? -1 : 0);
+      // 追加定位：串形看首字母（既有口径），数字形看解析出的 append 位
+      //（fmap 1537 套件点名；数字调 flag.startsWith 即崩）。
+      __wjs2_fs_write_fd(fd, bytes, (typeof flag === "string" ? flag.startsWith("a") : fj.append) ? -1 : 0);
       if (needFlush) fsyncSync(fd);
     }
     finally { __wjs2_fs_close(fd); }
@@ -715,9 +718,14 @@ export function copyFileSync(src, dst, mode) {
   __fsCall("copyfile", src, () => __wjs2_fs_copy_file(src, dst));
 }
 export function realpathSync(p, opts) {
-  __fsEncoding(opts);
+  const enc = __fsEncoding(opts);
   p = __fsPath(p, "realpath");
-  return __fsCall("lstat", p, () => __wjs2_fs_realpath(p));
+  const s = __fsCall("lstat", p, () => __wjs2_fs_realpath(p));
+  // node 口径：encoding 透出（buffer-encoding 套件点名；缺省 utf8 串）。
+  if (enc === "buffer") return Buffer.from(s, "utf8");
+  if (enc !== null && enc !== undefined && String(enc).toLowerCase() !== "utf8")
+    return Buffer.from(s, "utf8").toString(enc);
+  return s;
 }
 // Node 口径：.native = binding 级 realpath（无 JS 层缓存/规范化）。本仓两者
 // 同底座（std canonicalize），直接自引用（vite 8 的 safeRealpathSync 取此面）。

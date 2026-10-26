@@ -321,6 +321,9 @@ export const readdir = __cb1(readdirSync, "readdir", __id);
 export const rename = __cb1(renameSync, "rename", __id);
 export const copyFile = __cb1(copyFileSync, "copyFile", __id);
 export const realpath = __cb1(realpathSync, "realpath", __id);
+// node 口径：realpath.native 恒在（binding 级；本仓同底座，直接自引用，
+// realpathSync.native 既有先例；test-fs-realpath.js 第二轮点名）。
+realpath.native = realpath;
 export const mkdtemp = __cb1(mkdtempSync, "mkdtemp", __id);
 export const access = __cb1(accessSync, "access", __id);
 export const truncate = __fdCb(truncateSync, "truncate");

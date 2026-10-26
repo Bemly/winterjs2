@@ -77,6 +77,9 @@ pub unsafe extern "C" fn dsa_generate(
         (2048, 224) => dsa::KeySize::DSA_2048_224,
         (2048, 256) => dsa::KeySize::DSA_2048_256,
         (3072, 256) => dsa::KeySize::DSA_3072_256,
+        // 任意位长（keygen-bit-length 2049/256）：轮子墙——from_components 硬卡 4 档，
+        // hazmat unchecked 在非标准尺寸下 monty 断言 abort（实测 2049 崩溃），
+        // openssl 全链（sign/verify/export 三面）属修大，另轮。维持原错。
         _ => {
             report_error(&mut cx, "ERR_INVALID_ARG_VALUE: unsupported DSA size (1024/160, 2048/224, 2048/256, 3072/256)");
             return false;

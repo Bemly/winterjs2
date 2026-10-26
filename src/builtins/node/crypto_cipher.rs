@@ -390,19 +390,19 @@ pub unsafe extern "C" fn cipher_final(
                     job.enc_blocks(&mut chunk);
                     Ok(chunk)
                 } else {
-                    Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into())
+                    Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: error:1C80006B:Provider routines::wrong final block length".into())
                 }
             }
             CipherJob::CbcDec { job, pending, block, autopad } => {
                 if pending.len() % *block != 0 || (*autopad && pending.is_empty()) {
-                    return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into());
+                    return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: error:1C80006B:Provider routines::wrong final block length".into());
                 }
                 let mut chunk = std::mem::take(pending);
                 job.dec_blocks(&mut chunk);
                 if *autopad {
                     // 填充内容坏（非长度问题）→ 真机口径 BAD_DECRYPT（与长度错区分，见套件 109 行）。
                     pkcs7_unpad(*block, &chunk).ok_or_else(|| {
-                        "ERR_OSSL_BAD_DECRYPT: bad decrypt".to_string()
+                        "ERR_OSSL_BAD_DECRYPT: error:1C800064:Provider routines::bad decrypt".to_string()
                     })
                 } else {
                     Ok(chunk)
@@ -416,19 +416,19 @@ pub unsafe extern "C" fn cipher_final(
                     } else if pending.len() % 16 == 0 {
                         std::mem::take(pending)
                     } else {
-                        return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into());
+                        return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: error:1C80006B:Provider routines::wrong final block length".into());
                     };
                     ecb_blocks(*kind, key, true, &mut chunk);
                     Ok(chunk)
                 } else {
                     if pending.len() % 16 != 0 || (*autopad && pending.is_empty()) {
-                        return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: wrong final block length".into());
+                        return Err("ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH: error:1C80006B:Provider routines::wrong final block length".into());
                     }
                     let mut chunk = std::mem::take(pending);
                     ecb_blocks(*kind, key, false, &mut chunk);
                     if *autopad {
                         pkcs7_unpad(16, &chunk).ok_or_else(|| {
-                            "ERR_OSSL_BAD_DECRYPT: bad decrypt".to_string()
+                            "ERR_OSSL_BAD_DECRYPT: error:1C800064:Provider routines::bad decrypt".to_string()
                         })
                     } else {
                         Ok(chunk)

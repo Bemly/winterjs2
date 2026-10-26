@@ -591,10 +591,21 @@ export function lstatSync(p) {
   }
   return new __Stats(JSON.parse(__fsCall("stat", p, () => __wjs2_fs_stat(p, false))), __o?.bigint === true);
 }
+// node 口径（lib/fs.js existsSync 原文）：非法参（仅 ARG_TYPE）警告 DEP0187
+// 一次（模块旗 showExistsDeprecation），余下一律静默回 false。
+let __showExistsDeprecation = true;
 export function existsSync(p) {
   try {
     return __wjs2_fs_exists(__fsPath(p, "exists"));
-  } catch {
+  } catch (e) {
+    if (__showExistsDeprecation && e?.code === "ERR_INVALID_ARG_TYPE") {
+      process.emitWarning(
+        "Passing invalid argument types to fs.existsSync is deprecated",
+        "DeprecationWarning",
+        "DEP0187",
+      );
+      __showExistsDeprecation = false;
+    }
     return false;
   }
 }

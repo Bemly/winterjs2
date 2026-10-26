@@ -240,3 +240,38 @@ console.log("sync-bad", fs.existsSync(), fs.existsSync({}), fs.existsSync(42));
     dir.close().unwrap();
 }
 
+#[test]
+fn fs_realpath_native_and_numeric_flags_faces() {
+    // 本轮三修钉死（realpath.js/fmap/buffer-encoding 套件牵引）：
+    // 正常：realpath.native 恒在 / encoding 透出（buffer/latin1）/
+    //   数字旗位写读往返（1537/0，mac 真机位值）；
+    // 边界：缺省仍 utf8 串。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "n.mjs",
+        r#"
+import fs from "node:fs";
+console.log("native", typeof fs.realpath.native === "function", typeof fs.realpathSync.native === "function");
+console.log("buf", Buffer.isBuffer(fs.realpathSync(".", { encoding: "buffer" })));
+console.log("latin1", typeof fs.realpathSync(".", "latin1"));
+console.log("utf8", typeof fs.realpathSync("."));
+fs.writeFileSync("n.txt", "xy", { flag: 1537 });
+console.log("numflag", fs.readFileSync("n.txt", { encoding: "utf8", flag: 0 }));
+try { fs.writeFileSync("n2.txt", "z", { flag: 1537 }); console.log("dup-ok"); }
+catch (e) { console.log("dup-fail", e.code); }
+"#,
+    );
+    for line in [
+        "native true true",
+        "buf true",
+        "latin1 string",
+        "utf8 string",
+        "numflag xy",
+        "dup-ok",
+    ] {
+        assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
+    }
+    dir.close().unwrap();
+}
+

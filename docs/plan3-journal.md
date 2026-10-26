@@ -3594,3 +3594,32 @@ G1/G2/G3/G9 已收官。）
   新坑 **4.345**。二进制 29471126。
 - 下一步（parent 定）：磁盘腾挪后（target/mps 需人力协调）干净树纯跑新 tag；
   keygen-bit-length 待 openssl 全链另轮；flush mock 面（4.95/4.166）可单开一轮。
+
+## 2026-10-26 R19 L-C http2 第二轮（域 sweep 回归双修 + 对比定级）
+
+- 域 sweep（tag `r19lc-h2`，借卷 `WJS_SWEEP_ROOT` 绕开数据盘看门狗，jobs 2，
+  二进制 md5 3cfc5453780a588613659ec8c5f10091，432s done）：
+  http2 **SAME0 138 / SAME1 12 / DIFF 103 / TIMEOUT 3**；
+  vs base19d（136/13/105/2）：**+2/-1/-2/+1**（load 69→115 下收敛）。
+- 首轮 6 转绿 sweep 全持（options×2/timeout/stream-client/conn-abort/
+  graceful 全 SAME0；sent-headers 仍 DIFF wire-1xx，B7）；另带出
+  misused-pseudoheaders 转绿（+1，单跑 rc=0 确认）。
+- sweep 回归双修（真回归，域 sweep 发现→单探复现→node 原文修→当轮转绿，
+  各配黑盒锁定，commit 8e2a7fa 已推）：
+  1. dont-override：首轮直接改用户 options 对象，node `initializeOptions`
+     实为浅拷（core.js:3638）——改浅拷+`||` 默认。
+  2. no-wanttrailers-listener：_final 无监听永候，node `onStreamTrailers`
+     口径（core.js:517）无监听即 `sendTrailers({})`——补回落分支。
+- 新红 6 逐件定级：tls-disconnect（单跑双绿，h2load 千 blast 在高 load 下挂死，
+  环境抖，B5 族）/ create-client-session（单跑绿，抖动）/ async-local-storage
+  （SAME1 node 侧亦红，环境）/ connect.js（`https://localhost` 无端口块 lookup
+  UNKNOWN；h2 文件无 lookup 码，归 sibling 64fa79b lookup 下沉 lane 复核）/
+  off_poison（单跑挂/域跑过，HEAD 基线同挂，非回归；杂散 server-sessionError
+  属 Rust 面另案）/ sent-headers 维持 B7（server 侧已全对，余 wire-1xx）。
+- strict 全量 7 红（permissions×2/pm×2/wcover/internal_spec_table/pick_asset）：
+  stash 对照基线同挂，非本轮。http2 域黑盒 48/49 + 新黑盒 6/6，冒烟 5/5，
+  check-lines/naming 绿（3 超限 HEAD 既有）。
+- 提交（push origin/master）：f6edc9d（6 转绿）/ 8e2a7fa（回归双修）。
+  余量 bound 表见上节（B1-B7/internal+heapdump 维持；另案 shutdown×3/
+  startup/connect-tunnelling/server-unknown-protocol/session-stream-state/
+  generic×2/背压面）。

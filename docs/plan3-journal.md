@@ -3726,3 +3726,18 @@ G1/G2/G3/G9 已收官。）
   push 不触发。tag 推送只建 draft（`draft: true`），Publish 须人工点。
 - 约定：plan3 验收（全量 strict 绿）前不再打新 tag、不Publish；日常 master
   push 照常（不触发 release）。`pages.yml` 仅 docs 站部署，不属发版。
+
+## 2026-10-26 goal round 6-7：napi 续体 bug 定界（专轮待续）+ 插桩已回退
+
+- 现象：任意 async_work 完成后 `globalThis.require is not a function`
+  （app.js:1152，无栈；unhandled 旁路所有用户监听）。
+- 已证伪：realm 切换（同 global）、续体本身（fs 写正常）、resolve（无 resolve
+  照样炸）、console（native 无 require 调用）、预加载 node:util。
+- 已定位：pending 在 AsyncDone dispatch 入口已为 true；trampoline 出口为
+  false；`require("*.node")` 本身不置 pending（loader 内有检查）。
+  即：entry 尾（trampoline 出口→evloop 入口）之间某处静默置 pending，
+  首个检查点（napi dispatch）才爆。TMP 插桩（trampoline/dispatch/pump/
+  evloop/loader 共 5 处）已全数回退，树干净；复现 fixture 见 journal 上文。
+- 余量：napi×3 / wcover（live post 丢值）/ worker-hang / mapper（非闸门）/
+  permissions×2（4.353 已修其一：_initPaths 回落；exec/PATH 交互另议）/
+  r20-fscry 纯跑。

@@ -3381,3 +3381,16 @@ G1/G2/G3/G9 已收官。）
 - Intel 本机构建口径：`LIBCLANG_PATH=/usr/local/opt/llvm/lib`
  （AGENTS §3 的 `/opt/homebrew` 系 Apple Silicon 路径，本机 x86_64。
   DH 批 journal（10-21 crypto 批接盘段）已有同记录，不另开坑。）
+
+## 2026-10-26 Node24 pin 验证双绿（接上段计划）
+
+- `release.yml` dispatch 空跑 run 40265683523：**10/10 build 全绿**
+  （mac-arm 3m38s / win-x64 12m46s 含冒烟 / win-arm64 7m17s 含冒烟 /
+  linuxgnu x64 12m18s / linuxgnu arm64 8m50s / android×2 / ohos×2；
+  Publish 按 `if: startswith(github.ref,'refs/tags/v')` 正确跳过）。
+  Node20 annotations 仅剩 win 两列的 `ilammy/msvc-dev-cmd@v1`（已知余量），
+  其余 6 处 pin 告警全消。
+- `pages.yml` dispatch run 40265687096 + push 触发 run 40265674920：
+  build+deploy **双双绿**；Node20 仅剩 `configure-pages@v5`（直引，无 node24 线）
+  与 `upload-artifact@v4`（经 `upload-pages-artifact@v3` composite 间接引入，
+  同无升级路径）。站部署门（luoli 校验 + Pages 发布）正常。

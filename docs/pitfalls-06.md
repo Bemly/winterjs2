@@ -645,3 +645,22 @@
   本地 mac 冒烟 5/5 + 微任务序 `0,1,3,2` 与 node 对拍一致（只证语义未回退，证不了 ABI）。
 - 推广铁律：**Rust 直调 C++ API 禁收按值返回的 C++ 类**（`JS::Value`/`PropertyKey`/任何带构造函数的类）——一律找 glue
   出参形或自写 out-param 薄壳；"只崩 Windows、零输出"先上 cdb 抓栈，再想调用约定。
+
+### 4.337 inspect 字符串转义漏 `'`/`\`：正则认得、转义函数不认（2026-10-26，R19 wave-3 L-E 收尾探针）
+
+- 症状：`util.inspect({ slashes: '\\\\' })`（2 反斜杠）本仓出 `{ slashes: '\\' }`（2 个），
+  真机出 `{ slashes: '\\\\' }`（4 个，转义后）；`test-console.js:225`（清单外）首红于此。
+  复现：`--eval "console.log({ slashes: '\\\\\\\\' })" | od -c` 双边对字节。
+- 根因：`src/builtins/node/internal/inspect.rs` 的 `strEscapeSequencesReplacer`
+  含 `\x27`（`'`）与 `\x5c`（`\`），但 `escapeFn` 只查 `escapeSequences` 表
+  （0–31/127）+ `<0x20` 回退——39/92 两码命中正则却走 `return s` 原样返回。
+  node 真机（`lib/internal/util/inspect.js`）对这两码恒转义（`\'`/`\\`）。
+- 修法（未动手，留专轮）：`escapeFn` 首行补 `if (code === 39) return "\\'"; if (code === 92) return "\\\\";`
+  即 2 行。但 inspect 是全域共享原语（console/util/events/worker/diagnostics 黑盒多处钉输出形），
+  改一行转义即全仓输出漂移——必须配全域 sweep 验"无翻转绿"，不可搭车验证轮。
+  同文件 `keyStrEscape` 相关键名走 `JSON.stringify`（双引号形），与真机单引号形另有偏差，一并记入专轮。
+- 复现：见上 od 对比；`test-util-format.js` 全量收集 harness（probe/fmt 6 失败中首行为本坑同族，
+  余 5 为 `%o showHidden` 既有忽略）——本坑修后该 harness 首行即消。
+- 推广铁律：**正则与处理函数同改**——凡"匹配集 drives 处理函数"的转义/校验对，
+  加码只改一侧即埋漏转义；共享原语（inspect/format/escape）的 2 行修必须配全域回归，
+  禁搭车小轮。

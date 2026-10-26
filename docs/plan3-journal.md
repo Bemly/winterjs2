@@ -3223,3 +3223,98 @@ G1/G2/G3/G9 已收官。）
 - 三件套：黑盒 tests/node crypto 35/35 绿（stale harness + 新二进制直跑；本机无 nextest，
   走 AGENTS 兜底口径）；冒烟 5/5；`check-naming` 绿 + `check-lines` 绿
   （net.rs 1036 系 HEAD 遗留，本轮未加重）。
+
+## 2026-10-26 R19 wave-3 L-D/L-E 收尾验证（零改动轮：核验 + 定级 + 记档）
+
+> 范围（parent 定件）：L-D（link/link-shared/linking-requests/modulerequests/instantiate
+> 遗留 + parent 定件 4 + synthetic 命名依赖）/ L-E（formatTime/promisify-custom-names/
+> getcallsites/dotenv/null-proto/singlebyte 余量/dirname + console 16 复核）/
+> whatwg 9 按 journal:1878 定级。只动文档（journal + pitfalls），零源码改动。
+> 方法：现二进制直探（`target/debug/winterjs2` 10-26 构建，HEAD 17a845a，含 bdbad46 jobqueue
+> 出参形）+ 限定域 sweep（`r19-ldle-verify`，vm/console/util/whatwg/module 215 件，
+> jobs 2，~3.5min）+ 黑盒 strict + 冒烟 + 双守门。
+> 工作区注记：验证期间树脏（他 lane 未提交：pages/release.yml、crypto/dsa、fs_base、
+> h2_server 系、repl_doc、tests/repl 等十余处），本轮一律未碰；sweep 二进制含他 lane
+> 半成品（h2/repl 面），但限定域（vm/console/util/whatwg/module）与其无交集，结论有效；
+> 全域基线仍待干净树（4.292）。
+
+### L-D（vm linker）：7 绿保持 + parent 3 绿 + 2 bound + synthetic bound
+
+- linker 7 全绿（单件 rc=0，复核一致）：link / link-shared-deps /
+  linkmodulerequests / linkmodulerequests-circular / linkmodulerequests-deep /
+  modulerequests / instantiate（journal:1545 7 件保持，无回退）。
+- parent 定件 4（journal:2744）：referrer-realm.mjs / hasasyncgraph /
+  hastoplevelawait 全绿；after-evaluate×2 红（`function should not have been
+  called at ...:17/:16` + unhandled rejection 形），维持 4.319 书面偏离
+  （V8 按上下文分微任务队列，我方单共享队列恒排空，无"某上下文 checkpoint"概念）。
+- synthetic 作依赖：红形不变（`request for 'synthetic' resolved to a SyntheticModule
+  which can not be linked by this engine (no named-synthetic record API…`），
+  维持引擎墙 bound（缺 `CreateNamedSyntheticModule/SetSyntheticModuleExport`
+  SM 原生钩，journal:1545）。
+- 附带：basic / errors 双绿（journal:2704 merge-note 落地后"各剩一件"已清）。
+
+### L-E：5 绿 + dotenv SAME1 + null-proto bound + singlebyte/dirname 绿
+
+- formatTime（`test-console-formatTime.js`）绿；promisify-custom-names
+  （`test-util-promisify-custom-names.mjs`，stream eos 别名）绿；
+  getcallsites（`test-util-getcallsites-preparestacktrace.js`，自跳 1 帧）绿。
+- dotenv（`test-process-load-env-file.js`）：双边 rc=1（node 同红），SAME1 口径差，
+  非我方欠账（base19d 同列）。
+- encoding-singlebyte 余量：`test-whatwg-encoding-singlebyte.mjs` 57/57 绿 +
+  `test-http-outgoing-first-chunk-singlebyte-encoding.js` 双边绿（journal:1537/1546 延续）。
+- dirname：`import.meta.dirname/filename/url` 实测三值正确 +
+  `test-path-dirname.js` 双边绿；`test-vm-module-import-meta.js` 绿。
+- util-format null-proto：`test-util-format.js:196` `[Foo: null prototype]` vs
+  我方 `[Object: null prototype]` → **bound 确认（引擎墙）**：V8 经 C++ 内绑
+  `internalGetConstructorName` 读对象 map 构造器（`setPrototypeOf(null)` 后原型链
+  已无迹可寻，JS 层不可见）；SM 无等价 API（`JS_GetClass` 仅得 Object）。
+  同文件全量收集 harness（assert 包裹续跑）：共 6 失败 = null-proto 1 +
+  `%o showHidden` 函数内部槽 5（`[length]/[name]/[prototype]`，模块头既注"忽略"，
+  本轮界外）；余断言全过。
+- console 16 复核：bun-scope 16 件逐件 rc=0（`test-console.js` 本体清单外，
+  其 `:225` 反斜杠转义红属新坑 4.337，不计入）。
+
+### whatwg 9（journal:1878 定级执行）
+
+- W1–W7（readablebytestream/adapters×5/coverage）：红形不变
+  （`Cannot find module 'internal/webstreams/{util,adapters}'`），bound（范围外 internal 树）。
+- W8（canparse）：红形不变（`expected expression, got '%'`，V8 内禀），bound（引擎墙 + 范围外双重）。
+- W9（custom-inspect）：绿保持（prelude 12 键 + url-crate 真值，journal:1960 落地）。
+- 附带转绿 1：`test-whatwg-url-custom-searchparams.js`（base19d DIFF → 现 4/4 绿，
+  含 sweep；USP lone-surrogate FFFD 序列化面，post-base19d 合入累积效果，
+  enabling commit 未单一定位）。
+
+### sweep tag 对比（r19-ldle-verify 215/215 vs base19d）
+
+- 总表：SAME0 180 / DIFF 34 / TIMEOUT 1（`test-util-inspect-long-running.js`，
+  base19d 同列，25s 盒长耗时套件）。5 scope 行检出无件（sigint-watchdog/
+  new-script-context/timeout-escape-promise-module.mjs/custom-domainto/toascii，
+  上游更名/删除，双边无法跑，非欠账）。
+- 域表（report 口径，n=清单域总数）：vm 78/95（红集与 base19d 逐件一致，零增减）/
+  whatwg 45/53（+1 custom-searchparams）/ module 26/27（持平，唯一红
+  run-main-monkey-patch 系 base19d 既有）/ util 名义 16/25——其中 `test-util.js`
+  未在 scope 内（构建正则漏无横线名），手工探针仍红（`:58` 跨 realm
+  `isNativeError(context('TypeError'))`，4.57 同族，base19d 既有），真值 15/25 持平。
+- 结论：限定域内零新红、转绿 1（custom-searchparams），其余红集与 base19d 完全一致。
+
+### 三件套 + 冒烟 + 守门
+
+- 黑盒 strict：`--test node -E 'test(console::) or test(util::) or test(vm::) or test(vm_dyn::)'`
+  44/44 绿；loader+testmod 13/13 绿；`--test builtins` 40/41——唯一红
+  `namespace_three_globals_present` 系 release 轮版本钉死过期（Cargo 26.10.23 vs
+  断言 26.10.3，`git show HEAD` 双边即错位，pre-existing，release lane 事，不碰）。
+- 冒烟 5/5；`check-naming` ok；`check-lines` 3 超限皆非本轮
+  （framing_outgoing_feed.js 1003 / parity.rs 1015 / net.rs 1036，均系他 lane/HEAD 遗留，
+  本轮零源码改动）。
+- 工作区干净度：本轮提交仅 3 文档文件（journal + pitfalls.md + pitfalls-06.md），
+  他 lane 脏文件一律未 stage（提交前 `status/diff` 逐项核对）。
+
+### bound/续啃表（本轮定级）
+
+- bound（偏离即对齐，证据见上）：after-evaluate×2（4.319）/ synthetic 命名依赖
+  （SM 无 named-synthetic 钩）/ W1–W8（internal 树范围外 + canparse V8 内禀）/
+  util-format null-proto（V8 map-constructor 内绑，SM 无等价物）。
+- 续啃/专轮（不动）：4.337 inspect `'`/`\` 转义（2 行修，须配全域 sweep，共享原语
+  禁搭车）；`%o showHidden` 函数内部槽（模块头既有忽略注记）；test-util.js:58
+  跨 realm isNativeError（4.57 同族）；builtins 版本钉死（release lane）。
+- 转绿：test-whatwg-url-custom-searchparams.js（base19d→now，4/4 稳定）。

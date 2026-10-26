@@ -310,7 +310,7 @@ const r4 = rs3.getReader({ mode: "byob" });
 try { await r4.read([1, 2]); throw new Error("must throw"); }
 catch (e) { if (!String(e.message).includes("view")) throw e; }
 try { await r4.read(new Uint8Array(0)); throw new Error("must throw"); }
-catch (e) { if (!String(e.message).includes("empty")) throw e; }
+catch (e) { if (!String(e.message).includes("zero-length")) throw e; }
 try { new ReadableStream({ type: "stream" }); throw new Error("must throw"); }
 catch (e) { if (!String(e.message).includes("'bytes'")) throw e; }
 r4.releaseLock(); await rs3.cancel();

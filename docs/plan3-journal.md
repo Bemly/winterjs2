@@ -3648,3 +3648,17 @@ G1/G2/G3/G9 已收官。）
 - 余红（皆基线预存）：crypto subtle×3 / napi×3 / fetch byob / wcover /
   worker-hang / mapper（非闸门）/ permissions×2（exec/PATH 交互待专轮）/
   pm×2（环境）/ `is-url-nope` 已翻转；`r20-fscry` 待腾盘纯跑。
+
+## 2026-10-26 goal round 2（续）：subtle/byob 仲裁翻转 + x25519 实现修正
+
+- `subtle_aes_gcm_192`（import 期望 "16/24/32"）：双真机皆 `DataError "Invalid key length"`，
+  实现逐字一致，翻测试为名+文案双断言（4.349）。
+- `subtle_ed25519_vectors`（期望 "32 bytes"）：双真机皆 `DataError "Invalid keyData"`，翻测试。
+- `subtle_x25519_vectors`（私钥当 public）：真实现偏差，`crypto.rs` X25519/X448 补
+  kind 分支 `InvalidAccessError "algorithm.public must be a public key"`（错算法仍
+  "key algorithm mismatch"，三方一致）；ECDH 同类前缀（"deriveBits: "）无测试锁定，
+  暂不动，记档。
+- `streams_byob`（期望 "empty"）：双真机皆 "zero-length"，实现逐字一致，翻测试。
+- 联跑：subtle×3 + byob + child×2 + url/punycode 6 件全绿（e4a8286c 轮 6/6）。
+- 待下轮：napi×3（C fixture+线程+require 上下文）/ wcover / worker-hang /
+  mapper（非闸门）/ permissions×2（spawn×PATH 交互）/ pm×2（环境）/ r20-fscry 纯跑。

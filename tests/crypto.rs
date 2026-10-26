@@ -164,9 +164,9 @@ const jwk = await crypto.subtle.exportKey("jwk", kp.privateKey);
 if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || jwk.alg !== "EdDSA" || typeof jwk.d !== "string") throw new Error("bad Ed JWK: " + JSON.stringify(jwk));
 const k4 = await crypto.subtle.importKey("jwk", jwk, {{ name: "Ed25519" }}, true, ["sign"]);
 if (await crypto.subtle.verify("Ed25519", kp.publicKey, await crypto.subtle.sign("Ed25519", k4, MSG), MSG) !== true) throw new Error("jwk roundtrip failed");
-// 报错：raw 非 32B
+// 报错：raw 非 32B（真机两版皆 DataError "Invalid keyData"，按 4.65 翻转旧断言）
 try {{ await crypto.subtle.importKey("raw", new Uint8Array(31).buffer, {{ name: "Ed25519" }}, true, ["verify"]); throw new Error("must throw"); }}
-catch (e) {{ if (!String(e.message).includes("32 bytes")) throw e; }}
+catch (e) {{ if (e.name !== "DataError" || e.message !== "Invalid keyData") throw e; }}
 // 报错：私钥无 verify 用途（node 按用途报错，非按类型）
 try {{ await crypto.subtle.verify("Ed25519", kp.privateKey, s2, MSG); throw new Error("must throw"); }}
 catch (e) {{ if (e.name !== "InvalidAccessError") throw e; }}
@@ -259,7 +259,7 @@ if (raw.byteLength !== 24) throw new Error("raw must be 24B");
 const k2 = await crypto.subtle.importKey("raw", raw, "AES-GCM", true, ["decrypt"]);
 if (new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(12) }, k2, ct)) !== "topsecret") throw new Error("raw import failed");
 try { await crypto.subtle.importKey("raw", new Uint8Array(20).buffer, "AES-GCM", true, ["decrypt"]); throw new Error("must throw"); }
-catch (e) { if (!String(e.message).includes("16/24/32")) throw e; }
+catch (e) { if (e.name !== "DataError" || e.message !== "Invalid key length") throw e; }
 try { await crypto.subtle.generateKey({ name: "AES-GCM", length: 100 }, true, ["encrypt"]); throw new Error("must throw"); }
 catch (e) { if (!String(e.message).includes("128/192/256")) throw e; }
 console.log("aes192-ok");

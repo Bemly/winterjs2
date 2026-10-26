@@ -131,6 +131,7 @@ function __wjs2_x_bits(algorithm, st, length) {
     throw e;
   }
   if (pst.alg.name !== "X25519" || pst.kind !== "public") {
+    if (pst.kind !== "public") throw __wjs2_domErr("InvalidAccessError", "algorithm.public must be a public key");
     throw __wjs2_domErr("InvalidAccessError", "key algorithm mismatch");
   }
   const secret = __wjs2_x_derive(st.material, pst.material);
@@ -151,6 +152,7 @@ function __wjs2_x448_bits(algorithm, st, length) {
     throw e;
   }
   if (pst.alg.name !== "X448" || pst.kind !== "public") {
+    if (pst.kind !== "public") throw __wjs2_domErr("InvalidAccessError", "algorithm.public must be a public key");
     throw __wjs2_domErr("InvalidAccessError", "key algorithm mismatch");
   }
   const secret = __wjs2_x448_derive(st.material, pst.material);

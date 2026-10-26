@@ -892,3 +892,44 @@ setTimeout(() => console.log("end-ok"), 2500);
     assert!(!out.contains("unexpected"), "out: {out}");
     dir.close().unwrap();
 }
+
+#[test]
+fn tls_snicallback_option_validation() {
+    // node wrap.js:1030-1041 口径：服务端 + 显式 SNICallback 即校验函数形；
+    // 正常：函数形双路（createServer/TLSSocket）皆收；
+    // 报错：四件非函数（'fhqwhgads'/42/{}/[]) 双路皆抛 ERR_INVALID_ARG_TYPE；
+    // 边界：客户端形缺席即静默忽略（不抛）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    let out = run_fs_file(
+        &dir,
+        "v.mjs",
+        r#"
+import tls from "node:tls";
+import net from "node:net";
+const bad = ["fhqwhgads", 42, {}, []];
+for (const v of bad) {
+  try { tls.createServer({ SNICallback: v }); console.log("srv-nothrow", JSON.stringify(v)); }
+  catch (e) { console.log("srv-throw", e.code, JSON.stringify(v)); }
+  try { new tls.TLSSocket(new net.Socket(), { isServer: true, SNICallback: v }); console.log("sock-nothrow", JSON.stringify(v)); }
+  catch (e) { console.log("sock-throw", e.code, JSON.stringify(v)); }
+}
+// 正常：函数形双路皆收。
+const fn1 = (name, cb) => cb(null, null);
+tls.createServer({ SNICallback: fn1 });
+new tls.TLSSocket(new net.Socket(), { isServer: true, SNICallback: fn1 });
+console.log("fn-ok");
+// 边界：客户端形 SNICallback 缺席即忽略。
+new tls.TLSSocket(new net.Socket(), { SNICallback: 42 });
+console.log("cli-ok");
+setTimeout(() => console.log("end-ok"), 500);
+"#,
+    );
+    for v in ["\"fhqwhgads\"", "42", "{}", "[]"] {
+        assert!(out.contains(&format!("srv-throw ERR_INVALID_ARG_TYPE {v}")), "out: {out}");
+        assert!(out.contains(&format!("sock-throw ERR_INVALID_ARG_TYPE {v}")), "out: {out}");
+    }
+    assert!(out.contains("fn-ok"), "out: {out}");
+    assert!(out.contains("cli-ok"), "out: {out}");
+    assert!(out.contains("end-ok"), "out: {out}");
+    dir.close().unwrap();
+}

@@ -183,6 +183,9 @@ class TLSSocket extends Socket {
     this.__wrapped = socket ?? null;
     // P2-tls-b 包裹面：verifyError 不销毁、经 ssl.verifyError() 上报；onConnectSecure 仅包装层安装。
     this.__isServer = !!(this.__tlsOpts && this.__tlsOpts.isServer === true);
+    // node wrap.js:1030-1041 口径：服务端 + 显式 SNICallback 即校验函数形
+    //（snicallback-error 套件；非服务端缺席即静默忽略，不抛）。
+    if (this.__isServer && this.__tlsOpts.SNICallback) __tlsVFunction(this.__tlsOpts.SNICallback, "options.SNICallback");
     this.__verifyErr = null;
     this.ssl = { verifyError: () => (this.__verifyErr !== null ? this.__verifyErr : null) };
     this.__tlsId = undefined;

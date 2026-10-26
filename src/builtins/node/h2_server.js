@@ -328,12 +328,16 @@ class Http2Stream extends Duplex {
     if (this.__destroyed) { cb(); return; }
     this.__implicitRespond();
     if (this.__waitForTrailers && !this.__trailersSent && !this.__respEndedAtHeaders) {
-      // wantTrailers 窗口：用户 sendTrailers 后回填收尾
+      // wantTrailers 窗口：用户 sendTrailers 后回填收尾；node onStreamTrailers
+      // 口径（core.js:511-521）：无监听即自动发空 trailers 收尾，不挂死
+      // （no-wanttrailers-listener 套件点名自然关闭）。
       this.__finalCb = cb;
       queueMicrotask(() => {
         if (!this.__destroyed && !this.__trailersSent) {
           this.__wantTrailersFired = true;
-          this.emit("wantTrailers");
+          if (!this.emit("wantTrailers")) {
+            try { this.sendTrailers({}); } catch {}
+          }
         }
       });
       return;

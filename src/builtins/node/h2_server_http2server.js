@@ -12,11 +12,14 @@ class Http2Server extends EventEmitter {
     this.__streams = new Map();
     this.__sessions = new Map();
     this.__sockBag = {};
-    this.__opts = options;
-    // node initializeOptions 口径（core.js:3673-3674）：custom Req/Res 类默认。
-    // options-server-request/response 套件：用户子类实例化 + 方法可见。
-    if (this.__opts.Http2ServerRequest === undefined) this.__opts.Http2ServerRequest = Http2ServerRequest;
-    if (this.__opts.Http2ServerResponse === undefined) this.__opts.Http2ServerResponse = Http2ServerResponse;
+    // node initializeOptions 口径（core.js:3638 `options = {...options}` +
+    // 3673-3674 `||=` custom 类默认）：浅拷后再默认，不碰用户原对象
+    // （dont-override 套件点名 `Object.keys(options)` 为空；`||` 与 `||=` 同真值语义）。
+    this.__opts = {
+      ...options,
+      Http2ServerRequest: options.Http2ServerRequest || Http2ServerRequest,
+      Http2ServerResponse: options.Http2ServerResponse || Http2ServerResponse,
+    };
     // node Http2Server 构造即 `this.timeout = 0`（core.js:3716/3766）；
     // `server.timeout = ms` 纯赋值，新会话在 __sessionFor 按此武装（core.js:3604-3605）。
     this.timeout = 0;

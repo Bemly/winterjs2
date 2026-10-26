@@ -8,7 +8,10 @@ import { parse as qsParse, stringify as qsStringify } from 'node:querystring';
 import { createRequire } from 'node:module';
 let __urlRequire = null;
 function __getUrlRequire() {
-  if (__urlRequire === null) __urlRequire = createRequire(import.meta.url);
+  // 内建模块求值时 import.meta.url 为 `node:url` 形（非 file:），
+  // createRequire 按 node 口径拒收（4.346）；此处只 require 内建
+  // `node:punycode`（内建解析不 consult base），用 file 根作合法 base。
+  if (__urlRequire === null) __urlRequire = createRequire('file:///');
   return __urlRequire;
 }
 let __puny = null;

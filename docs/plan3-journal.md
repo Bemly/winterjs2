@@ -3623,3 +3623,17 @@ G1/G2/G3/G9 已收官。）
   余量 bound 表见上节（B1-B7/internal+heapdump 维持；另案 shutdown×3/
   startup/connect-tunnelling/server-unknown-protocol/session-stream-state/
   generic×2/背压面）。
+
+## 2026-10-26 strict 全量首跑 triage + url 簇修（goal round 1）
+
+- 首跑（干净树 5cb736e，`cargo nextest run --profile strict`，1047 件）：24 FAIL + 1 TIMEOUT（worker terminate）。
+- 基线对照（`git checkout 17a845a` + 重编，4.62 口径）：逐项复跑**全部同红**——无一为五 lane 回归，皆预存；
+  `net_write_validation` / `read_stream_fifo_end` 两次一过一挂判 flake；`internal_spec_table` /
+  `pick_asset_oxc_shapes` 与 http2 轮 stash 结论一致（pre-existing）；permissions×2/pm×2 系环境面。
+- 根因+修（4.346）：url 簇（legacy/parity/punycode-dep0040）红因 `url_file.js` 懒取 punycode 经
+  `createRequire(import.meta.url)`——内建 meta.url 为 `node:url` 形，createRequire 按口径拒收；
+  改 `createRequire('file:///')`（内建解析不 consult base）。修后 punycode/url 域 22/23，
+  余 `url_internal_is_url_faces` 一行：`require("internal/nope")` 本机 node 26.12 实测
+  `MODULE_NOT_FOUND`（与我方一致），测试按 26.8.1 记 `undefined`——版本漂移，不碰运行时，待 pin 版仲裁。
+- 待下轮：crypto subtle×3 / napi×3 / fetch byob / child×2 / wcover / worker-hang / mapper /
+  is-url-nope 逐件 time-box；`r20-fscry` 腾盘后纯跑新 tag。

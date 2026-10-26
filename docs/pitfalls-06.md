@@ -796,3 +796,20 @@
 - 推广铁律：**轮子 hazmat/unchecked 是"跳检查"不是"给能力"**——非标准输入须先证
   算术/编解码全链可用（至少一次端到端真跑），否则宁可维持原错，不可半开
   （生成放行、使用崩溃是最坏形态，静默红反而安全）。
+
+### 4.346 内建模块内 `createRequire(import.meta.url)` 必抛（2026-10-26，strict 全量轮）
+
+- 症状：`test-url-legacy` / `test-url-parity-suite` / `test-url-internal-is-url-faces` /
+  `test-punycode-dep0040-warning` 在 strict 全量红；手动单跑小用例全绿，
+  完整脚本才现（`domainToASCII` 一调即抛 `ERR_INVALID_ARG_VALUE ... Received 'node:url'`）。
+- 根因：`url_file.js` 懒取 punycode 经 `createRequire(import.meta.url)`；
+  内建模块求值时 meta.url 为 `node:url` 形（非 file:），createRequire 按 node
+  口径拒收——黑盒二分到"是否调 domainToASCII"才现形（parse/import 本体无辜，
+  日志多少只改分配时序，属误导项）。
+- 修法：`createRequire('file:///')`（该 require 只取内建 `node:punycode`，
+  内建解析不 consult base，file 根纯为满足校验）。
+- 复现：静 `import process` + 动 `import("node:punycode")` + 任意 timer +
+  `(await import("node:url")).domainToASCII("münchen.de")`。
+- 推广铁律：**内建模块禁用 `import.meta.url` 作 base**——meta.url 在内建域是
+  `node:` 形，不可喂任何要 file/path 的 API；凡"小用例绿、完整脚本红"先查
+  懒初始化路径，不查日志时序。

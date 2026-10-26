@@ -308,6 +308,7 @@
 - 4.343 同树多 agent 并发跑全量子集/重编互相污染：重编/全量前先 ps 查并发（2026-10-26，CI1/W1 协作轮）
 - 4.344 SNI 下沉的握手竞速 + 服务端双视图：listen 同步刷（2026-10-26，R19 L-A）
 - 4.345 密码轮子 hazmat/unchecked 非标准尺寸 monty 断言 abort：半开最坏，维持原错（2026-10-26，R20 crypto 轮）
+- 4.346 内建模块内 `createRequire(import.meta.url)` 必抛：改 file 根 base（2026-10-26，strict 全量轮）
 
 ## 条目
 
@@ -319,7 +320,7 @@
 - `docs/pitfalls-03.md`：4.125–4.169（45 条）
 - `docs/pitfalls-04.md`：4.170–4.205（36 条）
 - `docs/pitfalls-05.md`：4.206–4.264（60 条）
-- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310 + 4.315–4.345
+- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310 + 4.315–4.346
 
 > 新坑：主索引追一行 + 正文追到末卷（当前 `docs/pitfalls-06.md`）末尾。
 

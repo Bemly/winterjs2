@@ -3394,3 +3394,62 @@ G1/G2/G3/G9 已收官。）
   build+deploy **双双绿**；Node20 仅剩 `configure-pages@v5`（直引，无 node24 线）
   与 `upload-artifact@v4`（经 `upload-pages-artifact@v3` composite 间接引入，
   同无升级路径）。站部署门（luoli 校验 + Pages 发布）正常。
+
+## 2026-10-26 R19 wave-3 L-C http2 收尾（15 actionable-shell 复判 + 6 转绿）
+
+- 口径：base19 http2 TIMEOUT 25（journal:2263）→ base19d 107 差额
+  （DIFF 105 + TIMEOUT 2；SAME1 13 双红不计，`~/wjs-data/sweep/base19d/`）。
+  L-C 定级 15 actionable-shell（journal:1535/1716）即 25 件减去
+  7 已绿/1 runtime/3 自红（SAME1）/24 hyper-bound（内 2 留守 TIMEOUT）。
+- base19 25 件现态（当前 master 二进制逐件复探）：
+  **绿 7**（autoselect-protocol/client-proxy-over-h2/compat-socket-destroy-delayed/
+  respond-file-error-pipe-offset/socket-close + 本轮新增 graceful-close/
+  respond-with-file-connection-abort）/ **DIFF 15** / **TIMEOUT 2 留守**
+  （client-http1-server/reset-flood，帧错映射 bound）/ **SAME1 1**
+  （settings-unsolicited-ack，node 侧同红）。
+- 本轮 6 转绿（compat 壳 + other-core 壳可达面，h2_server*.js/h2_head.js/
+  h2_client.js 共 ~90 行 + 黑盒 `tests/node/http2_server_opts.rs` 新文件 4 件）：
+  1. options-server-request/response（custom Req/Res 类：node initializeOptions
+     core.js:3673-3674 默认 + setupCompat 绑定口径，`__ev request` 逐请求取类）。
+  2. server-timeout 双形（`server.emit('timeout', session)` + 连接期武装 +
+     无人监听即 destroy；旧 sweep 全扫拆除，裸 socket 经 connOpen 建会话覆盖）。
+  3. stream-client（类改名 `Http2Stream` node 同形 + kInspect 三键定制）。
+  4. sent-headers server 侧（`sentHeaders[':status']` 数字形 + `__respEndedAtHeaders`
+     拆名使 wantTrailers/sendTrailers 通；wire 1xx 下发仍 B7 bound，套件余 MUSTCALL）。
+  5. respond-with-file-connection-abort（会话代理 socket 补 `__nativeKill` 桥，
+     客户端/服务端双代理；`net.Socket.prototype.destroy` 借用即通）。
+  6. graceful-close（`server.close()` 有流会话挂 `__closeOnDrain`，排空即拆；
+     node closeAllSessions + kMaybeDestroy 最小实现；close-idle 束零回归）。
+- 回归：http2 域黑盒 **47/47**（含新 4 件；`connect_protocol_off_poison`
+  单跑挂/域跑过=抖动，cant-turn-off 家族既有记档）；`compat_header_faces`
+  曾被 endAfterHeaders 拆名误伤（`req-eah true` 点名请求侧语义，已回退为双旗，
+  当轮修绿）。`off_poison` HEAD 基线（h2 文件 stash）同挂，判非本轮回归。
+- bound 维持（本轮零触碰，确认）：push 成功路 8（B1）/ALTSVC-ORIGIN 2（B2）/
+  帧错三面 + max-settings/enforcement + misbehaving×3/ping-unsolicited/
+  allow-http1/forget-closed/max-mem/2 TIMEOUT（B3）/tls 7 族（B5）/raw-SNI（B6）/
+  interim×4 + early-hints×3（含 sent-headers wire 面，B7）/internal 双件+v8
+  heapdump（范围外）。
+- 另案（本轮 time-box 到线，journal 定级不修）：shutdown×3（GOAWAY 后
+  SESSION_ERROR 映射，hyper 内部，B3 族）、server-startup（缺 'connection'
+  派发 + allowHalfOpen，net 面另案）、session-stream-state + stream state 值
+  （流状态内省，hyper 内部）、client-connection-tunnelling/
+  server-unknown-protocol（P2 tls-face，随 tls lane）、multiplex（复探绿，
+  flake）、generic-streams×2/backpressure/buffersize（写背压，另案）。
+- respond-file×3 + socket-close：base19d 已绿，本轮 master 复验 **4/4 rc=0**
+  （sendfile 面 + adopt 桥维持，无回退；jobqueue 出参加密改动无波及）。
+- 新坑 4.339–4.342（endAfterHeaders 撞车/超时武装/借用 destroy 桥/closeOnDrain）。
+- 待：strict 全量（跑行中）→ http2 域 sweep diff（base19d→本轮）→ 提交 push。
+
+### 全量 strict 复跑 24+ 红定级：同树并发污染，非回归（2026-10-26 12:27 取证）
+
+- 现象：sibling 合入后复跑全量 strict，1042 件中 24+ 红，横跨 crypto 向量/
+  napi/child/url/permissions/pm/wcover/internal（与 11:32 首跑的 5 红集合不同）。
+- 根因（环境，非代码）：并跑污染三重叠加——① sibling 正跑 `sweep-bg r20-fscry`
+ （--jobs 2，11:57 起）+ 另一路 `cargo nextest strict`（12:11 起），同机 load 8–10；
+  ② 两路与本跑共用 `target/debug` 二进制，sibling 侧重编可致本跑黑盒中途换二进制；
+  ③ 黑盒端口/负载互踩（4.122/4.126 既有禁令）。确定性红（首跑 basic.rs 半成品
+  import、internal_spec_table 计数）系 sibling 在途改动，已随其 617c44d/d70e7e2/
+  64fa79b 合入消解；其余跨域红随并发起落，无一落在 `repl_doc/content/workflows`
+  本轮改动面（repl 46/46 + 冒烟 + 双 dispatch 皆在安静/干净环境绿）。
+- 动作：本轮不再追（4.140/4.197 先分类口径：污染定级即止）；全量绿待树安静后由
+  当值 lane 复判。教训记 4.343（§0.5 target-alt 纪律的执行侧补齐）。

@@ -301,6 +301,11 @@
 - 4.336 MSVC 按值返回 JS::Value 的 C++ API 直调错位 → win 首个微任务排空 AV，改 glue 出参形（2026-10-24，发版轮）
 - 4.337 inspect 字符串转义漏 `'`/`\`：正则认得、转义函数不认，共享原语 2 行修须配全域回归（2026-10-26，R19 wave-3 L-E 收尾）
 - 4.338 release/pages actions Node20 弃用告警：major 号≠运行时，先验 `runs.using` 再升 node24 线（2026-10-26，CI1 收尾）
+- 4.339 请求/响应侧 `endAfterHeaders` 同名撞车致 wantTrailers 永不触发（2026-10-26，http2 lane）
+- 4.340 Http2Server 超时须连接期武装：旧 sweeping 全扫误伤裸 socket/已存会话（2026-10-26，http2 lane）
+- 4.341 `net.Socket.prototype.destroy` 借打会话代理 socket 须补 `__nativeKill` 桥（2026-10-26，http2 lane）
+- 4.342 `server.close()` 只扫闲置：在途流排空后须补拆会话（closeOnDrain）（2026-10-26，http2 lane）
+- 4.343 同树多 agent 并发跑全量子集/重编互相污染：重编/全量前先 ps 查并发（2026-10-26，CI1/W1 协作轮）
 
 ## 条目
 
@@ -312,7 +317,7 @@
 - `docs/pitfalls-03.md`：4.125–4.169（45 条）
 - `docs/pitfalls-04.md`：4.170–4.205（36 条）
 - `docs/pitfalls-05.md`：4.206–4.264（60 条）
-- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310 + 4.315–4.338
+- `docs/pitfalls-06.md`：4.265–4.289 + 4.300–4.310 + 4.315–4.343
 
 > 新坑：主索引追一行 + 正文追到末卷（当前 `docs/pitfalls-06.md`）末尾。
 

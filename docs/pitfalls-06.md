@@ -684,3 +684,77 @@
 - 推广铁律：**actions 大版本先验 `runs.using` 再 bump**——major 号与 node 运行时无固定对应，
   同一 action 的连续 major 可能同运行时（upload v4/v5、download v4/v5/v6 皆 node20）；
   无 node24 线的 action（msvc-dev-cmd/configure-pages）记余量不硬追。
+
+### 4.339 请求/响应侧 `endAfterHeaders` 同名撞车致 wantTrailers 永不触发（2026-10-26，http2 lane）
+
+- 症状：`test-http2-sent-headers.js` 里 `respond({waitForTrailers:true})` + `stream.end()` 后
+  `wantTrailers` 永不触发，`sentTrailers` 恒 null（server 侧记账全对，`sentHeaders` 亦对）。
+- 根因：同一属性名被两处语义复用——`__ev request` 按 node 口径（core.js:445）把
+  "请求 HEADERS 带 END_STREAM" 记入 `stream.endAfterHeaders`（GET 空体即 true）；
+  `_final` 却把它读成"响应已随头终结"来跳 wantTrailers 分支。请求侧恒 true 即把
+  响应侧分支恒短路。
+- 修法：请求侧保持 node 只读语义（`compat-header` 黑盒点名 `req.stream.endAfterHeaders`
+  为 true，不可改名）；响应侧另记 `__respEndedAtHeaders`（仅 respond 的
+  endStream/204·205·304/HEAD 自动置位），`_final` 只读后者。
+- 复现：`tr_probe2.mjs`（`__waitForTrailers=true, endAfterHeaders=true` 即现形）。
+- 推广铁律：**node 只读 getter 语义的属性，移植后仍须保持"请求侧可读、响应侧另记"**——
+  同名复用是 wantTrailers 类门控静默失效的典型温床；改名前先 grep 黑盒点名。
+
+### 4.340 Http2Server 超时须连接期武装：旧 sweeping 全扫误伤裸 socket/已存会话（2026-10-26，http2 lane）
+
+- 症状：`test-http2-server-timeout.js` 双形（`setTimeout`/`timeout=`）`session` 参数
+ 恒 undefined；旧实现另对裸 `net.connect` socket 的超时全靠 server 级 sweep 蒙中。
+- 根因：node 口径是连接期武装（core.js:3604-3605：新会话 `session.setTimeout(
+  this.timeout, sessionOnTimeout)`；到点 `server.emit('timeout', session)`，
+  无人监听即 `session.destroy()`），`server.setTimeout` 只记值+接回调，
+  不追溯已存会话（core.js:3730-3736）。旧 sweep 与此三处全偏：
+  无 session 参数、不区分新旧会话、裸 socket 靠全扫蒙中。
+- 修法：构造即 `this.timeout = 0`；`__sessionFor` 内新会话按值武装（含 destroy-if-unhandled）；
+  `setTimeout` 只记值+接回调+清旧 timer（不再全扫）。
+  裸 socket 亦经 `connOpen → __sessionFor` 建会话，武装自然覆盖（实测 have-session
+  先于 have-timeout）。
+- 复现：`srv_probe.mjs`（raw connect：旧 sweep 蒙中、新武装必中）。
+- 推广铁律：**超时语义先查"谁武装、向谁 emit、无人监听如何"三件**——sweep 全扫
+  看似等价，实则参数形状与新旧会话 scope 全错。
+
+### 4.341 `net.Socket.prototype.destroy` 借打会话代理 socket 须补 `__nativeKill` 桥（2026-10-26，http2 lane）
+
+- 症状：`test-http2-respond-with-file-connection-abort.js` 崩
+  `TypeError: this.__nativeKill is not a function`（`net.Socket.prototype.destroy.call(
+  client.socket)` 借用）。
+- 根因：会话 socket 是 EventEmitter 代理（`__mkSessionSocket`/client `get socket`），
+  net 真 destroy 走 `this.__nativeKill()` 拆底层，代理上无此钩。
+- 修法：两处代理各加一行 `sock.__nativeKill = () => { try { session.destroy(); } catch {} }`
+ （自有 `sock.destroy` 同效；net 侧 close 自发，无双重）。
+- 复现：单件 run 即现形（借用前从未走过此路）。
+- 推广铁律：**凡 EventEmitter 代理 socket，`__nativeKill/__nativeWrite/__nativeEnd`
+  三钩须与自有方法同效**——套件随时可能借用真 `net.Socket.prototype` 方法打代理。
+
+### 4.342 `server.close()` 只扫闲置：在途流排空后须补拆会话（closeOnDrain）（2026-10-26，http2 lane）
+
+- 症状：`test-http2-graceful-close.js` HANG（net=2，timers=0）：1MB 全量已达、
+  req/stream 双 close 全发，唯会话与 server 永不收。
+- 根因：node `server.close()` 即 `closeAllSessions`（core.js:3701），会话
+  graceful 关（GOAWAY + 排空后 kMaybeDestroy 拆连）。本仓 close 只扫
+  `__streams.size === 0` 的闲置（250ms 递延），close 时刻有在途流的会话既不在
+  闲置表、排空后又无人补拆—— mutual wait。
+- 修法：close 时给有流会话挂 `__closeOnDrain`；`__unregisterStream` 见
+  流清零且旗在即 `s.close()`（node kMaybeDestroy 口径的最小实现；
+  闲置 250ms 扫不动，保持原样保 blk1/3/4 时序）。
+- 复现：`h2grace/drv.mjs`（旧码 HANG、新码全 close 级联）。
+- 推广铁律：**close 语义须列"已闲/在途/后建"三态**——只处理已闲是 graceful-close
+  类 HANG 的固定根因；补钩时以后建会话不受影响为回归线（close-idle 束）。
+
+### 4.343 同树多 agent 并发跑全量子集/重编互相污染（2026-10-26，CI1/W1 协作轮）
+
+- 症状：全量 strict 一次 5 红、一次 24+ 红，两次集合不同且横跨无关域
+  （crypto 向量/napi/child/url/permissions）。
+- 根因：同仓另一 agent 正跑 `sweep-bg`（--jobs 2）+ 另一路 nextest strict，
+  三路共 `target/debug`、共端口段、共 CPU（load 8–10）；对方重编可致本方黑盒
+  中途换二进制，对方 sweep 占端口/CPU 致本方 flake。§0.5 本就有"sweep 期间
+  开发改用 `CARGO_TARGET_DIR=~/wjs-data/target-alt`"纪律，本轮开工时树安静、
+  中途撞期未执行——属执行侧漏检。
+- 修法：不再追红，ps 取证定级为污染；全量绿待安静后复判。
+- 复现：`ps aux | grep -E "sweep-bg|nextest"` + `uptime`+`git status` 三件即定级。
+- 推广铁律：**重编/全量前先 ps 查同树并发**（sweep-bg/nextest 有其一即撞期）——
+  撞期要么等、要么切 target-alt；红先看并发再看代码（4.140/4.197 的前置一步）。

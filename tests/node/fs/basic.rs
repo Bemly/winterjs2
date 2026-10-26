@@ -1,5 +1,6 @@
 //! tests/node/fs/basic.rs — 读写/目录/promises 基础（对齐 src/builtins/node/fs.rs）。
 
+use crate::common::winterjs2;
 use crate::helpers::*;
 use assert_fs::prelude::*;
 
@@ -188,6 +189,54 @@ console.log("enc", typeof fs.readFileSync("f.txt", "utf8"));
     for line in ["buf true true Buffer", "str {\"k\":\"v\"} {\"k\":\"v\"}", "json v", "enc string"] {
         assert!(out.lines().any(|l| l == line), "missing: {line}\nout: {out}");
     }
+    dir.close().unwrap();
+}
+
+#[test]
+fn fs_exists_faces() {
+    // exists/existsSync 语义（test-fs-exists.js 全对齐）：
+    // 正常：存在/缺席/回调 false（非法参不抛）；无 cb 同步抛 ARG_TYPE；
+    // 报错：exists 无效参 existsSync 恒 false；
+    // 边界：DEP0187 警告全进程恰一次（三次非法调用）。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("f.txt").write_str("x").unwrap();
+    let file = dir.child("e.mjs");
+    file.write_str(
+        r#"import fs from "node:fs";
+console.log("have", fs.existsSync("f.txt"), fs.existsSync("missing-xyz"));
+try { fs.exists("f.txt"); console.log("nocb-nothrow"); }
+catch (e) { console.log("nocb-throw", e.code); }
+fs.exists("f.txt", (y) => console.log("cb-have", y));
+fs.exists("missing-xyz", (y) => console.log("cb-miss", y));
+fs.exists({}, (y) => console.log("cb-bad", y));
+console.log("sync-bad", fs.existsSync(), fs.existsSync({}), fs.existsSync(42));
+"#,
+    )
+    .unwrap();
+    let out = winterjs2()
+        .arg("--run")
+        .arg(file.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    for line in [
+        "have true false",
+        "nocb-throw ERR_INVALID_ARG_TYPE",
+        "cb-have true",
+        "cb-miss false",
+        "cb-bad false",
+        "sync-bad false false false",
+    ] {
+        assert!(stdout.lines().any(|l| l == line), "missing: {line}\nstdout: {stdout}");
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr.matches("DEP0187").count(),
+        1,
+        "DEP0187 exactly once; stderr: {stderr}"
+    );
     dir.close().unwrap();
 }
 

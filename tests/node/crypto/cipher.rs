@@ -69,6 +69,19 @@ try { createCipheriv("aes-999-cbc", key, iv16); } catch (e) { console.log("alg",
 try { createCipheriv("aes-256-cbc", Buffer.alloc(5), iv16); } catch (e) { console.log("key", e.code === "ERR_CRYPTO_INVALID_KEYLEN"); }
 try { createCipheriv("aes-256-cbc", key, Buffer.alloc(4)); } catch (e) { console.log("iv", e.code === "ERR_CRYPTO_INVALID_IV"); }
 try { const d = createDecipheriv("aes-256-cbc", key, iv16); d.update(Buffer.from("00112233", "hex")); d.final(); } catch (e) { console.log("pad", e.code === "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH"); }
+// OSSL 信封形（dh.js:82 真回归：message/library/reason 与真机逐字）
+try { const d = createDecipheriv("aes-128-ecb", key.slice(0, 16), ""); d.update(Buffer.alloc(4, 7)); d.final(); }
+catch (e) {
+  console.log("ossl", e.code === "ERR_OSSL_WRONG_FINAL_BLOCK_LENGTH"
+    && e.message === "error:1C80006B:Provider routines::wrong final block length"
+    && e.library === "Provider routines" && e.reason === "wrong final block length");
+}
+try { const d = createDecipheriv("aes-128-ecb", key.slice(0, 16), ""); d.update(Buffer.alloc(16, 0)); d.final(); }
+catch (e) {
+  console.log("baddec", e.code === "ERR_OSSL_BAD_DECRYPT"
+    && e.message === "error:1C800064:Provider routines::bad decrypt"
+    && e.library === "Provider routines" && e.reason === "bad decrypt");
+}
 try { const x = createCipheriv("aes-256-cbc", key, iv16); x.final(); x.final("hex"); } catch (e) { console.log("fin2", e.code === "ERR_CRYPTO_INVALID_STATE"); }
 try { const x = createCipheriv("aes-256-cbc", key, iv16); x.final(); x.update("x", "utf8", "hex"); } catch (e) { console.log("updfin", e.code === undefined); }
 try {
@@ -88,6 +101,8 @@ try {
     assert!(out.contains("key true"), "out: {out}");
     assert!(out.contains("iv true"), "out: {out}");
     assert!(out.contains("pad true"), "out: {out}");
+    assert!(out.contains("ossl true"), "out: {out}");
+    assert!(out.contains("baddec true"), "out: {out}");
     assert!(out.contains("fin2 true"), "out: {out}");
     assert!(out.contains("updfin true"), "out: {out}");
     assert!(out.contains("tag true"), "out: {out}");

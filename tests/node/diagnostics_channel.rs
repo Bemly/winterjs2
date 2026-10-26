@@ -55,6 +55,76 @@ try { dc.subscribe("t-ch2", "nope"); } catch (e) { console.log("e2", e.message.i
 }
 
 #[test]
+fn diagnostics_channel_cjs_strict_udp_faces() {
+    // base19d 真回归两件（diag/bind-store + udp，未验证落地，本件钉死）：
+    // 正常：strict-CJS 首行指令经单括号壳保持（runStores 回调 this===undefined）/
+    //   sloppy-CJS 装箱 globalThis（对照）/ udp.socket 构造期同步 publish；
+    // 报错：unbindStore 未绑定回 false；
+    // 边界：同名 channel 两侧同一对象。
+    let dir = assert_fs::TempDir::new().unwrap();
+    dir.child("strict.cjs")
+        .write_str(
+            r#"'use strict';
+const assert = require("node:assert");
+const dc = require("node:diagnostics_channel");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const ch = dc.channel("t-strict");
+const store = new AsyncLocalStorage();
+ch.bindStore(store, (d) => ({ d }));
+ch.runStores({ n: 1 }, function() {
+  assert.strictEqual(this, undefined);
+  assert.deepStrictEqual(store.getStore(), { d: { n: 1 } });
+});
+assert.strictEqual(store.getStore(), undefined);
+assert.strictEqual(ch.unbindStore(store), true);
+assert.strictEqual(ch.unbindStore(store), false);
+console.log("strict-ok");
+"#,
+        )
+        .unwrap();
+    dir.child("sloppy.cjs")
+        .write_str(
+            r#"const assert = require("node:assert");
+const dc = require("node:diagnostics_channel");
+const ch = dc.channel("t-sloppy");
+ch.runStores(7, function() {
+  assert.strictEqual(this, globalThis);
+});
+console.log("sloppy-ok");
+"#,
+        )
+        .unwrap();
+    dir.child("udp.cjs")
+        .write_str(
+            r#"const assert = require("node:assert");
+const dgram = require("node:dgram");
+const dc = require("node:diagnostics_channel");
+assert.strictEqual(dc.channel("udp.socket"), dc.channel("udp.socket"));
+let n = 0;
+dc.channel("udp.socket").subscribe(({ socket }) => {
+  n++;
+  assert.ok(socket instanceof dgram.Socket);
+});
+const s = dgram.createSocket("udp4");
+assert.strictEqual(n, 1);
+s.close();
+console.log("udp-ok");
+"#,
+        )
+        .unwrap();
+    for (name, marker) in [("strict.cjs", "strict-ok"), ("sloppy.cjs", "sloppy-ok"), ("udp.cjs", "udp-ok")] {
+        let path = dir.child(name).path().to_path_buf();
+        let out = winterjs2().args(["--run", path.to_str().unwrap()]).output().unwrap();
+        assert!(out.status.success(), "{name} stderr: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            String::from_utf8(out.stdout).unwrap().lines().any(|l| l == marker),
+            "{name} missing {marker}"
+        );
+    }
+    dir.close().unwrap();
+}
+
+#[test]
 fn diagnostics_channel_parity_fixes() {
     // 10f 对拍牵引回归（test-diagnostics-channel-* 套件门）：
     // 正常：订阅者抛错走 uncaughtException（非 unhandled rejection）/

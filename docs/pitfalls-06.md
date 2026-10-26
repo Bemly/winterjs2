@@ -850,3 +850,15 @@
 - 推广铁律：**红了先问"谁错"再动手**——同一失败有"改实现/翻测试"两个方向时，
   必须先出双真机实测（本地 + pin 版），实现与真机一致即翻测试，反之改实现；
   禁凭注释里的旧实测结论直接改实现。
+
+### 4.350 测试 fixture 缺本机 arch 行即跨机恒红（2026-10-26，goal round 3）
+
+- 症状：`pick_asset_oxc_shapes`（单测）与 `pm_release_binary_{runs,end_to_end}` 在 x86_64-mac
+  恒红；arm64-mac 全绿——与实现无关。
+- 根因：fixture 资产表只含 aarch64-darwin + x86_64-linux；pick 按 arch+os 双滤，
+  本机无命中。单测的 oxfmt 行同理（前缀隔离断言被 arch 过滤误杀）。
+- 修法：fixture 补行（oxfmt 镜像 oxlint 的平台行；mytool 补 x86_64-apple-darwin），
+  断言语义不动。
+- 推广铁律：**平台过滤型测试的 fixture 必须覆盖矩阵所有列**（至少与同文件主断言
+  同覆盖）；单测里凡 `std::env::consts::ARCH/OS` 参与过滤，fixture 行缺一列即
+  跨机红——提交前在第二 arch（本机 x86_64 + 常规 arm64 心智）过一遍。

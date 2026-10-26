@@ -3662,3 +3662,12 @@ G1/G2/G3/G9 已收官。）
 - 联跑：subtle×3 + byob + child×2 + url/punycode 6 件全绿（e4a8286c 轮 6/6）。
 - 待下轮：napi×3（C fixture+线程+require 上下文）/ wcover / worker-hang /
   mapper（非闸门）/ permissions×2（spawn×PATH 交互）/ pm×2（环境）/ r20-fscry 纯跑。
+
+## 2026-10-26 goal round 3：pm fixture 补 arch 行 + wcover 定界
+
+- `pick_asset_oxc_shapes` / `pm_release_binary_*`：fixture 缺 x86_64-apple-darwin 行，
+  本机（x86_64）无命中恒红；补行后 4/4 绿（4.350）。单测 oxfmt 行镜像 oxlint 平台覆盖。
+- `wcover_conc_faces`：定界未修——`workerData` 路径正常，live `postMessage`
+  parent→worker 丢值（worker 侧收 `undefined` 且回包带裸 `__wjs2_xfer` 信封）；
+  worker 面自 base 无改动，需专轮深挖（PortMsg 路由 + 收端拆包）。
+- 待下轮：napi×3 / wcover / worker-hang / mapper（非闸门）/ permissions×2 / r20-fscry 纯跑。

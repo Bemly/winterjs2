@@ -32,6 +32,7 @@ fn pm_release_binary_end_to_end() {
                 "assets": [
                     { "name": "other-x86_64-unknown-linux-gnu.tar.gz", "browser_download_url": "http://127.0.0.1:PORT/mytool.tgz" },
                     { "name": "mytool-x86_64-unknown-linux-gnu.tar.gz", "browser_download_url": "http://127.0.0.1:PORT/mytool.tgz" },
+                    { "name": "mytool-x86_64-apple-darwin.tar.gz", "browser_download_url": "http://127.0.0.1:PORT/mytool.tgz" },
                     { "name": "mytool-aarch64-apple-darwin.tar.gz", "browser_download_url": "http://127.0.0.1:PORT/mytool.tgz" },
                 ],
             })
@@ -133,6 +134,7 @@ fn pm_release_binary_runs() {
             let body = serde_json::json!({
                 "assets": [
                     { "name": "mytool-x86_64-unknown-linux-gnu.tar.gz", "browser_download_url": format!("http://127.0.0.1:{host}/mytool.tgz") },
+                    { "name": "mytool-x86_64-apple-darwin.tar.gz", "browser_download_url": format!("http://127.0.0.1:{host}/mytool.tgz") },
                     { "name": "mytool-aarch64-apple-darwin.tar.gz", "browser_download_url": format!("http://127.0.0.1:{host}/mytool.tgz") },
                 ],
             })

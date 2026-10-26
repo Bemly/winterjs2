@@ -258,7 +258,8 @@ mod tests {
 
     #[test]
     fn pick_asset_oxc_shapes() {
-        // oxc 真实命名（apps_v1.82.0 release 表子集）。
+        // oxc 真实命名（apps_v1.82.0 release 表子集；oxfmt 行与 oxlint 同平台覆盖，
+        // 否则前缀隔离断言只在 aarch64-mac 上可过，跨机恒红）。
         let assets = [
             "oxlint-aarch64-apple-darwin.tar.gz",
             "oxlint-x86_64-apple-darwin.tar.gz",
@@ -266,6 +267,10 @@ mod tests {
             "oxlint-x86_64-unknown-linux-musl.tar.gz",
             "oxlint-aarch64-pc-windows-msvc.zip",
             "oxfmt-aarch64-apple-darwin.tar.gz",
+            "oxfmt-x86_64-apple-darwin.tar.gz",
+            "oxfmt-x86_64-unknown-linux-gnu.tar.gz",
+            "oxfmt-x86_64-unknown-linux-musl.tar.gz",
+            "oxfmt-aarch64-pc-windows-msvc.zip",
             "checksums.txt",
         ]
         .iter()

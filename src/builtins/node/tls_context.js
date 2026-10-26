@@ -691,3 +691,62 @@ function __tlsDirectDialFamily(sock, mo, host, port, cb) {
     });
   } catch (e) { queueMicrotask(() => sock.destroy(e)); }
 }
+
+// ── Server.addContext 下沉（sni-server-client 套件）─────────────────────────
+// node wrap.js:1697-1710 口径：空名即 ERR_TLS_REQUIRED_SERVER_NAME；名转 SNI 正则
+// （`*`→单级通配，`i`）；SecureContext 实例直取，普通对象形即场 createSecureContext
+// （`_contexts` 记 [正则, 原生上下文]）；出示材料（key/cert PEM）同步下沉底座
+// 选择器（`__wjs2_tls_add_context`；listen 前登记的走待刷队，首个 TCP accept 派发
+// 点 `__tlsFlushSni` 刷完——connection 在握手完成前必先到，无竞速）。
+// 无 key/cert 的上下文记空 tombstone（选中即握手失败，node 空上下文口径）。
+function __tlsServerAddContext(server, servername, context) {
+  if (!servername) throw new __tlsC.ERR_TLS_REQUIRED_SERVER_NAME();
+  const re = new RegExp(`^${servername.replace(/([.^$+?\-\\[\]{}])/g, "\\$1").replaceAll("*", "[^.]*")}$`, "i");
+  const sc = (context instanceof SecureContext) ? context : createSecureContext(context);
+  const native = sc.context;
+  server._contexts.push([re, native]);
+  const keyPem = native.key, certPem = native.cert;
+  if (keyPem === undefined || certPem === undefined) {
+    if (server.__id) { try { __wjs2_tls_add_context(String(server.__id), String(servername), "", ""); } catch {} }
+    else (server.__pendingSni ??= []).push([String(servername), "", ""]);
+    return;
+  }
+  if (server.__id) {
+    __wjs2_tls_add_context(String(server.__id), String(servername), String(keyPem), String(certPem));
+  } else {
+    (server.__pendingSni ??= []).push([String(servername), String(keyPem), String(certPem)]);
+  }
+}
+function __tlsFlushSni(server) {
+  const q = server.__pendingSni;
+  if (!q || q.length === 0 || !server.__id) return;
+  server.__pendingSni = [];
+  for (const [name, key, cert] of q) __wjs2_tls_add_context(String(server.__id), name, key, cert);
+}
+
+// ── 服务端 SNI 选中证自持（sni-case-insensitive 套件）───────────────────────
+// 握手完成点按 node 默认 SNICallback 口径（`_contexts` 倒序首配）重算 conn 的
+// `__ownCert`（`getCertificate()` 面）；未命中即沿用缺省（派发点已按缺省置位）。
+function __tlsServerOwnCert(sock) {
+  const srv = sock.__tlsServer;
+  const name = sock.servername;
+  if (!srv || typeof name !== "string" || name === "") return;
+  const ctxs = srv._contexts;
+  if (!Array.isArray(ctxs)) return;
+  for (let i = ctxs.length - 1; i >= 0; i--) {
+    let re, native;
+    try { ([re, native] = ctxs[i]); } catch { continue; }
+    let hit = false;
+    try { hit = re.test(name); } catch { hit = false; }
+    if (!hit) continue;
+    try {
+      const pem = native.cert;
+      if (typeof pem === "string" && pem.includes("-----BEGIN CERTIFICATE-----")) {
+        const body = pem.split("-----END CERTIFICATE-----")[0]
+          .replace(/-----(BEGIN|END) CERTIFICATE-----/g, "").replace(/\s+/g, "");
+        if (body !== "") sock.__ownCert = body;
+      }
+    } catch { /* 取不到即沿用缺省 */ }
+    return;
+  }
+}

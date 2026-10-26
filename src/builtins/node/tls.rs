@@ -120,6 +120,18 @@ pub(crate) fn tls_info_json(
 
 /// 服务端配置（PEM 串 → ServerConfig；纯函数，单元测试覆盖）。
 pub(crate) fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::ServerConfig, String> {
+    let ck = certified_key(cert_pem, key_pem)?;
+    Ok(rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(std::sync::Arc::new(FixedCert(ck))))
+}
+
+/// PEM 串 → 待出示证书（含链）+ 签名钥（`server_config` 与 SNI 换装共用；
+/// 不走 `with_single_cert` 的 keys_match——X.509 v1 终端照常出示，见下）。
+pub(crate) fn certified_key(
+    cert_pem: &str,
+    key_pem: &str,
+) -> Result<std::sync::Arc<rustls::sign::CertifiedKey>, String> {
     let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
         rustls_pemfile::certs(&mut cert_pem.as_bytes())
             .collect::<Result<Vec<_>, _>>()
@@ -139,10 +151,121 @@ pub(crate) fn server_config(cert_pem: &str, key_pem: &str) -> Result<rustls::Ser
         .key_provider
         .load_private_key(key)
         .map_err(|e| format!("TypeError: tls: bad key/cert pair ({e})"))?;
-    let ck = std::sync::Arc::new(rustls::sign::CertifiedKey::new(certs, signing));
-    Ok(rustls::ServerConfig::builder()
+    Ok(std::sync::Arc::new(rustls::sign::CertifiedKey::new(certs, signing)))
+}
+
+/// SNI 证书选择器（`Server.addContext` 下沉；node 内核口径见
+/// tls_context.js `__tlsServerAddContext`）：缺省证书 + 注册序 (pattern, 证书)
+/// 表；匹配大小写不敏感，`*` 占一整级标签；后注册优先（倒序），查表不改序
+///（secure-context-usage-order 套件：禁 `reverse()` 原地反转）。
+#[derive(Debug)]
+pub(crate) struct SniSelector {
+    default: Option<std::sync::Arc<rustls::sign::CertifiedKey>>,
+    entries: std::sync::RwLock<Vec<(String, Option<std::sync::Arc<rustls::sign::CertifiedKey>>)>>,
+}
+
+/// node `addContext` 正则口径（`^…$` + `*`→`[^.]*` + `i`）的标签级等价：
+/// 级数相等且每级或全等（大小写不敏感）或 pattern 侧为 `*`。
+fn sni_labels_match(pattern: &str, name: &str) -> bool {
+    let ps: Vec<&str> = pattern.split('.').collect();
+    let ns: Vec<&str> = name.split('.').collect();
+    ps.len() == ns.len()
+        && ps.iter().zip(ns.iter()).all(|(p, n)| *p == "*" || p.eq_ignore_ascii_case(n))
+}
+
+impl rustls::server::ResolvesServerCert for SniSelector {
+    fn resolve(
+        &self,
+        hello: rustls::server::ClientHello<'_>,
+    ) -> Option<std::sync::Arc<rustls::sign::CertifiedKey>> {
+        if let Some(name) = hello.server_name() {
+            if let Ok(entries) = self.entries.read() {
+                for (pat, ck) in entries.iter().rev() {
+                    if sni_labels_match(pat, name) {
+                        // 空 tombstone（无出示材料）：选中即无证书可出示 → 握手失败
+                        //（node 空上下文口径；与缺省未命中走 default 区分）。
+                        return ck.clone();
+                    }
+                }
+            }
+        }
+        self.default.clone()
+    }
+}
+
+/// SNI 选择器注册表（listen id → selector；`__wjs2_tls_add_context` 按 id 换装；
+/// 服务端关闭即摘除，不常驻）。
+static SNI_TABLE: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<SniSelector>>>,
+> = std::sync::OnceLock::new();
+
+fn sni_table() -> &'static std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<SniSelector>>> {
+    SNI_TABLE.get_or_init(Default::default)
+}
+
+/// 服务端配置（SNI 选择器版；`tls_listen` 用：缺省证书 + 可换装表）。
+pub(crate) fn server_config_sni(
+    cert_pem: Option<&str>,
+    key_pem: Option<&str>,
+) -> Result<(rustls::ServerConfig, std::sync::Arc<SniSelector>), String> {
+    let default = match (cert_pem, key_pem) {
+        (Some(cert), Some(key)) => Some(certified_key(cert, key)?),
+        _ => None,
+    };
+    let selector = std::sync::Arc::new(SniSelector { default, entries: Default::default() });
+    let cfg = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_cert_resolver(std::sync::Arc::new(FixedCert(ck))))
+        .with_cert_resolver(selector.clone());
+    Ok((cfg, selector))
+}
+
+/// `__wjs2_tls_add_context(serverId, pattern, keyPem, certPem)` → "ok"。
+/// 服务端 SNI 上下文换装（listen 前后皆可；pattern 为 `addContext` 原名，
+/// 通配即 `*.` 前缀；非法 id/坏 PEM 即同步 TypeError）。
+///
+/// UNSAFE-BOUNDARY: 前置——引擎回调 cx 有效；arg 均为字符串；
+/// 覆盖测试——`tests/node/tls.rs::tls_sni_context_selects_certificate`。
+pub unsafe extern "C" fn tls_add_context(
+    cx_raw: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let mut cx = unsafe { wrap_cx(cx_raw) };
+    let frame = unsafe { Frame::from_raw(vp, argc) };
+    if frame.argc() < 4 {
+        report_error(&mut cx, "TypeError: tls addContext internals missing arguments");
+        return false;
+    }
+    let id: u64 = value_to_string(&mut cx, frame.arg(0)).parse().unwrap_or(u64::MAX);
+    let pattern = value_to_string(&mut cx, frame.arg(1));
+    let key_pem = value_to_string(&mut cx, frame.arg(2));
+    let cert_pem = value_to_string(&mut cx, frame.arg(3));
+    let selector = sni_table().lock().ok().and_then(|t| t.get(&id).cloned());
+    let Some(selector) = selector else {
+        report_error(&mut cx, "TypeError: tls addContext: unknown server");
+        return false;
+    };
+    let ck = if key_pem.is_empty() && cert_pem.is_empty() {
+        // 空 tombstone（addContext 上下文无 key/cert）：选中即无证书可出示。
+        None
+    } else {
+        match certified_key(&cert_pem, &key_pem) {
+            Ok(ck) => Some(ck),
+            Err(e) => {
+                report_error(&mut cx, &e);
+                return false;
+            }
+        }
+    };
+    match selector.entries.write() {
+        Ok(mut entries) => entries.push((pattern, ck)),
+        Err(_) => {
+            report_error(&mut cx, "TypeError: tls addContext: selector poisoned");
+            return false;
+        }
+    }
+    set_rval_str(&mut cx, &frame, "ok");
+    true
 }
 
 /// 无证书解析器（createServer 未给 key/cert：握手必败 → tlsClientError）。
@@ -475,25 +598,18 @@ pub unsafe extern "C" fn tls_listen(
         .iter()
         .map(|s| s.as_bytes().to_vec())
         .collect();
-    let cfg = match (opts.cert, opts.key) {
-        (Some(cert_pem), Some(key_pem)) => match server_config(&cert_pem, &key_pem) {
-            Ok(mut c) => {
-                c.alpn_protocols = alpn;
-                std::sync::Arc::new(c)
-            }
-            Err(e) => {
-                report_error(&mut cx, &e);
-                return false;
-            }
-        },
-        _ => {
-            let mut c = rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_cert_resolver(std::sync::Arc::new(NoCert));
+    // SNI 选择器版（addContext 下沉；无 key/cert 即缺省空，握手无证书可出示 → tlsClientError）。
+    let (mut cfg, selector) = match server_config_sni(opts.cert.as_deref(), opts.key.as_deref()) {
+        Ok((mut c, sel)) => {
             c.alpn_protocols = alpn;
-            std::sync::Arc::new(c)
+            (c, sel)
+        }
+        Err(e) => {
+            report_error(&mut cx, &e);
+            return false;
         }
     };
+    let cfg = std::sync::Arc::new(cfg);
     let Some((id, ev_tx)) = state::net_alloc() else {
         report_error(&mut cx, "OperationError: net driver not installed");
         return false;
@@ -504,7 +620,21 @@ pub unsafe extern "C" fn tls_listen(
     };
     let mut cmd_rx = state::net_socket_add(id, target);
     set_rval_str(&mut cx, &frame, &id.to_string());
+    // SNI 上下文注册（addContext 下沉；关闭时摘除）。
+    if let Ok(mut t) = sni_table().lock() {
+        t.insert(id, selector);
+    }
     handle.spawn(async move {
+        // SNI 表摘除守卫（任务任一出口皆走 Drop，不逐点清理）。
+        struct SniGuard(u64);
+        impl Drop for SniGuard {
+            fn drop(&mut self) {
+                if let Ok(mut t) = sni_table().lock() {
+                    t.remove(&self.0);
+                }
+            }
+        }
+        let _sni_guard = SniGuard(id);
         let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
         // UDS listen（node tls.Server.listen(path)）：UnixListener + TlsAcceptor，
         // 连接事件走 ConnectionUds（地址全 undefined，net 同口径）。
@@ -683,5 +813,17 @@ mod tests {
         // rejectUnauthorized:false 不碰系统 roots，纯构造不断言网络
         assert!(client_config(None, false).is_ok());
         assert!(client_config(Some("definitely not pem"), true).is_err());
+    }
+
+    #[test]
+    fn tls_sni_labels_match_faces() {
+        // 正常：精确/单级通配/大小写不敏感；边界：多级不配、裸域不配、级数不等。
+        assert!(sni_labels_match("a.example.com", "a.example.com"));
+        assert!(sni_labels_match("*.test.com", "b.test.com"));
+        assert!(sni_labels_match("A.EXAMPLE.COM", "a.example.com"));
+        assert!(!sni_labels_match("*.test.com", "a.b.test.com"));
+        assert!(!sni_labels_match("*.test.com", "test.com"));
+        assert!(!sni_labels_match("a.example.com", "b.example.com"));
+        assert!(!sni_labels_match("a.example.com", "a.example.com."));
     }
 }

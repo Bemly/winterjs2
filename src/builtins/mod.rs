@@ -309,6 +309,8 @@ pub fn define_all(cx: &mut JSContext, global: *mut JSObject) -> Result<(), Error
             // Phase 9d-6: node:tls（握手底座；读写复用 net_* natives）
             ("__wjs2_tls_connect", Some(node::tls::tls_connect), 4),
             ("__wjs2_tls_listen", Some(node::tls::tls_listen), 4),
+            // R19/L-A：Server.addContext 下沉（SNI 选择器换装，listen 前后皆可）。
+            ("__wjs2_tls_add_context", Some(node::tls::tls_add_context), 4),
             ("__wjs2_tls_ca_certs", Some(node::tls::tls_ca_certs), 1),
             // P2-tls-b: TLSSocket 包裹引擎（rustls 手动模式，JS 字节驱动）
             ("__wjs2_tls_wrap_open", Some(node::tls_wrap::tls_wrap_open), 2),

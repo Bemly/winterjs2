@@ -355,6 +355,7 @@ class TLSSocket extends Socket {
       if (this.__tlsServer) {
         this._secureEstablished = true;
         this.authorized = false; // node：服务端未 requestCert 即 false（真机对拍）
+        try { __tlsServerOwnCert(this); } catch {} // SNI 选中证自持（未命中沿用缺省）
         this.emit("secure");
         const srv = this.__tlsServer;
         queueMicrotask(() => srv.emit("secureConnection", this));
@@ -729,7 +730,7 @@ class Server extends EventEmitter {
     this.__id = 0;
     this.__listening = null;
     this.__tlsOpts = {};
-    this.__contexts = [];
+    // node：addContext 上下文记 `this._contexts`（[正则, SecureContext]；待下沉队列另记）。
     // node internal/tls/wrap.js Server()：参数形 → ALPN 互斥 → setSecureContext（校验全在
     // createSecureContext）→ 握手超时/SNI/PSK 回调校验。
     if (typeof options === "function") {
@@ -813,10 +814,12 @@ class Server extends EventEmitter {
       this.__udsPath = udsPath;
       this.__port = 0;
       this.__id = Number(__wjs2_tls_listen(0, "UDS:" + udsPath, JSON.stringify(this.__tlsOpts), this));
+      try { __tlsFlushSni(this); } catch {} // listen 前登记的 SNI 同步刷（首握手前必可见，无竞速）
       return this;
     }
     this.__port = Number(port);
     this.__id = Number(__wjs2_tls_listen(Number(port), host === null ? "0.0.0.0" : host, JSON.stringify(this.__tlsOpts), this));
+    try { __tlsFlushSni(this); } catch {}
     return this;
   }
   __ev(kind, payload) {
@@ -884,11 +887,10 @@ class Server extends EventEmitter {
     if (this.__id) __wjs2_net_destroy(this.__id);
     return this;
   }
-  addContext(hostname, context) {
-    if (typeof hostname !== "string") throw __tlsErr("ERR_INVALID_ARG_TYPE", `The "hostname" argument must be of type string.`);
-    // SNI 多证书：底座单证书解析器暂不分流（记档），先登记。
-    this.__contexts.push([hostname, context]);
-  }
+  // node Server.prototype.addContext（wrap.js:1697）：空名即
+  // ERR_TLS_REQUIRED_SERVER_NAME；名转 SNI 正则（`*`→单级通配，`i`）；普通对象
+  // 形即场 createSecureContext，SecureContext 实例直取（实现住 tls_context.js）。
+  addContext(hostname, context) { __tlsServerAddContext(this, hostname, context); }
   // node Server.prototype.setSecureContext：选项逐项落实例 → createSecureContext 共享凭据；
   // rustls 底座取其 key/cert PEM（secureContext 选项形同样经此）。
   setSecureContext(options) {

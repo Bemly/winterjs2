@@ -3692,3 +3692,12 @@ G1/G2/G3/G9 已收官。）
   `CARGO_PKG_VERSION`（CalVer 发版即变，钉死必腐）。
 - 待下轮：napi×3 / wcover / worker-hang / mapper（非闸门）/ permissions×2 /
   r20-fscry 纯跑；cli×6 待复判（疑负载抖动）。
+
+## 2026-10-26 goal round 4（续）：cli en-locale 定界（预存，非回归）
+
+- `cli_flag_spec_single_action` / `i18n_*`×3 / `run_missing_file_reports_chain` /
+  `run_script_js_bin_*`×2：`WINTERJS2_LANG=en --config` 即错报
+  `--completions <SHELL>` 缺值、`-l en --help` 仅 80 字节版本行；
+  `locales/` 自基线零改动 → 预存（round1 尾部截断误判为新增）。
+  根因待查（en 下 clap 解析腐坏，zh 正常；`93beb5f` 曾有 -l en 错位回退史），
+  记档另轮，不碰 i18n/clap 面。

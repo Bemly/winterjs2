@@ -780,3 +780,19 @@
   先读、JS 侧后写的表，一律构造/listen 同步点刷完。**引擎选了≠用户看见**——
   凡服务端可观测面（getCertificate/authorized），握手完成点必须显式同步
   一次选中态。
+
+### 4.345 密码轮子 hazmat/unchecked 在非标准尺寸下 monty 断言 abort（2026-10-26，R20 crypto 轮）
+
+- 症状：`dsa` 0.7 `Components::from_components` 硬卡 4 档 FIPS 对；切 hazmat
+  `from_components_unchecked`（`KeySize::other`）后 2049/256 生成成功，
+  但 sign/export 即 `crypto-bigint` BoxedUint monty 断言
+  （`left 2048 vs right 2112`）→ `extern "C"` 内不可 unwind panic → abort（exit 139）。
+- 根因：轮子内部以 KeySize 定 limb 布局做 monty 运算；`KeySize::other` 只改名义
+  尺寸，不改算术布局——unchecked 跳的是"尺寸对不对"，不给"非标准尺寸算对"。
+- 修法：回退（生成期维持原错 `unsupported DSA size`）；任意尺寸需 openssl 全链
+  （sign/verify/export 三面），属修大，另轮。keygen-bit-length 维持红。
+- 复现：`generateKeyPairSync("dsa",{modulusLength:2049,divisorLength:256})`
+  后 sign/export 即崩（真机 OpenSSL 全尺寸可生可用，故为轮子墙非语义偏离）。
+- 推广铁律：**轮子 hazmat/unchecked 是"跳检查"不是"给能力"**——非标准输入须先证
+  算术/编解码全链可用（至少一次端到端真跑），否则宁可维持原错，不可半开
+  （生成放行、使用崩溃是最坏形态，静默红反而安全）。

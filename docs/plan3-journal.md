@@ -3518,3 +3518,79 @@ G1/G2/G3/G9 已收官。）
   L-B 复判全部分类（1 修 + 其余 bound/另案各有主)；http 黑盒 36/37（mapper 红为
   lane 外 pre-existing，非本轮引入）；全量 strict 因同树并发污染未跑（4.343 口径，
   由当值 lane 在安静后复判）。
+## 2026-10-26 R20 base19d 回归（fs/child/diagnostics/crypto；N2 确认；sweep 未竟记）
+
+> 范围：base19d fs-45 复核修/定级 + child 12 抖动复判 + diagnostics 21（修 2 验
+> 收）+ crypto 40 按 2861 表续啃 + N2 SNI 缺席确认。只动 fs/child/diagnostics/
+> crypto/dh 相关（http2/vm/tls 未碰；R19 L-A 的 SNI addContext 下沉系 tls lane，
+> 本轮只读确认）。§0.3 表未改（2252 口径，只记账）。
+
+- 起点：HEAD 17a845a（CI1 10/10 绿后）+ 前任停工收拢三件待验（diag 436ccf7/
+  prime_gen f0be4b2/残留 dd62f0d）。开工即 status 空；二进制滞后源码
+  （jobqueue.rs 新）→ 重编（LIBCLANG 走 /usr/local 系，/opt/homebrew 在本机
+  不存在）→ 冒烟 5/5（md5 98e1f0e8 起）。
+- diagnostics 修 2 验证转绿（零新码，前任 436ccf7 落地，本轮验证+黑盒钉死）：
+  bind-store（单括号保 `'use strict'` 指令语义，runStores 回调 this===undefined；
+  真回归，base19b 绿→19c 红）/ udp（dgram 构造器 publish `udp.socket`）。
+  全域 35 复核：绿 14→**16**，余 19 = http2×18 偏离（push-bound，R16b B1）
+  + promise-run-stores 另案（ALS 跨 await，async_hooks 既有记档）。
+  黑盒 `diagnostics_channel_cjs_strict_udp_faces`（strict/sloppy 对照/udp 三跑）。
+- crypto 续啃（base19d 40 = 39 DIFF + 1 TIMEOUT）：
+  - 本轮转绿 1：**dh.js**（cipher_final 两错补 OSSL 信封
+    `error:1C80006B:Provider routines::wrong final block length` /
+    `error:1C800064:Provider routines::bad decrypt`，library/reason 真机逐字，
+    rsa 面先例；:82 wrongBlockLength 形 + BAD_DECRYPT 同愈）。
+  - 前任底座本轮验证转绿 12（prime_gen f0be4b2 生效的 DH number 形全绿：
+    dh-curves/dh-generate-keys/dh-padding/keygen-dh-classic 等；现二进制实测）。
+  - 维持（node 自红）：aes-wrap/getcipherinfo/hmac。
+  - 抖动/环境墙：prime（3/4 绿 1 超时，load 抖，sweep 裁）/ keygen-async-dsa
+    （慢 DSA）/ keygen.js（RSA-4096 ~44s，sweep 25s 墙）/ sign-verify
+    （150s 跑完 DIFF，剩 559 行 ctx 段，未批不动；25s 探针超时系 load）。
+  - 轮子墙（新坑 **4.345**）：keygen-bit-length 2049/256——dsa 轮子 from_components
+    硬卡 4 档，hazmat unchecked 在 monty 层 abort（exit 139，实测），openssl 全链
+    （sign/verify/export）属修大另轮，维持原错。定级：修大另轮。
+  - 余定级：argon2-job（B 测试 binding 面）/ stream×4（Hash/Cipher 接 Stream 大件
+    另案）/ certificate（verifySpkac 修中）/ domain（BAM 修中）/ eddsa-variants
+    （ctx 未批）/ key-objects（p224/p192 偏离）/ keygen-raw（slh 偏离）/
+    keyobject-clone（修中）/ pqc×4（ml 修中/slh 偏离）/ publicDecrypt（PBES2 修中）/
+    subtle-cross-realm（修中）/ worker-thread（c-4）/ x509（修中）。
+  - 黑盒：cipher ossl/baddec 信封三件；dsa 任意尺寸黑盒曾加后随回退同步撤回。
+- fs（base19d 44 DIFF + 1 TIMEOUT → HEAD **34 DIFF + 1 TIMEOUT**，-10）：
+  - 自愈 6（免修）：mkdir-rmdir/stat/statfs/readfile-pipe-large×2（ab3a76d crash
+    簇 + load 抖）/ promises-file-handle-read（node -6 自崩，复判 node 亦绿）。
+  - 本轮转绿 4：**exists**（DEP0187 一次旗，node lib/fs.js 原文；
+    黑盒 stderr 计数恰一次）/ **realpath**（`.native` 自引用，Sync 既有先例）/
+    **realpath-buffer-encoding**（encoding 透出 buffer/latin1）/
+    **fmap**（数字旗位对齐 constants mac 值 + 写定位数字兼容；根因：__fsFlags
+    硬编码 Linux 位值而 constants 表是 mac 值，1537 写 ENOENT；
+    另修 writeFileBase `flag.startsWith` 数字崩）。
+  - 黑盒 `fs_exists_faces` + `fs_realpath_native_and_numeric_flags_faces`。
+  - 定级：A internal 直接 require×5（open-flags/rm/util-validateoffsetlength/
+    utils-get-dirents/watchfile-bigint，范围外，crypto/util 先例另议）/
+    B 测试 binding×2（promises-readfile/readdir-types，设施另案）/
+    C glob 导出（glob-throw 修中另轮）/ D Temporal（stat-temporal 另案）/
+    E CLI 设计（write-sigxfsz 裸位置参数，书面偏离）/ F 校验语义簇 24（flush×2
+    mock 可观测修中；signal/stat-temporal/stat-date 修中；read-type 等逐项另轮；
+    write.js 系 V8 flag 口径差）/ TIMEOUT readdir-stack-overflow 双 142 口径差。
+- child 13（12 DIFF + 1 TIMEOUT）复判：另案 12 + flake 1。
+  send-keep-open 改判（2580 口径差→稳定红，ERR_INVALID_HANDLE_TYPE，handle 传递族
+  另案，与 net-server 同根）；spawn-typeerror 两边轮流抖（flake 维持）；
+  fork-ref 稳定红（worker-flush 另案维持）；ipc-next-tick hang（IPC 深水维持）；
+  其余 9 与 2580 定级一致（spawn-ipc×2/序列化往返×3/handle×2/next-tick/
+  cluster-process/execPath）。
+- N2：SNI 缺席不回落 host 代码在（tls.js:315 + __sniSent），行为探针双边
+  `servername === false` 一致（N2-OK），R19 lane 已做，无需补。SNI 大面
+  （sni-option/server-client 等）系 tls lane B6/B7，不碰。
+- sweep r20-fscry 未竟（记账不算基线）：jobs2/thread3699/ports30199 启动，
+  79%（2794/3528）被看门狗 ABORT——数据盘余量 5.0GB 触地板（sweep 中 sibling
+  rustc 并发编 + target/ 77G 共享缓存；mps 498G 非本轮可动）。2794 件红 659
+  行留档备查（`~/wjs-data/sweep/r20-fscry/`）；§0.3 不换表。教训即 4.343
+  （并发污染）+ 磁盘地板：全量前先看余量与 ps。
+- 三件套/冒烟/守门：crypto 33/33（含 cipher/asym/dsa）/ fs 25/25 /
+  diagnostics 3/3 / dgram 8/8；冒烟 5/5（三次：98e1f0e8/ca26c29c/29471126）；
+  check-naming 绿；check-lines 绿（3 超限皆 HEAD 既有）。
+- 提交（均 push origin/master）：617c44d（cipher 信封+exists）/ d70e7e2（黑盒三件）/
+  7644e1c（旗位/realpath/encoding/写定位）/ 729139e（黑盒）+ 本节 docs。
+  新坑 **4.345**。二进制 29471126。
+- 下一步（parent 定）：磁盘腾挪后（target/mps 需人力协调）干净树纯跑新 tag；
+  keygen-bit-length 待 openssl 全链另轮；flush mock 面（4.95/4.166）可单开一轮。

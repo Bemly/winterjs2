@@ -3453,3 +3453,68 @@ G1/G2/G3/G9 已收官。）
   本轮改动面（repl 46/46 + 冒烟 + 双 dispatch 皆在安静/干净环境绿）。
 - 动作：本轮不再追（4.140/4.197 先分类口径：污染定级即止）；全量绿待树安静后由
   当值 lane 复判。教训记 4.343（§0.5 target-alt 纪律的执行侧补齐）。
+
+## 2026-10-26 R19 wave-3 L-A/L-B 收尾（tls SNI 下沉 + family 定向 + 校验，4 转绿）
+
+> 范围：plan3 §0.4 R19 行 L-A（B-3 四红）/ L-B（connect-flake + TIMEOUT 复判）。
+> 基线：base19d（tls 91/185、https 48/59）；二进制 `~/wjs-data/target-alt/debug/winterjs2`
+> （CARGO_TARGET_DIR 隔离，sibling 全量 sweep 并行中，4.343 口径）。
+> 全部改动只碰 tls/net/https 相关文件（tls.js/tls_context.js/tls.rs/mod.rs +
+> tests/node/tls*），http2/vm/console 等他人 lane 零触碰。
+
+- L-A B-3 四红收官：
+  - CSI unfqdn（check-server-identity）/ 链锚（cert-chains-in-ca）/ error-servername，
+    新二进制直探 **3/3 rc=0**，B-3 转绿保持，无残留。
+  - SNI 双件之一 `sni-server-client`：`Server.addContext` 下沉 Rust `SniSelector`
+    （`ResolvesServerCert`，大小写不敏感 + `*.` 单级通配 + 后注册优先 + 查表不改序；
+    listen 同步刷待刷队规避握手竞速 4.344；`getCertificate()` 握手完成点按默认
+    SNICallback 口径重算 `__ownCert`）→ **rc=0**。
+  - SNI 双件之二 `snicallback-error`：TLSSocket 构造缺 SNICallback 函数校验
+    （createServer 有、TLSSocket 无，真机双路皆抛）→ 补 3 行校验 → **rc=0**。
+  - 附带：`sni-case-insensitive`（清单外）同因转绿（直探 rc=0；base19d 未跑此件）。
+- L-B connect-flake：
+  - `tls-connect-address-family`（family:6 被直拨 native 吞）：family 经 JS lookup
+    定向再连（`__tlsFamilyOf` + `__tlsDirectDialFamily` 住 tls_context.js；
+    `__dialDirect` 抽法；net_pumps.rs 整 1000 行不动，SNI 取原 host 不回灌 IP）
+    → **rc=0**；https 变体（net.connect 路）保持绿。
+  - autoselectfamily（net）：SAME1 双边红（外网 DNS 断言，node 侧同挂）→ 环境 bound，
+    非欠账。globalAgent/free/agent 键分层：base19d 即绿（override-global-agent/
+    free 事件/getName），本轮复核无红。
+- TIMEOUT 复判（7 件，全部定级、零新修）：
+  - `set-timeout-server`（http/https 双件）：7 子测试超时回调全发、链走完，
+    进程不退——实证 server.close 后客户端零事件（teardown 不发 FIN/RST，
+    allowHalfOpen 裸 tls 客户端半开残留）→ **另案**（server.close/conn 拆除语义）。
+  - `http-agent`（TIMEOUT）：test2 16/16 error 送达后仍不退，同 teardown-hang 族 → **另案**。
+  - `client-resume`（https TIMEOUT）：resume/ticket 无对应物，B5 bound 维持。
+  - `server-connections-checking-leak`（http/https 双件）：`globalThis.gc` 是 no-op
+    （process_prelude_tail.js 注释明示"真收集另案"）+ `__wjs2_netXfer` 强 Map 双重
+    锁死 → **另案**（真 GC + async_hooks destroy + WeakMap 三件套）。
+  - `add-context`/`secure-context-usage-order`（tls DIFF，authorized 位）：
+    选证已对（strict 客户端探针证实出示 agent1），差服务端 requestCert验客户端
+    （从未实现，"未 requestCert 即 false" 既有偏离）→ **另案**。
+  - `tls-connect-abort-controller` + `https-agent-abort-controller`（DIFF）：
+    同根（tls.connect 直拨丢 signal；framing_agent 注释"直接调 createConnection
+    的显式 signal 不动"即此缺口；TLSSocket 构造/连接/销毁三路 wiring + tls.js
+    已 999 行无位）→ **另案**（time-box 到线）。
+- bound 确认（本轮零触碰，复探签名与 base19d 同形）：
+  SNICallback 族×3（sni-option 异步换装/sni-servername 错误透传/empty-sni 空上下文，
+  Rust 握手不可为 JS 回调暂停——引擎墙）；`https-agent-sni`（`sni.N` 全数字尾，
+  rustls-pki-types 类型层拒收，B6 raw-SNI）；pfx（loadPKCS12 未实现，B5）。
+- sweep（tag `r19-tls`/`r19-https`，target-alt 冻结二进制）：
+  tls 185 件 **99 绿（+8）/86 红/0 新增红**（新增绿 3 本轮 + 5 他 lane 合入；
+  `sni-case-insensitive` 清单外未进 sweep，探针绿）；https 59 件
+  **48 绿/10 红/零变化**（r19-https 首启被数据盘看门狗 abort，腾盘后重跑 done）。
+  base19d→本轮 tls 红差 8 全绿、无翻红。
+- 黑盒/冒烟/守门：tls 域 **20/20**（含新 3 件 + tls.rs 按面拆 tls/ 四文件，
+  surface/identity/handshake/sni，991→260/421/283/148 行；超限 3 件为 HEAD 既有，
+  非本轮）；https/http/net 72/75——`mapper_locates_async_callsite` 3/3 一致红
+  （timer 回调内 `new Error().stack` 为空，引擎栈捕获层，lane 外 pre-existing，
+  已报 parent）+ net 双件 flake（重跑即绿，4.275 负载抖动）；冒烟 5/5；
+  `check-lines`（除 3 既有超限）/`check-naming` 双绿。
+- 提交（小步×4，均 push 到 origin/master）：d7189d4（SNICallback 校验）/
+  64fa79b（family 定向）/ 390389d（addContext 下沉 + tls/ 拆分）/ 本节 docs 随行。
+  新坑 **4.344**（SNI 握手竞速 + 服务端双视图）。
+- 余量定级：**bound/另案，无 time-box 欠账**——L-A 四红清零（2 修 + 1 附带 + 1 确认），
+  L-B 复判全部分类（1 修 + 其余 bound/另案各有主)；http 黑盒 36/37（mapper 红为
+  lane 外 pre-existing，非本轮引入）；全量 strict 因同树并发污染未跑（4.343 口径，
+  由当值 lane 在安静后复判）。

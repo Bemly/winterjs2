@@ -306,6 +306,7 @@
 - 4.341 `net.Socket.prototype.destroy` 借打会话代理 socket 须补 `__nativeKill` 桥（2026-10-26，http2 lane）
 - 4.342 `server.close()` 只扫闲置：在途流排空后须补拆会话（closeOnDrain）（2026-10-26，http2 lane）
 - 4.343 同树多 agent 并发跑全量子集/重编互相污染：重编/全量前先 ps 查并发（2026-10-26，CI1/W1 协作轮）
+- 4.344 SNI 下沉的握手竞速 + 服务端双视图：listen 同步刷（2026-10-26，R19 L-A）
 
 ## 条目
 

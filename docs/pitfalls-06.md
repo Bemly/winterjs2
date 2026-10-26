@@ -758,3 +758,25 @@
 - 复现：`ps aux | grep -E "sweep-bg|nextest"` + `uptime`+`git status` 三件即定级。
 - 推广铁律：**重编/全量前先 ps 查同树并发**（sweep-bg/nextest 有其一即撞期）——
   撞期要么等、要么切 target-alt；红先看并发再看代码（4.140/4.197 的前置一步）。
+
+### 4.344 SNI 下沉的握手竞速 + 服务端双视图（2026-10-26，R19 L-A）
+
+- 症状：`Server.addContext` 下沉 Rust 选择器后，`sni-server-client` 转绿而
+  `sni-case-insensitive` 首 case 过、次 case 挂（`got agent2`）；随后
+  服务端 `getCertificate()` 恒回缺省证（客户端所见已对）。
+- 根因有二：① 握手 resolve 与 JS 派发竞速——待刷队放在 `connection` 事件点刷，
+  回环上 ClientHello 先到、Rust 握手任务可抢在 JS 处理 Connection 之前
+  resolve，首连接即可能用旧表；② 服务端双视图——Rust 选证只影响出示字节，
+  `getCertificate()` 读 JS 侧 `__ownCert`（派发点按缺省置位），SNI 命中后
+  未跟随。
+- 修法：① 待刷队改 `listen()` 返回前同步刷（同栈、无握手可并发；post-listen
+  的 `addContext` 走 native 直写，RwLock 对后续握手可见）；② 握手完成点
+  （tlsInfo server 面）按 node 默认 SNICallback 口径（`_contexts` 倒序首配）
+  重算 `__ownCert`，未命中沿用缺省。
+- 复现：`test-tls-sni-case-insensitive`（5 连 server，单 server 探针必过、
+  多 server 循环必现其一）+ `SRV-cert` 探针（CLI-cert 对 / SRV-cert 恒缺省）。
+- 推广铁律：**底座外置状态的换装点必须早于首个可观测握手**——派发事件点刷
+  （connection/tlsInfo）看似"握手前"，实与 Rust 握手任务竞速；凡 Rust 侧
+  先读、JS 侧后写的表，一律构造/listen 同步点刷完。**引擎选了≠用户看见**——
+  凡服务端可观测面（getCertificate/authorized），握手完成点必须显式同步
+  一次选中态。

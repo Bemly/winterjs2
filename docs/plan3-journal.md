@@ -3671,3 +3671,24 @@ G1/G2/G3/G9 已收官。）
   parent→worker 丢值（worker 侧收 `undefined` 且回包带裸 `__wjs2_xfer` 信封）；
   worker 面自 base 无改动，需专轮深挖（PortMsg 路由 + 收端拆包）。
 - 待下轮：napi×3 / wcover / worker-hang / mapper（非闸门）/ permissions×2 / r20-fscry 纯跑。
+
+## 2026-10-26 goal round 4（进行中）：napi 续体 realm 定界 + 全量复跑
+
+- `napi_*_tsfn/tsfngc/finalize` 三件同因：首个 `await` 续体即抛
+  `globalThis.require is not a function`（app.js:1152，无栈，uncaught 非 rejection；
+  空续体亦挂，`workerData` 路径正常）。判定：napi async 恢复跑错 realm/全局，
+  需专轮深挖（4.1/4.116/4.315 家族），本轮只定界+repro。
+- `wcover_conc_faces` 同理定界：live postMessage parent→worker 丢值，
+  workerData 正常（repro 落上节）。
+- 全量 strict 重跑中（job 中），出结果即列 definitive 余红表。
+
+## 2026-10-26 goal round 4：disconnect 语义对齐 + http2 毒化静默 + 版本钉死去钉
+
+- `child_disconnect_faces`：4.347 改实现后暴露——本件期望 DISCONNECTED，
+  双真机（26.8.2/26.12，同场景脚本）皆 `CHANNEL_CLOSED`，翻测试+注释（实现不动）。
+- `http2_connect_protocol_off_poison`：毒化后 teardown 连带错误报 sessionError
+  致 uncaught 崩；上报加 `!proto_err` 门（4.351）；http2 域 52/52。
+- `namespace_three_globals_present`：版本钉死过期（26.10.3），改读
+  `CARGO_PKG_VERSION`（CalVer 发版即变，钉死必腐）。
+- 待下轮：napi×3 / wcover / worker-hang / mapper（非闸门）/ permissions×2 /
+  r20-fscry 纯跑；cli×6 待复判（疑负载抖动）。

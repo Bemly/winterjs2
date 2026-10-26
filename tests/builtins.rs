@@ -491,6 +491,7 @@ fn set_immediate_not_clamped() {
 #[test]
 fn namespace_three_globals_present() {
     // 正常：Deno/Bun/WinterJS2 三命名空间存在 + 版本同源 + toStringTag。
+    // 版本钉死曾过期（26.10.3 vs 发版日 CalVer），改读 CARGO_PKG_VERSION。
     let out = stdout_of(winterjs2().args([
         "--eval",
         "console.log(JSON.stringify([typeof Deno, typeof Bun, typeof WinterJS2]));\
@@ -498,7 +499,8 @@ fn namespace_three_globals_present() {
          console.log(JSON.stringify([Object.prototype.toString.call(Deno), Object.prototype.toString.call(Bun), Object.prototype.toString.call(WinterJS2)]));",
     ]));
     assert!(out.contains(r#"["object","object","object"]"#), "out: {out}");
-    assert!(out.contains(r#"["26.10.3","26.10.3","26.10.3"]"#), "out: {out}");
+    let v = env!("CARGO_PKG_VERSION");
+    assert!(out.contains(&format!(r#"["{v}","{v}","{v}"]"#)), "out: {out}");
     assert!(out.contains("[object Deno]"), "out: {out}");
     assert!(out.contains("[object Bun]"), "out: {out}");
     assert!(out.contains("[object WinterJS2]"), "out: {out}");

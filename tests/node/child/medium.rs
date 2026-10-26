@@ -50,8 +50,8 @@ console.log("SPAWN-INTERNAL", typeof spawnSync === "function");
 #[test]
 fn child_disconnect_faces() {
     // 正常：子 disconnect → 父 disconnect 事件（单次）；
-    // 报错：关通道 send 异步报 ERR_IPC_DISCONNECTED（真机同；重 disconnect
-    // 有监听走事件、无监听抛——与真机一致）；
+    // 报错：关通道 send 异步报 ERR_IPC_CHANNEL_CLOSED（双真机 26.8.2/26.12
+    // 同形；重 disconnect 有监听走事件、无监听抛——与真机一致）；
     // 边界：disconnect 后 send 回 false。
     let dir = assert_fs::TempDir::new().unwrap();
     dir.child("echo-child.mjs")
@@ -91,7 +91,7 @@ setTimeout(() => console.log("DISC-COUNT", disc, "ERR", errCode), 800);
     // 重 disconnect：有 error 监听走事件（真机同）， err 码断言见下。
     assert!(stdout.contains("REDISC-NO-THROW"), "重 disconnect 抛了:\n{stdout}");
     assert!(stdout.contains("DISC-COUNT 1"), "disconnect 非单次:\n{stdout}");
-    assert!(stdout.contains("ERR ERR_IPC_DISCONNECTED"), "关通道 error 未到:\n{stdout}");
+    assert!(stdout.contains("ERR ERR_IPC_CHANNEL_CLOSED"), "关通道 error 未到:\n{stdout}");
 }
 
 #[test]

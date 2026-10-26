@@ -862,3 +862,16 @@
 - 推广铁律：**平台过滤型测试的 fixture 必须覆盖矩阵所有列**（至少与同文件主断言
   同覆盖）；单测里凡 `std::env::consts::ARCH/OS` 参与过滤，fixture 行缺一列即
   跨机红——提交前在第二 arch（本机 x86_64 + 常规 arm64 心智）过一遍。
+
+### 4.351 自家毒化连接的 teardown 连带错禁报 sessionError（2026-10-26，goal round 4）
+
+- 症状：`http2_connect_protocol_off_poison` 挂死式红——服务端会话无监听
+  'error' 被抛成 uncaught，进程直接崩（`run_fs_file` 断 success 即挂）。
+- 根因：ECP 1→0 毒化后客户端 teardown 连带服务端 hyper conn 报
+  PROTOCOL_ERROR；`sessionError` 无条件上报，真机（pin 26.8.2 同脚本）服务端
+  全程静默——`proto_err` 旗早已存在却未参与门控。
+- 修法：上报条件加 `&& !proto_err`（真毒化才压；对端主动协议错照常报，
+  goaway-cleanup 套件不受影响，http2 域 52/52）。
+- 复现：同脚本跑 pin 版（服务端零事件）vs 本仓（uncaught 崩）。
+- 推广铁律：**自家注入的破坏，其回声一律静默**——注入点与上报点分属两处时，
+  必须有显式旗连接两者；"上报无条件"默认只适用于对端原生错误。

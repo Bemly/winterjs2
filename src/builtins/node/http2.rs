@@ -540,10 +540,12 @@ pub(crate) async fn serve_conn<S>(
         tokio::select! {
                 r = &mut conn => {
                     // 连接级协议错（FRAME_SIZE 等）即会话 error（goaway-cleanup
-                    // 套件点名 ERR_HTTP2_ERROR；干净收尾/传输错保持静默）。
+                    // 套件点名 ERR_HTTP2_ERROR；干净收尾/传输错保持静默；
+                    // 自家毒化（proto_err）在后：随后 conn 错是客户端 teardown
+                    // 连带（真机服务端静默，4.351），禁报。
                     if let Err(e) = &r {
                         let (_, rst) = h2_err_msg_rst(e);
-                        if matches!(rst, Some(1) | Some(3) | Some(6) | Some(9)) {
+                        if matches!(rst, Some(1) | Some(3) | Some(6) | Some(9)) && !proto_err {
                             let _ = ev_tx.send(NetEvent {
                                 id: server_id,
                                 kind: NetKind::H2Stream {

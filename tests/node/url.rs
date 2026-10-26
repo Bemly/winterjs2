@@ -362,7 +362,9 @@ show("brand-exec", () => exec({}));
 
 #[test]
 fn url_internal_is_url_faces() {
-    // `internal/url` isURL 判形（test-url-is-url-internal.js 对拍件；真机 node 26.8.1 逐项实测）。
+    // `internal/url` isURL 判形（test-url-is-url-internal.js 对拍件；真机逐项实测：
+    // 26.8.2 + `--expose-internals` 下 7 行同形，`require("internal/nope")` 为
+    // MODULE_NOT_FOUND——旧 "undefined" 断言与 pin 版实测矛盾，按 4.65 翻转）。
     let dir = assert_fs::TempDir::new().unwrap();
     let out = run_node_file(
         &dir,
@@ -391,7 +393,7 @@ try { require("internal/nope"); console.log("nope OK"); } catch (e) { console.lo
         "undef false",
         "num false",
         "auth false",
-        "nope THROW undefined",
+        "nope THROW MODULE_NOT_FOUND",
     ] {
         assert!(out.lines().any(|l| l == line), "missing line: {line}\nout: {out}");
     }

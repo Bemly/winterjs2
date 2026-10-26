@@ -3719,3 +3719,10 @@ G1/G2/G3/G9 已收官。）
   "未设置"回落（node 同口径跳过该段）。双测转绿。
 - napi×3 / wcover：realm/端口深水，维持定界（专轮）；worker-hang / mapper /
   r20-fscry 待排。
+
+## 2026-10-26 发布冻结约定（用户指令）
+
+- `release.yml` 仅 `push.tags: v*.*.*` / `workflow_dispatch` 触发；master 普通
+  push 不触发。tag 推送只建 draft（`draft: true`），Publish 须人工点。
+- 约定：plan3 验收（全量 strict 绿）前不再打新 tag、不Publish；日常 master
+  push 照常（不触发 release）。`pages.yml` 仅 docs 站部署，不属发版。
